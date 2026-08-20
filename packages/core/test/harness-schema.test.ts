@@ -21,6 +21,25 @@ describe("plugin-list.schema — 착수 조건 C1 (AC-0.3 정정 스키마)", ()
     expect(() => PluginListEntrySchema.parse(bare)).not.toThrow();
   });
 
+  it(
+    "mcpServers는 서버 이름을 키로 하는 객체다 (Step 2 실제 환경 검증 — R13 재정정, " +
+      "AC-0.3 스파이크는 빈 배열만 관측해 array로 잘못 고정했었다)",
+    () => {
+      const raw = readFixtureJson("harness/plugin-list.sample.json") as unknown[];
+      const withMcp = raw.find((e) => (e as { id: string }).id === "demo-plugin@demo-marketplace");
+      const parsed = PluginListEntrySchema.parse(withMcp);
+      expect(parsed.mcpServers).toEqual({
+        "demo-server": { type: "http", url: "https://mcp.example.com/mcp" },
+      });
+    },
+  );
+
+  it("mcpServers에 빈 배열을 주면 이제는(재정정 후) 거부된다 — 객체여야 한다", () => {
+    const raw = readFixtureJson("harness/plugin-list.sample.json") as Record<string, unknown>[];
+    const invalid = { ...raw[0], mcpServers: [] };
+    expect(PluginListEntrySchema.safeParse(invalid).success).toBe(false);
+  });
+
   it("C1 — scope:'local'인데 projectPath가 없으면 superRefine이 실패한다", () => {
     const invalid = {
       id: "demo-local@demo-marketplace",

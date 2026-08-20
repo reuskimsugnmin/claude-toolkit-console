@@ -57,8 +57,13 @@ export default tseslint.config(
     },
   },
   // core/guard/*: 판정기는 "어느 홈이냐"를 몰라야 한다 (착수 조건 C2).
+  // env-whitelist.ts는 예외다 — "CLAUDE_CONFIG_DIR"이 여기 등장하는 건 홈 경로를 식별해서가
+  // 아니라, 그 이름 자체가 자식 프로세스에 전달을 허용할 **환경변수 키**이기 때문이다(iter 8 · B2).
+  // 값(어느 홈인지)은 여전히 호출자(probe/harness/seal-profiles.ts)가 넘긴다 — 이 파일은 키
+  // 이름만 알 뿐 경로 리터럴은 담지 않는다.
   {
     files: ["packages/core/src/guard/**/*.ts"],
+    ignores: ["packages/core/src/guard/env-whitelist.ts"],
     rules: {
       "ctk/no-home-literals": "error",
     },

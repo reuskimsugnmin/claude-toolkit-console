@@ -7,7 +7,7 @@
     "installPath": "/synthetic/plugins/cache/demo-marketplace/demo-plugin/1.0.0",
     "installedAt": "2026-08-01T00:00:00.000Z",
     "lastUpdated": "2026-08-01T00:00:00.000Z",
-    "mcpServers": []
+    "mcpServers": { "demo-server": { "type": "http", "url": "https://mcp.example.com/mcp" } }
   },
   {
     "id": "demo-bare@demo-marketplace",

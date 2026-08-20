@@ -89,19 +89,31 @@ function isFlagToken(token: string): boolean {
   return token.startsWith("-");
 }
 
+export interface AssertForbiddenArgvOptions {
+  /**
+   * 위치인자 0개 단언을 적용할지 여부. 기본값 `true`(§1.3 결정 6의 `-p` 모델 세션 전제 — 프롬프트는
+   * stdin으로 전달되므로 argv에 위치인자가 있으면 안 된다). `claude plugin list --json`처럼 서브
+   * 커맨드 자체가 위치인자인 비-모델 호출(probe의 파일 조회성 spawn)에서는 `false`로 끈다 — 이
+   * 경우에도 금지 플래그/금지값 검사(1번)는 그대로 적용된다.
+   */
+  checkPositionalArguments?: boolean;
+}
+
 /**
- * argv 판정. `(argv, rules?, singleValueFlags?) → verdict` 순수 함수.
+ * argv 판정. `(argv, rules?, singleValueFlags?, options?) → verdict` 순수 함수.
  *
- * 1) 금지 리터럴 16종(+ `--permission-mode` 금지값 4종) 검출.
+ * 1) 금지 리터럴 16종(+ `--permission-mode` 금지값 4종) 검출 — 항상 적용된다.
  * 2) 위치인자 0개 단언 — 프롬프트는 stdin으로 전달되므로 argv에 위치인자가 있으면 안 된다.
  *    `singleValueFlags`에 등록된 플래그의 바로 다음 토큰 1개만 정당한 값으로 인정하고, 그 외
- *    비-플래그 토큰은 전부 위치인자 위반이다.
+ *    비-플래그 토큰은 전부 위치인자 위반이다. `options.checkPositionalArguments:false`로 끌 수 있다.
  */
 export function assertForbiddenArgv(
   argv: readonly string[],
   rules: readonly ForbiddenArgvRule[] = FORBIDDEN_ARGV_RULES,
   singleValueFlags: readonly string[] = DEFAULT_SINGLE_VALUE_ARGV_FLAGS,
+  options: AssertForbiddenArgvOptions = {},
 ): ArgvVerdict {
+  const checkPositionalArguments = options.checkPositionalArguments ?? true;
   const ruleByFlag = new Map(rules.map((r) => [r.flag, r] as const));
   const singleValueSet = new Set(singleValueFlags);
   const violations: ArgvViolation[] = [];
@@ -139,6 +151,8 @@ export function assertForbiddenArgv(
       expectedValueIndex = -1;
       continue;
     }
+
+    if (!checkPositionalArguments) continue;
 
     violations.push({
       index: i,

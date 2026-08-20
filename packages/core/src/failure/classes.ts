@@ -16,6 +16,11 @@ export const FAILURE_CLASSES = [
   "subagent_attribution_unresolved", // isSidechain:true 0건인데 Agent tool_use 존재 (R17)
   "managed_policy_present", // Admin/policy(managed) 설정 존재 — sealed-live 봉인 불완전 가능성 (R15)
   "duplicate_path_input", // tree-diff verdict()에 동일 경로가 2회 이상 입력됨 — 수집 버그 신호 (P2, test-engineer 발견)
+  "parse_schema_mismatch", // 하네스 출력이 zod strict 스키마와 불일치 (R13) — Step 2
+  "lock_contended", // 다른 ctk 실행이 <catalog>/.ctk.lock을 보유 중 (§7.4) — Step 2
+  "path_normalize_failed", // 경로를 ~/… 상대화도 path_hash도 할 수 없어 기록 불가 (F4) — Step 2
+  "seal_env_leak", // 허용목록 밖 환경변수가 자식 프로세스에 도달함 (iter 8 · B2) — Step 2
+  "seal_timeout", // 서브프로세스가 --timeout-sec 벽시계를 초과 (iter 8 · M4) — Step 2
   "unclassified",
 ] as const;
 
