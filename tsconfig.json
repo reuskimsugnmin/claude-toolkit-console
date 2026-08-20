@@ -1,0 +1,13 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/core/tsconfig.test.json" },
+    { "path": "./packages/probe" },
+    { "path": "./packages/actuator" },
+    { "path": "./packages/sync" },
+    { "path": "./packages/gen" },
+    { "path": "./packages/cli" },
+    { "path": "./packages/web" }
+  ]
+}

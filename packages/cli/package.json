@@ -1,0 +1,16 @@
+{
+  "name": "@ctk/cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "ctk": "./bin/ctk.ts"
+  },
+  "dependencies": {
+    "@ctk/actuator": "workspace:*",
+    "@ctk/core": "workspace:*",
+    "@ctk/gen": "workspace:*",
+    "@ctk/probe": "workspace:*",
+    "@ctk/sync": "workspace:*"
+  }
+}

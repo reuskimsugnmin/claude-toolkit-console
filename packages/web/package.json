@@ -1,0 +1,11 @@
+{
+  "name": "@ctk/web",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@ctk/actuator": "workspace:*",
+    "@ctk/core": "workspace:*",
+    "@ctk/probe": "workspace:*"
+  }
+}

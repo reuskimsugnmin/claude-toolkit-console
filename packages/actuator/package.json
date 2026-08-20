@@ -1,0 +1,12 @@
+{
+  "name": "@ctk/actuator",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@ctk/core": "workspace:*",
+    "@ctk/probe": "workspace:*"
+  }
+}
