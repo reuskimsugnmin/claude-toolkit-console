@@ -1,0 +1,4 @@
+{"schema_version":1,"_scope":"machine_dependent","asset_id":"demo-plugin@demo-marketplace","machine_id":"machine-alpha","install_scope":"user","enabled_at":"user","project_path_hash":null,"mcp_enabled_state":null,"mcp_state_source":null}
+{"schema_version":1,"_scope":"machine_dependent","machine_id":"machine-alpha","path_hash":"abcd1234ef567890","home_relative_path":"~/projects/alpha","first_seen_at":"2026-08-01T00:00:00.000Z"}
+{"schema_version":1,"_scope":"machine_dependent","asset_id":"demo-plugin@demo-marketplace","machine_id":"machine-alpha","project_path_hash":null,"session_count":3,"token_sum":1200,"last_used_at":"2026-08-01T00:00:00.000Z","attribution_source":"explicit_field","subagent_attribution":"not_applicable"}
+{"schema_version":1,"_scope":"machine_dependent","__kind":"toggle","project_path_hash":"abcd1234ef567890","name":"claude.ai Demo Connector","state":"disabled","source_field":"disabledMcpServers","classification_source":"name_pattern"}

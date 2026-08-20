@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "synth-mp",
+  "description": "ctk spike synthetic marketplace (anonymized, no real tool identity) — AC-0.2/AC-0.3/AC-0.10 fixture",
+  "owner": {
+    "name": "ctk-spike"
+  },
+  "plugins": [
+    {
+      "name": "synth",
+      "source": "./synth",
+      "description": "Synthetic plugin for ctk Step 0 spikes: 1 command (/synth-probe) + 1 skill (synth-skill).",
+      "version": "0.0.1"
+    }
+  ]
+}

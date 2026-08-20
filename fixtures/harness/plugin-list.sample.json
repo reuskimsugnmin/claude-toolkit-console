@@ -1,0 +1,41 @@
+[
+  {
+    "id": "demo-plugin@demo-marketplace",
+    "version": "1.0.0",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/synthetic/plugins/cache/demo-marketplace/demo-plugin/1.0.0",
+    "installedAt": "2026-08-01T00:00:00.000Z",
+    "lastUpdated": "2026-08-01T00:00:00.000Z",
+    "mcpServers": []
+  },
+  {
+    "id": "demo-bare@demo-marketplace",
+    "version": "0.1.0",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/synthetic/plugins/cache/demo-marketplace/demo-bare/0.1.0",
+    "installedAt": "2026-08-01T00:00:00.000Z",
+    "lastUpdated": "2026-08-01T00:00:00.000Z"
+  },
+  {
+    "id": "demo-local@demo-marketplace",
+    "version": "2.0.0",
+    "scope": "local",
+    "enabled": true,
+    "installPath": "/synthetic/plugins/cache/demo-marketplace/demo-local/2.0.0",
+    "installedAt": "2026-08-02T00:00:00.000Z",
+    "lastUpdated": "2026-08-02T00:00:00.000Z",
+    "projectPath": "/synthetic/projects/alpha"
+  },
+  {
+    "id": "demo-local@demo-marketplace",
+    "version": "2.0.0",
+    "scope": "local",
+    "enabled": true,
+    "installPath": "/synthetic/plugins/cache/demo-marketplace/demo-local/2.0.0",
+    "installedAt": "2026-08-02T00:00:00.000Z",
+    "lastUpdated": "2026-08-02T00:00:00.000Z",
+    "projectPath": "/synthetic/projects/beta"
+  }
+]

@@ -1,0 +1,4 @@
+{"type":"system","uuid":"sys-1"}
+{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"demo-plugin:demo-skill"}}]},"attributionSkill":"demo-plugin:demo-skill","attributionPlugin":"demo-plugin"}
+{"type":"user","isSidechain":false,"toolUseResult":{"ok":true},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_demo1","content":"ok"}]}}
+{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","name":"Agent","input":{"description":"spawn synthetic subagent"}}]}}
