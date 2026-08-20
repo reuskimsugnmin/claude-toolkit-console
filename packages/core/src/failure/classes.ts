@@ -16,6 +16,7 @@ export const FAILURE_CLASSES = [
   "subagent_attribution_unresolved", // isSidechain:true 0건인데 Agent tool_use 존재 (R17)
   "managed_policy_present", // Admin/policy(managed) 설정 존재 — sealed-live 봉인 불완전 가능성 (R15)
   "duplicate_path_input", // tree-diff verdict()에 동일 경로가 2회 이상 입력됨 — 수집 버그 신호 (P2, test-engineer 발견)
+  "duplicate_snapshot_key", // diffById()에 동일 (asset_id, install_scope, project_path_hash) 키가 2회 이상 입력됨 (P2, test-engineer 발견 — Step 2 실환경 검증에서 collectSkills 프론트매터 name 충돌로 재현)
   "parse_schema_mismatch", // 하네스 출력이 zod strict 스키마와 불일치 (R13) — Step 2
   "lock_contended", // 다른 ctk 실행이 <catalog>/.ctk.lock을 보유 중 (§7.4) — Step 2
   "path_normalize_failed", // 경로를 ~/… 상대화도 path_hash도 할 수 없어 기록 불가 (F4) — Step 2
