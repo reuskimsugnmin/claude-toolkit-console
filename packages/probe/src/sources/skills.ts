@@ -77,6 +77,16 @@ export function collectSkills(options: CollectSkillsOptions): SkillSourceResult 
 
   const assetById = new Map<string, Asset>();
   const installations: Installation[] = [];
+  // (asset_id, enabled_at, project_path_hash) 조합당 1건만 유지한다(installation.ts의 문서화된
+  // 불변식). 실측(Step 2, 실환경 검증)으로 발견: 서로 다른 두 스킬 디렉터리가 SKILL.md 프론트매터
+  // `name`을 동일하게 선언하면(예: 라우터 스킬이 실제 스킬과 같은 이름을 자칭) 같은 스코프에
+  // 대해 동일 키의 Installation이 2건 생기고, 이는 diffById()가 판정 불가로 거부하는 대상이다
+  // (packages/core/src/snapshot/diff.ts의 DuplicateKeyDiffError). 여기서는 첫 발견분을 채택해
+  // 애초에 그런 입력이 스냅샷에 실리지 않게 막는다 — Asset 쪽 `assetById`가 이미 쓰는 것과 동일한
+  // first-wins 정책이다. ⚠️ 이름 충돌 자체(두 디렉터리가 같은 이름을 자칭하는 것)는 여전히 사용자가
+  // 알아야 할 신호이지만, v1 Installation 스키마에는 이를 표현할 필드가 없다 — 조용히 사라지지 않게
+  // 최소한 판정 거부(diffById)로 드러나긴 하나, 근본 신호는 v1.1에서 스키마 확장으로 다뤄야 한다.
+  const seenInstallationKeys = new Set<string>();
 
   for (const skill of discovered) {
     if (!assetById.has(skill.id)) {
@@ -90,6 +100,9 @@ export function collectSkills(options: CollectSkillsOptions): SkillSourceResult 
       });
     }
     const projectPathHash = skill.projectPath !== null ? normalizePath(skill.projectPath, home.ctkHome).path_hash : null;
+    const installationKey = `${skill.id}|${skill.scope}|${projectPathHash ?? ""}`;
+    if (seenInstallationKeys.has(installationKey)) continue;
+    seenInstallationKeys.add(installationKey);
     installations.push({
       schema_version: 1,
       _scope: "machine_dependent",
