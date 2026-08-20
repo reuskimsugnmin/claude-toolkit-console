@@ -27,9 +27,20 @@ Claude Code 도구 환경(플러그인·스킬·MCP·CLI)을 **여러 로컬에 
 | `core` | 스키마·타입·스냅샷 diff. 순수 로직, I/O 없음 | 없음 |
 | `probe` | 로컬 설정 **읽기**만 | 낮음 |
 | `actuator` | 로컬 설정 **쓰기** — 백업·롤백 필수 | **높음** |
-| `sync` | 스냅샷 push/pull 어댑터 | 중간 |
+| `sync` | 스냅샷 push/pull 어댑터 · 카탈로그 저장소 **유일한 쓰기 주체** | 중간 |
+| `gen` | LLM으로 카탈로그 문서 생성 — 서브프로세스 봉인 필수, 직접 쓰기 금지 | 중간(비용) · **봉인 실패 시 높음** · 실제 config dir에 churn 발생 |
 | `cli` | 위를 오케스트레이션 | — |
 | `web` | 표현·조작 UI | — |
+
+`gen`은 헤드리스 에이전트를 스폰하므로 **잠재적 쓰기 범위가 `actuator`의 화이트리스트보다 넓다.**
+`--safe-mode`·도구 제한·임시 cwd·예산 상한·전후 트리 diff로 봉인하고, 스스로는 어떤 파일도
+쓰지 않는다(산출물은 `sync`를 통해 기록). 봉인 수단을 바꾸면 `security-reviewer` 재심 대상이다.
+
+**봉인은 두 프로파일로 나뉜다.** 인증이 필요 없는 테스트는 `CLAUDE_CONFIG_DIR`를 격리하고,
+인증이 필요한 유료 세션은 실제 config dir을 쓰되 `--safe-mode`로 커스터마이즈를 차단한다.
+**이 둘을 하나로 합칠 수 없다** — 인증 토큰이 키체인에 config dir별로 분리 저장되므로,
+config dir을 격리하면 인증 자체가 불가능하다. 유료 세션은 실제 config dir에 churn을 남기며,
+"변경 0건"이 아니라 **실측 허용목록 기준**으로 판정해야 한다.
 
 **읽기와 쓰기를 한 모듈에 섞지 않는다.** 쓰기는 사용자의 실제 개발 환경을 바꾸므로 파괴적이다.
 위험한 코드를 작게 가두어 감사 가능하게 유지한다.
@@ -113,10 +124,14 @@ systematic-debugging · verification-before-completion · subagent-driven-develo
 
 | 자산 유형 | 스코프가 사는 곳 | 끄는 방법 |
 |---|---|---|
-| 플러그인 | `settings.json` / `settings.local.json`의 `enabledPlugins` | `claude plugin disable` |
-| MCP 서버 | `claude mcp add -s user\|project\|local` | **비활성 명령 없음** — remove/add만 |
+| 플러그인 | **설치 스코프**는 `~/.claude/plugins/installed_plugins.json` · **활성 여부**는 `settings.json`의 `enabledPlugins`(값은 boolean뿐) | `claude plugin disable -s user\|project\|local` |
+| MCP 서버 | `~/.claude.json` 루트 `mcpServers`(user) · 프로젝트 엔트리 `mcpServers`(local) · `.mcp.json`(project) · 플러그인 번들 | **CLI 명령 없음.** 단 상태는 프로젝트별 `enabledMcpServers`/`disabledMcpServers`에 기록됨 — `/mcp` UI로 토글 |
 | 전역 스킬 | `~/.claude/skills/<name>/` 존재 여부 | **명령 없음** — 디렉터리 이동 |
 | CLI 도구 | PATH | 해당 없음 (상시 토큰 0) |
+
+**설치 스코프와 활성 여부는 다른 축이다.** 플러그인에서 `enabledPlugins`를 고쳐도 설치 스코프는
+바뀌지 않는다. "전역에 두되 이 프로젝트에서만 켠다"는 활성 여부의 문제이고, 설치 스코프 이동은
+`uninstall` + `install`이다. 둘을 한 조작으로 뭉뚱그리지 않는다.
 
 **실측으로 확인된 함정:**
 
@@ -129,6 +144,17 @@ systematic-debugging · verification-before-completion · subagent-driven-develo
 - 토큰 수치는 실측만 쓴다. 그리고 **무엇을 재는지를 먼저 확정한다** —
   frontmatter 전체와 `name`+`description`은 2배 이상 차이가 난다.
 - 자동 스캐너는 **부정문을 오독한다.** 판정을 결론으로 쓰지 말고 원문을 확인한다.
+- `claude mcp list`는 조회가 아니라 **전 서버 health-check다.** 실측 24초, 회차마다 결과가
+  다르고, 실패 행에는 서버가 반환한 HTML 원문이 개행째로 섞인다. `--json`도 없다.
+  **스냅샷의 입력으로 쓰지 않는다** — MCP는 설정 파일 직독으로 읽는다.
+- `claude`에 `--config-dir` 플래그는 **없다.** 설정 격리는 `CLAUDE_CONFIG_DIR` 환경변수로 한다.
+  `claude plugin list --json` 한 번만 실행해도 대상 config 디렉터리에 `.claude.json`과
+  `backups/`가 **생성된다** — "읽기" 명령이 쓴다는 뜻이다.
+- `--bare`는 훅·CLAUDE.md 자동 탐색만 끄는 게 아니라 **attribution 기록과 OAuth·키체인 인증까지**
+  끈다. 즉 `--bare` 경로는 `ANTHROPIC_API_KEY`(또는 `apiKeyHelper`)를 요구한다.
+- 세션 트랜스크립트에는 `attributionSkill`·`attributionPlugin`·`attributionMcpServer` 필드가
+  **이미 있다.** 귀속을 접두어 매칭으로 재발명하기 전에 이 필드를 먼저 본다. 단 모든 세션에
+  있지는 않으므로, 부재의 **원인**(구버전인가 `--bare`인가)을 확인하기 전에는 단정하지 않는다.
 
 ## 안전 원칙
 
@@ -141,7 +167,27 @@ systematic-debugging · verification-before-completion · subagent-driven-develo
 
 - 이 저장소는 **제품 코드 전용**이다. 운영 기록은 `../claude-toolkit-ops`에 남긴다. 섞지 않는다.
 - 커밋은 `Agent(oh-my-claudecode:git-master)`로 수행한다.
-- 커밋·푸시는 사용자가 요청할 때만 한다.
+
+### 커밋은 승인 없이, PR·머지는 승인받고
+
+| 행위 | 승인 |
+|---|---|
+| 작업 브랜치 생성 | 불요 |
+| **작은 작업 단위 커밋** | **불요 — 판단해서 계속 진행한다** |
+| 작업 브랜치 push | 불요 |
+| **PR 생성 · 머지** | **필수 — 큰 작업이 끝날 때마다 사용자에게 묻는다** |
+| `main`에 직접 커밋 | **금지** |
+
+**작은 작업 단위**란 그 자체로 되돌릴 수 있고 검증이 통과한 변경이다 — 모듈 하나, 버그 하나,
+리팩터 하나. 검증(타입체크·lint·테스트)이 통과하지 않은 상태는 커밋하지 않는다.
+여러 관심사가 섞였으면 나눠서 커밋한다.
+
+**큰 작업**이란 사용자가 결과를 확인하고 방향을 바꿀 수 있는 단위다 — 계획서의 Step 하나,
+내부 게이트(G1·G2), 릴리스(R3). 여기 도달하면 **무엇이 끝났고 무엇이 남았는지 요약해
+PR·머지 여부를 묻는다.** 묻지 않고 머지하지 않는다.
+
+작업 중 발견한 사실(실측 결과·설계 변경 근거)은 커밋 메시지 본문에 남긴다.
+"무엇을 바꿨다"보다 **"왜 그렇게 바꿔야 했는지"**가 나중에 필요한 정보다.
 
 ## 상속
 
