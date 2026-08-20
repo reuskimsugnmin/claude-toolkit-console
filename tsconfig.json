@@ -4,10 +4,13 @@
     { "path": "./packages/core" },
     { "path": "./packages/core/tsconfig.test.json" },
     { "path": "./packages/probe" },
+    { "path": "./packages/probe/tsconfig.test.json" },
     { "path": "./packages/actuator" },
     { "path": "./packages/sync" },
+    { "path": "./packages/sync/tsconfig.test.json" },
     { "path": "./packages/gen" },
     { "path": "./packages/cli" },
+    { "path": "./packages/cli/tsconfig.test.json" },
     { "path": "./packages/web" }
   ]
 }

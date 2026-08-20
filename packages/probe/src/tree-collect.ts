@@ -1,0 +1,75 @@
+import { createHash } from "node:crypto";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import path from "node:path";
+import type { FileEntry } from "@ctk/core";
+
+/**
+ * probe/src/tree-collect.ts — config 트리 수집(I/O). **판정은 하지 않는다** — `core/src/guard/*`에
+ * 넘긴다(H1). Step 5(actuator)·Step 4(gen)가 이 수집기를 공유한다.
+ *
+ * 심볼릭 링크는 따라가지 않는다(`statSync`가 아니라 `lstatSync` 계열로 분류해 심볼릭 링크
+ * 자체는 건너뛴다) — 링크를 따라가면 순환 참조나 "같은 파일이 두 경로로 이중 목록"되는 사고가
+ * 나고, `core/guard/tree-diff.ts`의 `verdict()`는 중복 경로 입력을 판정 불가로 거부한다
+ * (`DuplicatePathVerdictError`) — 이 수집기가 애초에 중복을 만들지 않아야 그 계약이 의미가 있다.
+ */
+
+export interface TreeCollectResult {
+  entries: FileEntry[];
+}
+
+function sha256File(absPath: string): string {
+  return createHash("sha256").update(readFileSync(absPath)).digest("hex");
+}
+
+function walk(rootAbs: string, currentAbs: string, out: FileEntry[]): void {
+  let dirents;
+  try {
+    dirents = readdirSync(currentAbs, { withFileTypes: true });
+  } catch {
+    // 경합으로 디렉터리가 스캔 도중 사라졌을 수 있다 — 조용히 건너뛴다(스캔 중단보다 안전).
+    return;
+  }
+  for (const dirent of dirents) {
+    const absChild = path.join(currentAbs, dirent.name);
+    if (dirent.isSymbolicLink()) {
+      // 심볼릭 링크는 따라가지 않는다 — 순환·이중 목록 방지(위 문서 주석).
+      continue;
+    }
+    if (dirent.isDirectory()) {
+      walk(rootAbs, absChild, out);
+      continue;
+    }
+    if (!dirent.isFile()) {
+      continue;
+    }
+    let sha256: string;
+    try {
+      sha256 = sha256File(absChild);
+    } catch {
+      // 경합으로 파일이 스캔 도중 사라졌을 수 있다 — 해당 항목만 건너뛴다.
+      continue;
+    }
+    const relPath = path.relative(rootAbs, absChild).split(path.sep).join("/");
+    out.push({ path: relPath, sha256 });
+  }
+}
+
+/**
+ * `rootAbs` 아래 전 파일을 재귀 수집해 `core/guard/tree-diff.ts`의 `FileEntry[]` 형태로 반환한다.
+ * 루트 디렉터리 자체가 없으면(예: 아직 `ctk init`이 되지 않은 카탈로그) 빈 배열을 반환한다 —
+ * "아무것도 못 봤다"는 tree-diff의 안전한 기본값(`verdict([], [], [])` = clean)과 일치한다.
+ */
+export function collectTree(rootAbs: string): TreeCollectResult {
+  const entries: FileEntry[] = [];
+  let rootStat;
+  try {
+    rootStat = statSync(rootAbs);
+  } catch {
+    return { entries };
+  }
+  if (!rootStat.isDirectory()) {
+    return { entries };
+  }
+  walk(rootAbs, rootAbs, entries);
+  return { entries };
+}
