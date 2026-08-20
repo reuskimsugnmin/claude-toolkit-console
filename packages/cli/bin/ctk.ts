@@ -9,8 +9,9 @@
 import { runInit } from "../src/commands/init.js";
 import { runScan, CatalogNotInitializedError } from "../src/commands/scan.js";
 import { runDoctorDrift, NoSnapshotsError } from "../src/commands/doctor.js";
-import { runVerifyAc1 } from "../src/commands/verify-ac1.js";
+import { runVerifyAc1, NotYetScannedError } from "../src/commands/verify-ac1.js";
 import { LockContendedError } from "@ctk/sync";
+import { DuplicateKeyDiffError } from "@ctk/core";
 
 function readFlagValue(args: string[], flag: string): string | undefined {
   const index = args.indexOf(flag);
@@ -89,8 +90,13 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    if (err instanceof CatalogNotInitializedError || err instanceof NoSnapshotsError) {
+    if (err instanceof CatalogNotInitializedError || err instanceof NoSnapshotsError || err instanceof NotYetScannedError) {
       console.error(`FAIL: ${err.message}`);
+      process.exitCode = 1;
+      return;
+    }
+    if (err instanceof DuplicateKeyDiffError) {
+      console.error(`FAIL duplicate_snapshot_key: ${err.message}`);
       process.exitCode = 1;
       return;
     }
