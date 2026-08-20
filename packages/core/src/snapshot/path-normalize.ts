@@ -38,18 +38,35 @@ export interface HygieneViolation {
   match: string;
 }
 
-/** 임의의 값(스냅샷 레코드 등)을 직렬화해 원문 홈 절대경로 흔적을 찾는다. */
-export function findRawPathLeaks(value: unknown): HygieneViolation[] {
-  const serialized = typeof value === "string" ? value : JSON.stringify(value);
+function scanString(text: string): HygieneViolation[] {
   const violations: HygieneViolation[] = [];
   for (const pattern of RAW_ABS_HOME_PATTERNS) {
     const re = new RegExp(pattern.source, pattern.flags);
     let m: RegExpExecArray | null;
-    while ((m = re.exec(serialized)) !== null) {
+    while ((m = re.exec(text)) !== null) {
       violations.push({ pattern: pattern.source, match: m[0] });
     }
   }
   return violations;
+}
+
+/**
+ * 임의의 값(스냅샷 레코드 등)에서 원문 홈 절대경로 흔적을 찾는다. **문자열 리프마다 개별
+ * 검사한다** — `JSON.stringify(value)`로 한 번에 직렬화해 통짜 문자열을 검사하던 이전 구현은
+ * 회귀 취약점이 있었다(실측, test-engineer 발견): 홈 절대경로 접두사(슬래시+Users 세그먼트)가
+ * 두 필드에 걸쳐 앞쪽 몇 글자와 나머지로 쪼개지면, 직렬화된 결과에서 그 접두사가 필드 경계의
+ * 콤마·따옴표·키 삽입 문자로 끊겨 정규식이 매칭하지 못했다 — 위생 검사가 "위반 0건"을 보고하지만
+ * 재구성하면 실제로는 원문 경로가 새고 있는 경우였다(테스트: path-normalize-hygiene.test.ts).
+ * 현재 어떤 실제 호출부도 경로를 필드에 걸쳐 쪼개지 않지만(`normalizePath`는 항상
+ * `home_relative` 아니면 `path_hash` 단일 필드), 이 함수는 공개 저장소의 마지막 방어선(P2)이므로
+ * 우연이든 미래의 실수든 그런 입력이 조용히 통과해서는 안 된다. 문자열 리프 단위 검사는 필드
+ * 경계에 의존하지 않는다.
+ */
+export function findRawPathLeaks(value: unknown): HygieneViolation[] {
+  if (typeof value === "string") return scanString(value);
+  if (value === null || typeof value !== "object") return [];
+  if (Array.isArray(value)) return value.flatMap((item) => findRawPathLeaks(item));
+  return Object.values(value as Record<string, unknown>).flatMap((item) => findRawPathLeaks(item));
 }
 
 /** 위반이 있으면 던진다 — 스냅샷 append 경로에서 마지막 방어선으로 호출한다. */
