@@ -19,7 +19,7 @@ import {
   writeRunLog,
   writeSnapshot,
 } from "@ctk/sync";
-import type { Asset, AssetKind, Installation, RunLogEntry, Toggle } from "@ctk/core";
+import { FAILURE_CLASSES, type Asset, type AssetKind, type FailureClass, type Installation, type RunLogEntry, type Toggle } from "@ctk/core";
 import { readLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
 
 export class CatalogNotInitializedError extends Error {
@@ -54,6 +54,22 @@ function countAssetKinds(assets: Asset[]): Record<AssetKind, number> {
   const counts: Record<AssetKind, number> = { plugin: 0, skill: 0, mcp: 0, cli: 0 };
   for (const asset of assets) counts[asset.kind]++;
   return counts;
+}
+
+const FAILURE_CLASS_SET = new Set<string>(FAILURE_CLASSES);
+
+/** 던져진 오류가 알려진 `failure_class`를 싣고 있으면 그대로 쓰고, 아니면 "unclassified"로 남긴다. */
+function extractFailureClass(err: unknown): FailureClass {
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    "failureClass" in err &&
+    typeof (err as { failureClass: unknown }).failureClass === "string" &&
+    FAILURE_CLASS_SET.has((err as { failureClass: string }).failureClass)
+  ) {
+    return (err as { failureClass: FailureClass }).failureClass;
+  }
+  return "unclassified";
 }
 
 function countScopes(installations: Installation[]): Record<string, number> {
@@ -180,7 +196,12 @@ export async function runScan(options: RunScanOptions = {}): Promise<ScanSummary
     };
   } catch (err) {
     exitCode = 1;
-    failureClass = "unclassified";
+    // 회귀 수정(Step 2, test-engineer 실측 발견) — 이전 구현은 실제로 던져진 오류가 어떤
+    // failure_class(예: parse_schema_mismatch·duplicate_snapshot_key)를 실어 나르는지 보지 않고
+    // 무조건 "unclassified"로 로그를 남겼다. 이 오류 taxonomy(core/failure/classes.ts)를 만든
+    // 목적 자체가 "무슨 일이 있었는지 run-log만 보고 구분한다"인데, 그 정보를 여기서 버리고
+    // 있었다 — 조용한 실패는 아니지만 조용한 강등(diagnostic downgrade)이었다.
+    failureClass = extractFailureClass(err);
     const finishedAt = new Date();
     try {
       writeRunLog(catalogPath, {
