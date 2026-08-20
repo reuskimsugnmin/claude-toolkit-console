@@ -1,11 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runInit, RemoteCatalogUnsupportedError } from "../src/commands/init.js";
 import { runScan, CatalogNotInitializedError } from "../src/commands/scan.js";
 import { runDoctorDrift, NoSnapshotsError } from "../src/commands/doctor.js";
-import { runVerifyAc1 } from "../src/commands/verify-ac1.js";
+import { runVerifyAc1, NotYetScannedError } from "../src/commands/verify-ac1.js";
 import { LockContendedError, acquireLock } from "@ctk/sync";
 import { resolveHomeContext, type SpawnClaudeOptions, type SpawnClaudeResult } from "@ctk/probe";
 import { readLocalConfig } from "../src/local-config.js";
@@ -157,11 +157,56 @@ describe("cli — ctk init / ctk scan 왕복 (Step 2)", () => {
     expect(drift.added).toContain("new-plugin@demo-marketplace");
   });
 
+  it(
+    "✅ 회귀 방지(Step 2 실환경 이례) — 프론트매터 name이 충돌하는 두 스킬 디렉터리가 있어도 " +
+      "환경이 그 사이 안 바뀌면 doctor --drift는 예외 없이 끝나고 무변경 건수가 두 번째 scan의 " +
+      "installationCount와 정확히 일치한다(191 vs 189 같은 미스매치가 재발하지 않는다)",
+    async () => {
+      const skillsRoot = path.join(ctkHome, ".claude", "skills");
+      mkdirSync(path.join(skillsRoot, "router-alias"), { recursive: true });
+      writeFileSync(path.join(skillsRoot, "router-alias", "SKILL.md"), "---\nname: shared-name\n---\n");
+      mkdirSync(path.join(skillsRoot, "shared-name"), { recursive: true });
+      writeFileSync(path.join(skillsRoot, "shared-name", "SKILL.md"), "---\nname: shared-name\n---\n");
+
+      await runInit({});
+      await runScan({ spawnFn: fakeSpawn(PLUGIN_LIST_STDOUT) });
+      await new Promise((resolve) => setTimeout(resolve, 5)); // 파일명 타임스탬프가 겹치지 않게
+      const secondSummary = await runScan({ spawnFn: fakeSpawn(PLUGIN_LIST_STDOUT) });
+
+      expect(() => runDoctorDrift()).not.toThrow();
+      const drift = runDoctorDrift();
+      expect(drift.added).toEqual([]);
+      expect(drift.removed).toEqual([]);
+      expect(drift.unchangedCount).toBe(secondSummary.installationCount);
+    },
+  );
+
   it("doctor --drift는 스냅샷이 1개뿐이면 NoSnapshotsError를 던진다", async () => {
     await runInit({});
     await runScan({ spawnFn: fakeSpawn(PLUGIN_LIST_STDOUT) });
     expect(() => runDoctorDrift()).toThrow(NoSnapshotsError);
   });
+
+  it(
+    "✅ 회귀 방지 — ~/.claude.json이 깨져 있으면 scan은 unclassified가 아니라 " +
+      "parse_schema_mismatch로 run-log에 남긴다(이전엔 실제 오류의 failure_class를 무시하고 " +
+      "항상 unclassified로 로그를 남겼다)",
+    async () => {
+      await runInit({});
+      writeFileSync(path.join(ctkHome, ".claude.json"), "{not valid json", "utf8");
+
+      await expect(runScan({ spawnFn: fakeSpawn(PLUGIN_LIST_STDOUT) })).rejects.toThrow();
+
+      const localConfig = readLocalConfig(resolveHomeContext());
+      const runsDir = path.join(localConfig!.catalog_path, "machines");
+      const machineDirName = readdirSync(runsDir)[0]!;
+      const runFiles = readdirSync(path.join(runsDir, machineDirName, "runs")).sort();
+      const lastRun = JSON.parse(
+        readFileSync(path.join(runsDir, machineDirName, "runs", runFiles[runFiles.length - 1]!), "utf8"),
+      ) as { failure_class: string };
+      expect(lastRun.failure_class).toBe("parse_schema_mismatch");
+    },
+  );
 
   it("scan 도중 카탈로그 락이 이미 걸려 있으면 lock_contended로 즉시 실패한다(대기 없음)", async () => {
     await runInit({});
@@ -178,6 +223,20 @@ describe("cli — ctk init / ctk scan 왕복 (Step 2)", () => {
       externalLock.release();
     }
   });
+
+  it(
+    "✅ 회귀 방지 — ctk scan을 한 번도 안 돌린 채(index.json 없음) verify ac1을 호출하면 " +
+      "\"0 vs 0, 일치\"라는 거짓 양성을 보고하지 않고 에러로 거부한다(두 대조 경로가 각자 " +
+      "readFileSync catch로 빈 Set/빈 배열을 반환하면 우연히 둘 다 비어 있을 때 아무 검증도 안 " +
+      "됐는데 '일치'로 보일 수 있었다)",
+    async () => {
+      // beforeEach가 심어둔 installed_plugins.json도 지워, 재구성 쪽마저 "우연히" 빈 Set이 되는
+      // 실제 시나리오(플러그인 0개 신규 머신에서 scan 전에 verify부터 돌리는 경우)를 재현한다.
+      unlinkSync(path.join(ctkHome, ".claude", "plugins", "installed_plugins.json"));
+      await runInit({}); // scan은 하지 않는다 — index.json이 아직 없다.
+      await expect(runVerifyAc1()).rejects.toBeInstanceOf(NotYetScannedError);
+    },
+  );
 
   it("verify ac1 — plugin-list 기반 자산 집합과 installed_plugins.json 직독 재구성이 일치한다(AC-1.1)", async () => {
     await runInit({});
