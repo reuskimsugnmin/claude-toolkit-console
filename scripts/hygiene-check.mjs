@@ -55,6 +55,7 @@ export const EXEMPT_PATH_PREFIXES = [
   "scripts/hygiene-check.mjs", // 이 파일 자신 — 패턴 문자열을 코드로 서술
   "scripts/test/hygiene-check.test.ts", // 탐지기 자체를 테스트하려고 위반형 문자열을 의도적으로 담는다
   "packages/core/test/path-normalize-hygiene.test.ts", // 위생 검사 유틸리티(findRawPathLeaks)의 단위 테스트
+  "packages/sync/test/stores.test.ts", // assertNoRawPathLeaks가 실제로 거부하는지 확인하려고 위반형 문자열을 의도적으로 담는다
   ".omc/",
 ];
 
