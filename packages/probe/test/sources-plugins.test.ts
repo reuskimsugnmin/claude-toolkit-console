@@ -135,6 +135,40 @@ describe("probe/sources/plugins — id 기준 고유 집계 + install_scope/enab
     ).rejects.toMatchObject({ failureClass: "parse_schema_mismatch" });
   });
 
+  it("AC-1.2ⓑ — 이름은 같고 marketplace가 다른 두 엔트리는 자산 2건으로 남는다(병합 금지)", async () => {
+    fixture = buildFixtureHome();
+    const stdout = JSON.stringify([
+      {
+        id: "shared-name@marketplace-one",
+        version: "1.0.0",
+        scope: "user",
+        enabled: true,
+        installPath: "/synthetic/cache/one",
+        installedAt: "t",
+        lastUpdated: "t",
+      },
+      {
+        id: "shared-name@marketplace-two",
+        version: "1.0.0",
+        scope: "user",
+        enabled: true,
+        installPath: "/synthetic/cache/two",
+        installedAt: "t",
+        lastUpdated: "t",
+      },
+    ]);
+    const result = await collectPlugins({
+      home: fixture.home,
+      machineId: "m1",
+      cwd: fixture.home.ctkHome,
+      timeoutSec: 5,
+      spawnFn: fakeSpawn(stdout),
+    });
+    expect(result.assets).toHaveLength(2);
+    expect(result.assets.map((a) => a.name)).toEqual(["shared-name", "shared-name"]);
+    expect(new Set(result.assets.map((a) => a.marketplace))).toEqual(new Set(["marketplace-one", "marketplace-two"]));
+  });
+
   it(
     "claude plugin list --json이 0이 아닌 종료 코드로 실패하면 빈 stdout을 '플러그인 0개'로 " +
       "조용히 해석하지 않고 CommandFailedError를 던진다(실측으로 발견된 회귀 방지)",
