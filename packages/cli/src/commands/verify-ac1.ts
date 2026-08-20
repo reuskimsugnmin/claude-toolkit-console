@@ -19,6 +19,21 @@ import { readLocalConfig } from "../local-config.js";
  * 과제로 남긴다(실행 보고서에 명시).
  */
 
+/**
+ * 회귀 수정(Step 2, test-engineer 실측 발견) — `ctk scan`을 한 번도 안 돌린 상태(`index.json` 부재)로
+ * `verify ac1`을 호출하면, 이전 구현은 index.json 부재를 "자산 0개"로, `installed_plugins.json`
+ * 부재/재구성 실패도 각자 조용히 빈 집합으로 catch해 우연히 "0 vs 0, independentPluginIdsMatch:
+ * true"라는 **거짓 양성**을 보고할 수 있었다 — 아무 대조도 실제로 일어나지 않았는데 "일치"로
+ * 보이는 것은 대조가 실패해서 에러가 나는 것보다 나쁘다(잘못된 확신을 준다). `NoSnapshotsError`
+ * (doctor.ts)와 동일한 선례를 따라, "아직 스캔 전"은 대조 대상이 없는 상태로 명시적으로 거부한다.
+ */
+export class NotYetScannedError extends Error {
+  constructor() {
+    super("verify ac1은 스냅샷이 있어야 대조할 수 있다 — 먼저 `ctk scan`을 실행해야 한다.");
+    this.name = "NotYetScannedError";
+  }
+}
+
 export interface VerifyAc1Report {
   independentPluginIdsMatch: boolean;
   onlyInSnapshot: string[];
@@ -46,13 +61,15 @@ export async function runVerifyAc1(): Promise<VerifyAc1Report> {
     throw new Error("카탈로그가 초기화되지 않았다 — 먼저 `ctk init`과 `ctk scan`을 실행해야 한다.");
   }
   const indexAbs = path.join(localConfig.catalog_path, catalogIndexPath());
-  let indexEntries: CatalogIndexEntry[] = [];
+  let indexRaw: string;
   try {
-    const index = JSON.parse(readFileSync(indexAbs, "utf8")) as { assets: CatalogIndexEntry[] };
-    indexEntries = index.assets;
+    indexRaw = readFileSync(indexAbs, "utf8");
   } catch {
-    indexEntries = [];
+    // index.json 자체가 없다 = `ctk scan`이 한 번도 안 돌았다 — "자산 0개"와 구분해야 한다
+    // (위 NotYetScannedError 문서 주석: 그렇지 않으면 재구성 쪽도 우연히 비어 있을 때 거짓 양성이 난다).
+    throw new NotYetScannedError();
   }
+  const indexEntries: CatalogIndexEntry[] = (JSON.parse(indexRaw) as { assets: CatalogIndexEntry[] }).assets;
   const snapshotPluginIds = new Set(indexEntries.filter((e) => e.kind === "plugin").map((e) => e.id));
 
   const reconstructedPluginIds = reconstructPluginIds(home.ctkConfigDir);
