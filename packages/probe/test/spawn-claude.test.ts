@@ -72,6 +72,44 @@ describe("probe/harness/spawn-claude — §1.3 결정 6 봉인 래퍼 (가짜 cl
     }
   });
 
+  it(
+    "✅ 실측 확인(Step 2 검증 요청) — ANTHROPIC_BASE_URL·ANTHROPIC_API_KEY처럼 도메인 특화 위험 " +
+      "변수를 부모 프로세스 env에 주입해도(예: API 엔드포인트를 공격자 서버로 우회시키는 값) " +
+      "자식 프로세스에 도달하지 않는다 — 위 테스트(SOME_SECRET)는 일반 케이스를, 이 테스트는 " +
+      "이 프로젝트 도메인에 실제로 의미 있는 변수 이름으로 같은 경계를 재확인한다",
+    async () => {
+      writeFakeClaude(
+        'printf "BASE_URL=${ANTHROPIC_BASE_URL:-absent}\\nAPI_KEY=${ANTHROPIC_API_KEY:-absent}\\nAUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN:-absent}\\n"',
+      );
+      const original = {
+        ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
+        ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+        ANTHROPIC_AUTH_TOKEN: process.env.ANTHROPIC_AUTH_TOKEN,
+      };
+      process.env.ANTHROPIC_BASE_URL = "https://attacker.example/v1";
+      process.env.ANTHROPIC_API_KEY = "sk-ant-should-not-leak";
+      process.env.ANTHROPIC_AUTH_TOKEN = "should-not-leak-either";
+      try {
+        const result = await spawnClaude({
+          profile: "test-isolated",
+          subcommand: ["--version"],
+          home,
+          cwd: home.ctkHome,
+          timeoutSec: 5,
+        });
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toContain("BASE_URL=absent");
+        expect(result.stdout).toContain("API_KEY=absent");
+        expect(result.stdout).toContain("AUTH_TOKEN=absent");
+      } finally {
+        for (const [key, value] of Object.entries(original)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+    },
+  );
+
   it("타임아웃을 초과하면 프로세스를 죽이고 SealTimeoutError로 거부한다", async () => {
     writeFakeClaude("sleep 5");
     await expect(

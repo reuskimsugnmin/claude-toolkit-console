@@ -43,6 +43,31 @@ describe("probe/tree-collect — config 트리 수집 (I/O만, 판정은 core/gu
     expect(paths).toEqual(["real/file.txt"]);
   });
 
+  it("파일을 가리키는 심볼릭 링크도 따라가지 않는다(디렉터리 심볼릭 링크와 별개 코드 경로)", () => {
+    writeFileSync(path.join(root, "real-file.txt"), "x");
+    symlinkSync(path.join(root, "real-file.txt"), path.join(root, "link-to-file.txt"));
+    const { entries } = collectTree(root);
+    const paths = entries.map((e) => e.path).sort();
+    // link-to-file.txt는 real-file.txt와 같은 내용을 가리켜도 별도 경로로 수집되지 않는다.
+    expect(paths).toEqual(["real-file.txt"]);
+  });
+
+  it(
+    "서로 다른 두 심볼릭 링크가 같은 대상을 가리켜도(흔한 '이중 목록' 유발 패턴) 중복 경로가 " +
+      "생기지 않는다 — 애초에 심볼릭 링크는 전부 건너뛰므로 verdict()의 DuplicatePathVerdictError " +
+      "계약이 tree-collect 쪽에서 위반될 여지가 없다",
+    () => {
+      mkdirSync(path.join(root, "real"), { recursive: true });
+      writeFileSync(path.join(root, "real", "file.txt"), "x");
+      symlinkSync(path.join(root, "real"), path.join(root, "alias-a"));
+      symlinkSync(path.join(root, "real"), path.join(root, "alias-b"));
+      const { entries } = collectTree(root);
+      const paths = entries.map((e) => e.path).sort();
+      expect(paths).toEqual(["real/file.txt"]);
+      expect(new Set(paths).size).toBe(paths.length);
+    },
+  );
+
   it("수집 결과에 중복 경로가 없다(core/guard/tree-diff의 DuplicatePathVerdictError 계약 전제)", () => {
     mkdirSync(path.join(root, "x"), { recursive: true });
     writeFileSync(path.join(root, "x", "y.txt"), "y");
