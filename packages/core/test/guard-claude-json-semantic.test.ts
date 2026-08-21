@@ -33,26 +33,26 @@ describe("core/guard/claude-json-semantic — AC-2.7-c .claude.json 의미 diff"
   });
 
   it("project 엔트리의 MCP 서브키(enabledMcpServers 등)는 churn 키로 명시해도 항상 violation이다", () => {
-    const before = { projects: { "/Users/alice/project": { enabledMcpServers: ["x"] } } };
-    const after = { projects: { "/Users/alice/project": { enabledMcpServers: ["x", "y"] } } };
+    const before = { projects: { "/synthetic/projects/alice-project": { enabledMcpServers: ["x"] } } };
+    const after = { projects: { "/synthetic/projects/alice-project": { enabledMcpServers: ["x", "y"] } } };
     const result = claudeJsonSemanticVerdict(before, after, ["projects.*.enabledMcpServers"]);
     expect(result.overallStatus).toBe("violation");
     expect(result.violations[0]?.mcpForbidden).toBe(true);
     // AC-1.7 — 원문 프로젝트 경로가 위반 경로 문자열에 남지 않는다.
-    expect(result.violations[0]?.path).not.toContain("/Users/alice/project");
+    expect(result.violations[0]?.path).not.toContain("/synthetic/projects/alice-project");
     expect(result.violations[0]?.path).toMatch(/^projects\.#[0-9a-f]{8}\.enabledMcpServers$/);
   });
 
   it("project 엔트리의 비-MCP 서브키는 churn 키로 명시하면 allowed_churn이다", () => {
-    const before = { projects: { "/Users/alice/project": { lastOpenedAt: "2026-01-01" } } };
-    const after = { projects: { "/Users/alice/project": { lastOpenedAt: "2026-01-02" } } };
+    const before = { projects: { "/synthetic/projects/alice-project": { lastOpenedAt: "2026-01-01" } } };
+    const after = { projects: { "/synthetic/projects/alice-project": { lastOpenedAt: "2026-01-02" } } };
     const result = claudeJsonSemanticVerdict(before, after, ["projects.*.lastOpenedAt"]);
     expect(result.overallStatus).toBe("allowed_churn");
   });
 
   it("동일 프로젝트 경로는 매번 같은 해시로 마스킹된다(결정적)", () => {
-    const before = { projects: { "/Users/alice/project": { lastOpenedAt: "1" } } };
-    const after = { projects: { "/Users/alice/project": { lastOpenedAt: "2" } } };
+    const before = { projects: { "/synthetic/projects/alice-project": { lastOpenedAt: "1" } } };
+    const after = { projects: { "/synthetic/projects/alice-project": { lastOpenedAt: "2" } } };
     const r1 = claudeJsonSemanticVerdict(before, after, ["projects.*.lastOpenedAt"]);
     const r2 = claudeJsonSemanticVerdict(before, after, ["projects.*.lastOpenedAt"]);
     expect(r1.changed[0]?.path).toBe(r2.changed[0]?.path);

@@ -7,7 +7,7 @@ import {
 } from "../src/journal.js";
 import { JournalEntrySchema } from "@ctk/core";
 
-const HOME = "/Users/synthtest/home";
+const HOME = "/synthetic/home";
 
 describe("actuator/journal — before/after 필수, 반환만 한다(P1-5)", () => {
   it("플러그인 enablement 저널이 스키마를 통과하고 before/after가 둘 다 존재한다(AC-2.4)", () => {
