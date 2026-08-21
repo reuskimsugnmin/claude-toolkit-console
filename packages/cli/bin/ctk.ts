@@ -154,6 +154,20 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
+    // ⚠️ Step 5 보안 심사 수정(AC-2.6) — 위 분기들은 알려진 몇몇 클래스만 처리한다. 이 프로젝트가
+    // 늘려온 failure_class 타입 오류(ForbiddenPathWriteError·WhitelistViolationError·
+    // ConfigClobberedError·BackupManifestTamperedError·ForbiddenRestoreTargetError·
+    // SkillLocationAmbiguousError 등)가 여기 개별 분기로 추가되지 않으면, 이전에는 순수
+    // err.message만 찍혀 어떤 실패 분류였는지 stdout/stderr에서 전혀 드러나지 않았다 — §7의
+    // 관측 가능성이 CLI 최종 출력에서는 끊겨 있었던 셈이다. `failureClass` 필드가 있는 오류는
+    // 여기서 그 값을 일반적으로 찍는다(개별 분기가 없는 새 오류 클래스가 추가돼도 자동으로
+    // 커버된다) — AC-2.6 주입 테스트가 "stdout/stderr에 failure_class 문자열 출현"을 확인한다.
+    if (typeof err === "object" && err !== null && "failureClass" in err && typeof (err as { failureClass: unknown }).failureClass === "string") {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`FAIL ${(err as { failureClass: string }).failureClass}: ${message}`);
+      process.exitCode = 1;
+      return;
+    }
     console.error(err instanceof Error ? err.message : String(err));
     process.exitCode = 1;
   }
