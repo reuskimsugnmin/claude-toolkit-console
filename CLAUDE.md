@@ -75,45 +75,12 @@ dir별로 분리되므로 **둘을 합칠 수 없다.** 유료 세션은 실제 
 ## 작업 워크플로우 — omc(oh-my-claudecode) 전용
 
 **이 프로젝트의 개발 워크플로우는 omc 플러그인만 사용한다.** 플러그인 성능을 검증하려는
-의도적 제약이므로 다른 워크플로우 플러그인과 병행하지 않는다.
+의도적 제약이므로 다른 워크플로우 플러그인(`superpowers`·`feature-dev`·`pr-review-toolkit` 등)과
+병행하지 않는다. 금지 대상은 **워크플로우/프로세스** 플러그인이며 도메인 도구는 계속 쓴다.
 
-### 단계별로 반드시 스폰할 omc 자산
-
-| 단계 | 스폰할 것 |
-|---|---|
-| 요구사항 분석 | `Skill(oh-my-claudecode:deep-interview)` 또는 `Agent(oh-my-claudecode:analyst)` |
-| 설계·구조 결정 | `Agent(oh-my-claudecode:architect)` — READ-ONLY |
-| 계획 수립 | `Skill(oh-my-claudecode:plan)` 또는 `Agent(oh-my-claudecode:planner)` |
-| 계획 검토 | `Agent(oh-my-claudecode:critic)` |
-| 코드 탐색 | `Agent(oh-my-claudecode:explore)` |
-| 구현 | `Agent(oh-my-claudecode:executor)` |
-| 테스트 설계·작성 | `Agent(oh-my-claudecode:test-engineer)` |
-| 디버깅 | `Skill(oh-my-claudecode:debug)` · `Agent(oh-my-claudecode:debugger)` · `Agent(oh-my-claudecode:tracer)` |
-| 코드 리뷰 | `Agent(oh-my-claudecode:code-reviewer)` |
-| 단순화 | `Agent(oh-my-claudecode:code-simplifier)` |
-| 보안 검토 | `Agent(oh-my-claudecode:security-reviewer)` — `actuator` 변경 시 **필수** |
-| 완료 검증 | `Skill(oh-my-claudecode:verify)` 또는 `Agent(oh-my-claudecode:verifier)` |
-| 커밋 | `Agent(oh-my-claudecode:git-master)` |
-| 문서 작성 | `Agent(oh-my-claudecode:writer)` |
-| UI 설계 | `Agent(oh-my-claudecode:designer)` |
-
-작업을 시작하기 전에 해당 단계의 omc 자산을 먼저 스폰한다. 단계를 건너뛰고 바로 손대지 않는다.
-
-### 세션 간 컨텍스트는 omc MCP로 유지
-
-`project_memory_*` · `notepad_*` · `wiki_*` · `session_search`
-(`mcp__plugin_oh-my-claudecode_t__*`). 결정과 진행 상황을 여기에 남긴다.
-
-### 쓰지 않는 것 — 워크플로우 플러그인
-
-`superpowers` 전체(brainstorming · writing-plans · executing-plans · test-driven-development ·
-systematic-debugging · verification-before-completion · subagent-driven-development 등) ·
-`feature-dev` · `pr-review-toolkit` · `code-review` · 비omc `code-simplifier` · `ccpm` ·
-`ralph-loop`(비omc) · `codex` · `plugin-dev` 워크플로우 · 기타 프로세스 스킬.
-
-**경계:** 금지 대상은 **워크플로우/프로세스** 플러그인이다. 도메인 도구는 계속 쓴다 —
-`context7`(라이브러리 문서) · `vercel`·`supabase`(플랫폼) · `playwright`·`chrome-devtools`(브라우저 검증) ·
-`github`(저장소 작업) · `document-skills`(문서 변환).
+**단계별 스폰 대상·금지 목록·세션 간 컨텍스트 규약은 `docs/workflow-assets.md`에 있다.**
+작업을 시작하기 전에 해당 단계의 omc 자산을 먼저 스폰한다 — 단계를 건너뛰고 바로 손대지 않는다.
+`actuator` 변경에는 `Agent(oh-my-claudecode:security-reviewer)`가 **필수**다.
 
 ## 도메인 지식 — 자산 유형마다 다루는 법이 다르다
 
@@ -140,7 +107,10 @@ systematic-debugging · verification-before-completion · subagent-driven-develo
 2. 되돌릴 수 없는 조치(삭제)보다 **되돌릴 수 있는 조치(비활성·이동)를 먼저** 제안한다.
 3. 조치 결과는 **실행 전/후 상태를 함께** 기록한다. 실행했다는 사실만 남기지 않는다.
 4. 사용자 환경을 바꾸는 코드는 `Agent(oh-my-claudecode:security-reviewer)`를 반드시 거친다.
-5. **"없음"과 "실패"를 구분한다.** 이 코드베이스에서 반복해 나온 결함은 전부 같은 뿌리였다 —
+5. **리뷰 지적은 항목이 아니라 범위로 닫는다.** 지적 하나가 여러 곳을 요구하면 전부 확인한다 —
+   "경로 순회를 막았다"가 한 필드만 막은 것이었고, "단일 관문으로 통합했다"가 3층 중 2층뿐이었다.
+   닫았다고 보고하기 전에 **지적 원문이 요구한 범위 전체**를 되짚는다.
+6. **"없음"과 "실패"를 구분한다.** 이 코드베이스에서 반복해 나온 결함은 전부 같은 뿌리였다 —
    파싱 실패를 빈 결과로, 미실행을 "0건 일치"로, 중복 키를 last-write-wins로 삼키는 코드다.
    판정할 수 없으면 **에러를 던지거나 `unmeasured`로 남긴다.** 조용히 그럴듯한 값을 만들지 않는다.
 
@@ -151,8 +121,12 @@ systematic-debugging · verification-before-completion · subagent-driven-develo
 - **테스트 통과 ≠ 실행됨** — vitest 별칭이 `package.json`의 `main`을 우회해, 224개가
   통과하는 동안 빌드된 CLI는 `ERR_MODULE_NOT_FOUND`로 죽어 있었다.
 - **규칙 존재 ≠ 규칙이 막음** — lint 규칙은 위반 코드를 만들어 **실제로 걸리는지** 확인한다.
-- **컴파일 전용 테스트**는 `@ts-expect-error`를 떼어 오류가 나는지 파괴 실험으로 확인한다.
+  컴파일 전용 테스트는 `@ts-expect-error`를 떼어 오류가 나는지 파괴 실험으로 확인한다.
 - **독립 대조가 같은 파서를 두 번 돌리면 순환이다.** 대조는 다른 경로로 재구성해야 성립한다.
+- **테스트가 프로덕션 분기를 타는지 확인한다.** 분기를 만들면 테스트가 한쪽만 타기 쉽다 —
+  실제로 e2e 전체가 격리 분기만 타고 사용자 경로는 한 번도 실행되지 않았다.
+- **주장된 수정은 기존 테스트를 거치지 않고 직접 주입해 확인한다.** 테스트가 구현을 따라
+  쓴 동어반복인지 가르는 유일한 방법이다.
 
 ## 커밋 규칙
 
@@ -196,5 +170,6 @@ PR 생성 **직전에 항상** 그 세션의 작업을 회고해 작업 지침�
 
 ## 현재 상태
 
-Step 0·1·2 완료 — `ctk init → scan → doctor --drift → verify ac1` 왕복이 실제 환경에서 동작한다.
-계획서는 `.omc/plans/`(gitignore)에 있고 다음은 Step 5(`actuator` — 스코프 이관)다.
+Step 0·1·2·5 완료 — `ctk init → scan → doctor --drift → verify ac1` 왕복과
+`ctk move → rollback` 왕복(플러그인 활성 여부·스킬 디렉터리)이 실제 환경에서 동작한다.
+계획서는 `.omc/plans/`(gitignore)에 있고 다음은 Step 3(사용량)·Step 4(문서 생성·에이전트 검색)다.
