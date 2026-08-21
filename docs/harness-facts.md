@@ -109,6 +109,25 @@
   세그먼트 자체를 `<plugin>`과 `<server>`로 다시 쪼개는 일반 규칙은 없다 — 둘 다 하이픈을 포함할
   수 있어 정규식으로 경계를 확정할 수 없다(예: `plugin_chrome-devtools-mcp_chrome-devtools`).
 
+## `sealed-live` 봉인 세션의 churn (AC-0.11 실측, 2026-08-21)
+
+`claude --safe-mode --strict-mcp-config --mcp-config '{"mcpServers":{}}' --tools "" -p`를
+실제 config dir에 대해 3회 실행하고 전후를 대조한 결과다. **이 목록이 `sealed-live` 전용
+Tier-2 허용목록의 유일한 근거다** — AC-0.8(플러그인 명령·격리 홈)의 값을 전용하지 않는다.
+
+- **`--tools ""`는 `-p`에서 동작한다**(exit 0, 정상 응답). 도구 0개 강제가 실현 가능하다.
+- 매 실행이 건드리는 것: `plugins/`(mtime) · `sessions/`(mtime + `<pid>.json` + `<pid>.<hash>.key`) ·
+  `projects/` + `projects/<인코딩된 cwd>/`(트랜스크립트 저장) · `.claude.json`.
+- **`.claude.json`에서 바뀌는 최상위 키는 `cachedGrowthBookFeaturesAt` 하나뿐이다.**
+  `projects` 맵은 추가·삭제·내용변경 0건 — 의미 diff 화이트리스트는 이 한 키만 열면 된다.
+- **`--no-session-persistence`를 붙이면 `projects/` churn이 통째로 사라진다**(트랜스크립트 미기록).
+  남는 것은 `plugins/`·`sessions/` mtime과 `.claude.json` 한 키뿐이다.
+- 임시 cwd를 매 실행 새로 만들면 `projects/<인코딩 경로>/` 디렉터리가 **실행마다 영구 누적**된다
+  (경로 원문이 사용자 실파일에 쌓인다). 고정 경로(`~/.cache/ctk/sealed-cwd`, 0700) 재사용과
+  `--no-session-persistence`를 함께 쓴다.
+- 배경 churn(ctk와 무관한, 실행 중인 다른 세션에 의한 변경)은 8초 관측에서 0건이었다 —
+  상황에 따라 다르므로 격리 판정은 여전히 허용목록 기준으로 한다.
+
 ## Anthropic SDK (`@anthropic-ai/sdk`)
 
 - **`ANTHROPIC_API_KEY` 미설정이 "크레덴셜 없음"을 뜻하지 않는다.** SDK는 네 단계로 해석한다 —
