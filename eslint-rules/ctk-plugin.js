@@ -333,6 +333,52 @@ const noIoReexport = {
   },
 };
 
+/**
+ * Step 5 보안 심사 수정 — 카탈로그 경로 세그먼트(자산 이름·machine_id 등) 검증은
+ * `core/catalog/layout.ts`의 `assertCatalogSegment()` 한 곳에서만 한다. 이전에는 호출부마다
+ * 같은 검사를 다시 구현했고(`sync/asset-store.ts`는 빈 문자열 허용, `cli/move.ts`는 거부로
+ * 서로 발산) 그중 하나가 방어를 빠뜨려도 눈에 띄지 않았다. 이 규칙은 `layout.ts` 밖에서
+ * "경로 세그먼트를 검증한다"는 이름의 함수/클래스를 다시 선언하는 것 자체를 막는다.
+ */
+const PATH_GUARD_NAME_PATTERN =
+  /^(assert(Safe)?Catalog(Path)?Segment|assertSafePathSegment|assertSafeCatalogPathSegment|PathTraversalDetectedError)$/;
+const PATH_GUARD_ALLOWED_SUFFIX = "/core/src/catalog/layout.ts";
+
+const noAdhocPathGuard = {
+  meta: {
+    type: "problem",
+    docs: {
+      description:
+        "카탈로그 경로 세그먼트 검증은 core/catalog/layout.ts의 assertCatalogSegment() 단일 관문만 쓴다 — 호출부 중복 가드 재구현 금지",
+    },
+    schema: [],
+    messages: {
+      forbidden:
+        "'{{name}}'은 core/catalog/layout.ts 전용 경로 검증 이름이다. 여기서 재구현하지 말고 assertCatalogSegment()를 (간접적으로라도, 경로 빌더 호출을 통해) 재사용한다",
+    },
+  },
+  create(context) {
+    const filename = context.filename ?? context.getFilename();
+    if (filename.endsWith(PATH_GUARD_ALLOWED_SUFFIX)) return {};
+    function checkName(node, name) {
+      if (name && PATH_GUARD_NAME_PATTERN.test(name)) {
+        context.report({ node, messageId: "forbidden", data: { name } });
+      }
+    }
+    return {
+      FunctionDeclaration(node) {
+        checkName(node, node.id?.name);
+      },
+      ClassDeclaration(node) {
+        checkName(node, node.id?.name);
+      },
+      VariableDeclarator(node) {
+        if (node.id.type === "Identifier") checkName(node, node.id.name);
+      },
+    };
+  },
+};
+
 export const ctkPlugin = {
   meta: { name: "ctk-layer-rules" },
   rules: {
@@ -344,5 +390,6 @@ export const ctkPlugin = {
     "single-spawn-wrapper": singleSpawnWrapper,
     "no-restricted-dynamic-import": noRestrictedDynamicImport,
     "no-io-reexport": noIoReexport,
+    "no-adhoc-path-guard": noAdhocPathGuard,
   },
 };
