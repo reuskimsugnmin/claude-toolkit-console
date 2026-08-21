@@ -96,7 +96,13 @@ export const TranscriptRowSchema = z
     toolUseResult: z.unknown().optional(),
     message: z
       .object({
-        content: z.array(MessageContentBlockSchema).optional(),
+        // ⚠️ Step 3 실측 정정(2026-08-21, 실제 트랜스크립트 — `-claude-toolkit-ops` 프로젝트,
+        // 562행 중 5건에서 재현) — type:"user" 행 중 **사람이 직접 입력한 평문 프롬프트**는
+        // `message.content`가 블록 배열이 아니라 **문자열 그대로**다(Anthropic Messages API의
+        // 표준 단축형 — 대부분의 user 턴이 이 형태다, tool_result가 있을 때만 배열 형태). 배열만
+        // 허용했던 원 스키마는 이 형태의 모든 행을 통째로 parse 실패시켰다(R13 — 하네스 필드
+        // 구조가 계획의 가정보다 컸다).
+        content: z.union([z.string(), z.array(MessageContentBlockSchema)]).optional(),
         usage: MessageUsageSchema.optional(),
       })
       .passthrough()

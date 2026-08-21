@@ -96,6 +96,12 @@ describe("transcript-row.schema — AC-0.6b 실측 형에 대한 합성 픽스�
     }
   });
 
+  it("message.content가 배열이 아니라 평문 문자열이어도 parse된다 (Step 3 실측 정정 — 사람이 직접 입력한 프롬프트의 표준 단축형)", () => {
+    const row = { type: "user", isSidechain: false, message: { content: "그냥 텍스트" } };
+    expect(() => parseTranscriptRow(row)).not.toThrow();
+    expect(parseTranscriptRow(row).message?.content).toBe("그냥 텍스트");
+  });
+
   it("tool_result는 type:'user' 행에서 관측된다 (AC-0.6b ⓐ)", () => {
     const rows = readFixtureJsonl("transcripts/attribution-present.jsonl") as {
       type: string;

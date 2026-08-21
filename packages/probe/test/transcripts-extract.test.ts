@@ -80,6 +80,29 @@ describe("probe/transcripts/extract", () => {
     expect(extracted.usage).toBeNull();
   });
 
+  it("user 행 — message.content가 평문 문자열(사람이 직접 입력한 프롬프트의 표준 단축형)이어도 예외 없이 빈 결과를 낸다", () => {
+    // 실측 정정(2026-08-21, 실제 트랜스크립트 -claude-toolkit-ops 프로젝트에서 재현): 문자열
+    // content를 배열로 for...of 순회하면 예외 없이 개별 문자를 도는 조용한 버그가 될 뻔했다.
+    const row = parseTranscriptRow({
+      type: "user",
+      isSidechain: false,
+      message: { content: "그냥 사람이 입력한 프롬프트 텍스트" },
+    });
+    const extracted = extractRow(row);
+    expect(extracted.toolResults).toHaveLength(0);
+    expect(extracted.toolUses).toHaveLength(0);
+  });
+
+  it("assistant 행 — message.content가 문자열이어도(텍스트 전용 응답) 예외 없이 빈 tool_use 목록을 낸다", () => {
+    const row = parseTranscriptRow({
+      type: "assistant",
+      isSidechain: false,
+      message: { content: "순수 텍스트 응답" },
+    });
+    const extracted = extractRow(row);
+    expect(extracted.toolUses).toHaveLength(0);
+  });
+
   it("서브에이전트 행 — attributionAgent가 explicit 필드로 전달된다", () => {
     const row = parseTranscriptRow({
       type: "assistant",

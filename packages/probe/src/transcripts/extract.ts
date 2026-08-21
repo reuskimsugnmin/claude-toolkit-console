@@ -89,7 +89,11 @@ export function extractRow(row: TranscriptRow): ExtractedRow {
 
   const explicit = explicitFieldsOf(row);
 
-  if (row.type === "assistant" && row.message?.content !== undefined) {
+  // ⚠️ 실측 정정(2026-08-21) — message.content는 블록 배열이 아니라 **평문 문자열**일 수도 있다
+  // (사람이 직접 입력한 프롬프트의 표준 단축형, transcript-row.schema.ts 갱신 주석 참조). 문자열은
+  // `for...of`로 순회하면 개별 문자가 나와 tool_use/tool_result를 절대 못 찾으면서도 예외가 안 나
+  // 조용히 무시되는 함정이 된다 — Array.isArray로 반드시 먼저 가른다.
+  if (row.type === "assistant" && Array.isArray(row.message?.content)) {
     for (const block of row.message.content) {
       if (isRecord(block) && block.type === "tool_use" && typeof block.name === "string") {
         const input = isRecord(block.input) ? block.input : undefined;
@@ -116,7 +120,7 @@ export function extractRow(row: TranscriptRow): ExtractedRow {
     // 공존한다(같은 이벤트의 두 표현, 1,742=1,742 실측). 표준 표현이 있으면 그것만 쓰고, 없을 때만
     // 레거시로 폴백한다 — 둘 다 더하면 같은 결과를 두 번 세어 token_sum이 부풀려진다.
     let usedStandardForm = false;
-    if (row.message?.content !== undefined) {
+    if (Array.isArray(row.message?.content)) {
       for (const block of row.message.content) {
         if (isRecord(block) && block.type === "tool_result") {
           usedStandardForm = true;
