@@ -4,6 +4,7 @@
 export * from "./local-git-repo.js";
 export * from "./snapshot-store.js";
 export * from "./run-log-store.js";
+export * from "./journal-store.js";
 export * from "./asset-store.js";
 export * from "./machine-store.js";
 export * from "./catalog-config-store.js";
