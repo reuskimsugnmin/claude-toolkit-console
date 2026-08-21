@@ -1,0 +1,54 @@
+# CI — 착수 조건 C5(iter 8 · L1 · 보안 재심) 및 §6.2 공통 게이트.
+#
+# 락파일 없이 도는 CI 경로가 있으면 안 되므로(B2), 이 워크플로가 이 저장소의 유일한 CI 경로이고
+# 유일한 install 단계는 항상 --frozen-lockfile을 쓴다.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.4.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      # B2 — 락파일과 매니페스트가 어긋나면 여기서 실패한다. 이 워크플로 전체에서 install은
+      # 이 한 곳뿐이므로 "락파일 없이 도는 CI 경로 0건"이 구조적으로 보장된다.
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # 계층 경계 lint — 동적 import()·I/O 모듈 재노출 우회 회귀 테스트(A1/A2) 포함.
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Public repo hygiene check
+        run: pnpm hygiene:check
+
+      # B1 — 공급망 게이트. High/Critical 0건이어야 통과한다(그 아래 등급은 게이트 대상이 아니다).
+      - name: Supply-chain audit (prod deps, High/Critical only)
+        run: pnpm audit --prod --audit-level=high
+
+      # B3 — "런타임 의존성 0개 유지" 방향을 검증 가능한 형태로 고정한다.
+      - name: Assert zero runtime dependencies
+        run: pnpm ls -r --prod --json | node scripts/assert-zero-runtime-deps.mjs

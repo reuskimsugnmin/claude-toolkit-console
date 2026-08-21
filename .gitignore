@@ -19,9 +19,11 @@ out/
 .claude/settings.local.json
 
 # 개인 환경 데이터 — 이 저장소는 public이다. 스냅샷은 별도 private 저장소로 간다
-snapshots/
+# ⚠️ 저장소 루트에만 앵커한다(선행 슬래시) — 앵커 없이 "snapshots/"만 쓰면 fixtures/catalog/machines/*/snapshots/
+# 같은 의도된 합성 픽스처까지 전부 무시돼 실측 트랩이 된다(2026-08-20, Step 1 구현 중 발견).
+/snapshots/
 *.snapshot.json
-.ctk/
+/.ctk/
 
 # OS / 에디터
 .DS_Store

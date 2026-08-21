@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "catalog_path": "/synthetic/catalog",
+  "verified_cli_version": "2.1.237",
+  "offset_cache_location": "catalog"
+}

@@ -1,0 +1,8 @@
+{
+  "name": "synth",
+  "description": "ctk spike synthetic plugin — not a real tool, exists only to test enablement/discovery semantics.",
+  "version": "0.0.1",
+  "author": {
+    "name": "ctk-spike"
+  }
+}

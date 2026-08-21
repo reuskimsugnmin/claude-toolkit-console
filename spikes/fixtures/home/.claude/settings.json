@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/leak-marker.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

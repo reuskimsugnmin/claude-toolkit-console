@@ -1,0 +1,3 @@
+{"type":"system","uuid":"sys-1"}
+{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"demo-skill"}}]}}
+{"type":"user","isSidechain":false,"toolUseResult":{"ok":true},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_demo2","content":"ok"}]}}
