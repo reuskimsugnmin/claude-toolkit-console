@@ -14,3 +14,8 @@ export * from "./sources/plugins.js";
 export * from "./sources/skills.js";
 export * from "./sources/mcp.js";
 export * from "./sources/cli-path.js";
+export * from "./sources/settings.js";
+export * from "./cache/cache-store.js";
+export * from "./transcripts/iterate.js";
+export * from "./transcripts/extract.js";
+export * from "./occupancy/count-tokens.js";

@@ -103,6 +103,9 @@ export const TranscriptRowSchema = z
       .optional(),
     sessionId: z.string().optional(),
     timestamp: z.string().optional(),
+    /** 프로젝트 절대경로(실측) — 트랜스크립트 파일이 놓인 디렉터리명 디코딩보다 신뢰할 수 있는
+     * 출처다(디렉터리명은 "/"→"-" 치환이라 원본 경로에 "-"가 있으면 손실 인코딩이 된다). */
+    cwd: z.string().optional(),
     attributionSkill: z.string().optional(),
     attributionPlugin: z.string().optional(),
     attributionMcpServer: z.string().optional(),

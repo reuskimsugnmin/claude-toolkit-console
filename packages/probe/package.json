@@ -6,6 +6,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.120.0",
     "@ctk/core": "workspace:*"
   },
   "exports": {
