@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { collectTree } from "@ctk/probe";
@@ -102,13 +102,22 @@ export function backupDirectory(backupRoot: string, key: string, sourceAbs: stri
 }
 
 /**
- * 백업 런을 시작한다 — `<ctkHome>/.ctk-backups/<run_id>/` 디렉터리를 만들고 빈 manifest를 연다.
- * `run_id`는 파일시스템 안전 ISO8601(콜론 제거)이다. 디렉터리 모드는 0700(M1) — `mkdirSync`의
- * `mode` 옵션은 umask에 깎일 수 있으므로 `chmodSync`로 명시 고정한다.
+ * 백업 런을 시작한다 — `<ctkHome>/.ctk-backups/<run_id>.<rand>/` 디렉터리를 만들고 빈 manifest를
+ * 연다. `run_id`는 파일시스템 안전 ISO8601(콜론 제거, 밀리초 해상도)이다. 디렉터리 모드는
+ * 0700(M1) — `mkdirSync`의 `mode` 옵션은 umask에 깎일 수 있으므로 `chmodSync`로 명시 고정한다.
+ *
+ * ⚠️ **Step 5 보안 심사 수정(L2)** — `run_id`는 밀리초 해상도라, 같은 밀리초 안에 두 번의
+ * 백업 런이 시작되면(빠른 연속 조치·경쟁 조건) 동일한 이름이 될 수 있었다. 이전엔
+ * `mkdirSync(..., {recursive:true})`가 이미 있는 디렉터리를 조용히 재사용해, 두 번째 런이
+ * 첫 번째 런의 manifest.json을 그대로 덮어쓸 뻔한 경로였다(백업 자체가 손상되는 최악의
+ * 사고). 랜덤 접미사로 충돌 확률을 낮추고, 마지막 세그먼트는 `recursive:false`로 만들어
+ * 그래도 충돌하면(극히 드묾) 조용히 재사용하지 않고 `EEXIST`로 즉시 실패하게 한다.
  */
 export function beginBackupRun(ctkHome: string, runId: string): { backupRoot: string } {
-  const backupRoot = path.join(ctkHome, ".ctk-backups", runId);
-  mkdirSync(backupRoot, { recursive: true });
+  const parent = path.join(ctkHome, ".ctk-backups");
+  mkdirSync(parent, { recursive: true });
+  const backupRoot = path.join(parent, `${runId}.${randomBytes(4).toString("hex")}`);
+  mkdirSync(backupRoot); // recursive:false — 충돌 시 조용히 재사용하지 않고 즉시 실패한다.
   chmodSync(backupRoot, 0o700);
   return { backupRoot };
 }

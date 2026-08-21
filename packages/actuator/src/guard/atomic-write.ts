@@ -83,10 +83,29 @@ export function atomicWriteFile(absPath: string, content: string, options: Atomi
 
   const fd = openSync(tmpPath, "w");
   try {
-    writeSync(fd, content);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
+    try {
+      // L3 — writeSync()의 반환값(실제로 쓰인 바이트 수)을 확인하지 않았다. POSIX write()는
+      // 요청보다 적게 쓰고 반환할 수 있다(짧은 쓰기) — 그 상태로 fsync·rename까지 진행하면
+      // 잘려나간 내용이 "완료된 쓰기"로 원자적으로 자리잡을 위험이 있다. 기대 바이트 수와
+      // 다르면 즉시 던진다(rename 이전이므로 대상은 아직 안전하다).
+      const expectedBytes = Buffer.byteLength(content, "utf8");
+      const writtenBytes = writeSync(fd, content);
+      if (writtenBytes !== expectedBytes) {
+        throw new Error(`쓰기가 불완전하다(기대 ${expectedBytes}바이트, 실제 ${writtenBytes}바이트): ${tmpPath}`);
+      }
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  } catch (err) {
+    if (existsSync(tmpPath)) {
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+        // best-effort — 잔존하면 tmp_leftover 대상.
+      }
+    }
+    throw err;
   }
   // umask가 openSync의 mode 인자를 깎을 수 있으므로 별도로 명시 고정한다.
   chmodSync(tmpPath, mode);

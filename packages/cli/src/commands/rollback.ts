@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { buildRollbackJournalEntry, manifestSha256Of, restoreFromBackup } from "@ctk/actuator";
 import { resolveHomeContext } from "@ctk/probe";
-import { FAILURE_CLASSES, type FailureClass, type JournalEntry, type RunLogEntry } from "@ctk/core";
+import { FAILURE_CLASSES, parseJournalEntry, type FailureClass, type JournalEntry, type RunLogEntry } from "@ctk/core";
 import { acquireLock, commitAll, writeJournalEntry, writeRunLog } from "@ctk/sync";
 import { readLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
 import { CatalogNotInitializedError } from "./scan.js";
@@ -54,19 +54,57 @@ function listJournalFilesSorted(catalogPath: string): string[] {
 
 function readJournalEntry(catalogPath: string, file: string): JournalEntry {
   const raw = readFileSync(path.join(catalogPath, "journal", file), "utf8").trim();
-  return JSON.parse(raw) as JournalEntry;
+  // L5 — 캐스팅이 아니라 zod로 검증한다(카탈로그는 git으로 동기화되므로, 다른 머신이 쓴 값이나
+  // 손으로 편집된 값이 그대로 rollback 인자가 될 수 있다).
+  return parseJournalEntry(JSON.parse(raw) as unknown);
 }
 
-function findLastEntry(catalogPath: string): { entry: JournalEntry; file: string } {
+/**
+ * ⚠️ **Step 5 보안 심사 수정(L4)** — journal 파일명(`journal/<iso8601>.jsonl`)에 `machine_id`가
+ * 없다. 카탈로그는 git으로 여러 머신에 동기화되므로(CLAUDE.md — "조치는 현재 로컬에서만
+ * 실행한다"), sync를 붙이면 `journal/` 아래 여러 머신의 레코드가 섞여 쌓인다. 이전에는
+ * "가장 최근 파일"을 무조건 골랐다 — 그게 다른 머신이 만든 레코드면, 그 백업(`backup_ref`)은
+ * **이 머신에 존재하지 않는 로컬 전용 디렉터리**를 가리키므로 롤백이 엉뚱한(혹은 존재하지 않는)
+ * 대상을 되돌리려 시도한다. 이 머신이 만든 레코드만 후보로 거른다.
+ */
+function findLastEntry(catalogPath: string, machineId: string): { entry: JournalEntry; file: string } {
   const files = listJournalFilesSorted(catalogPath);
-  const lastFile = files[files.length - 1];
-  if (lastFile === undefined) throw new NoRollbackTargetError("journal 레코드가 없다 — 아직 아무 것도 이동하지 않았다");
-  return { entry: readJournalEntry(catalogPath, lastFile), file: lastFile };
+  for (let i = files.length - 1; i >= 0; i--) {
+    const file = files[i]!;
+    const entry = readJournalEntry(catalogPath, file);
+    if (entry.machine_id === machineId) return { entry, file };
+  }
+  throw new NoRollbackTargetError("이 머신이 만든 journal 레코드가 없다 — 아직 아무 것도 이동하지 않았다(다른 머신의 기록은 되돌리지 않는다)");
 }
 
+/** journal의 `backup_ref`(home-relative)가 실제로 `~/...` 형식이 아니면 던진다(L8). */
+export class InvalidBackupRefError extends Error {
+  constructor(homeRelative: string) {
+    super(`journal의 backup_ref가 "~/"로 시작하지 않는다(카탈로그 변조 의심): ${homeRelative}`);
+    this.name = "InvalidBackupRefError";
+  }
+}
+
+/**
+ * ⚠️ **Step 5 보안 심사 수정(L8)** — 카탈로그는 git으로 동기화되므로 `journal`의 `backup_ref`는
+ * 신뢰할 수 없는 입력이다(zod 스키마는 `min(1)`만 보장할 뿐 `"~/..."` 형식은 강제하지 않는다).
+ * 이전에는 `.slice(1)`이 무검증이라, `backup_ref`가 `"~/../../etc/passwd"` 같은 값이면
+ * 홈 밖으로 탈출한 절대경로가 만들어질 수 있었다(H2의 `assertRestorableTarget`이 이후 단계에서
+ * 잡아내긴 하지만, 이 함수 자체도 방어선을 갖춘다 — 심층 방어). `~/`로 시작하지 않으면 즉시
+ * 거부하고, 계산된 결과가 실제로 `homeDir` 안인지도 재확인한다.
+ */
 function backupRefToAbs(homeDir: string, homeRelative: string): string {
-  // normalizePath()의 home_relative 형식은 항상 "~/..." — 앞의 "~"만 잘라내고 join한다.
-  return path.join(homeDir, homeRelative.slice(1));
+  if (!homeRelative.startsWith("~/") && homeRelative !== "~") {
+    throw new InvalidBackupRefError(homeRelative);
+  }
+  const rest = homeRelative === "~" ? "" : homeRelative.slice(2);
+  const abs = path.join(homeDir, rest);
+  const normalizedHome = path.resolve(homeDir);
+  const normalizedAbs = path.resolve(abs);
+  if (normalizedAbs !== normalizedHome && !normalizedAbs.startsWith(`${normalizedHome}${path.sep}`)) {
+    throw new InvalidBackupRefError(homeRelative);
+  }
+  return abs;
 }
 
 const FAILURE_CLASS_SET = new Set<string>(FAILURE_CLASSES);
@@ -112,7 +150,7 @@ export async function runRollback(_options: RollbackOptions): Promise<RollbackSu
     // 자기-롤백 시도도 journal에 남으므로, 그 시도가 최신이면 아래 result!=="success" 검사가
     // 자동으로 거부한다(더 최근에 failure/rolled_back이 있으면 그보다 오래된 성공을 되돌리지
     // 않는다는 지시사항을 이 하나의 검사로 충족한다).
-    const { entry } = findLastEntry(catalogPath);
+    const { entry } = findLastEntry(catalogPath, machine.machine_id);
     if (entry.action === "rollback") {
       throw new NoRollbackTargetError("마지막 journal 레코드가 이미 rollback이다 — 다시 되돌릴 이동이 없다");
     }

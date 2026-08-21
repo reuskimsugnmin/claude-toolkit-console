@@ -32,6 +32,7 @@ import {
   snapshotIdFsSafe,
   type AssetKind,
   type FailureClass,
+  type InstalledPluginEntry,
   type InstallScope,
   type JournalResult,
   type RunLogEntry,
@@ -142,6 +143,25 @@ function sha256FileOrUndefined(absPath: string): string | undefined {
   return createHash("sha256").update(readFileSync(absPath)).digest("hex");
 }
 
+/**
+ * L7 재현 — `assetId`는 `--asset` 플래그를 통한 사용자 입력이다. `plugins[assetId]`를
+ * `Object.hasOwn` 없이 그대로 색인하면, `assetId`가 문자 그대로 `"__proto__"`일 때 파일 내용과
+ * 무관하게 `plugins["__proto__"]`가 그 객체의 프로토타입을 반환한다(일반 객체라면 항상) —
+ * 배열이 아니므로 이어지는 `.find()` 호출이 TypeError로 죽는다(재현:
+ * `({})["__proto__"]?.find` → "not a function"). `Object.hasOwn`으로 실제 소유 프로퍼티인지
+ * 먼저 확인해 프로토타입 체인 접근을 막는다. 같은 id가 여러 스코프로 설치돼 있을 수 있으나
+ * (P1-13), 이 액션이 옮기는 enablement의 등록 스코프로 fromScope와 일치하는 첫 엔트리를
+ * 채택한다.
+ */
+export function resolveRegistryScope(
+  plugins: Record<string, InstalledPluginEntry[]>,
+  assetId: string,
+  fromScope: InstallScope,
+): InstallScope | null {
+  const entries = Object.hasOwn(plugins, assetId) ? plugins[assetId] : undefined;
+  return entries?.find((e) => e.scope === fromScope)?.scope ?? entries?.[0]?.scope ?? null;
+}
+
 const FAILURE_CLASS_SET = new Set<string>(FAILURE_CLASSES);
 
 /** 던져진 오류가 알려진 `failure_class`를 싣고 있으면 그대로 쓰고, 아니면 "unclassified"로 남긴다. */
@@ -236,13 +256,9 @@ async function movePluginAsset(
       ? parseInstalledPluginsFile(JSON.parse(readFileSync(installedPluginsAbsPath, "utf8")) as unknown)
       : { plugins: {} };
     // install_scope는 레지스트리(installed_plugins.json) 유래이며 move가 절대 바꾸지 않는다
-    // (AC-2.1ⓑ) — journal에는 실측된 실제 값을 담는다(가정하지 않는다). 같은 id가 여러 스코프로
-    // 설치돼 있을 수 있으나(P1-13), 여기서는 이 액션이 옮기는 enablement의 등록 스코프로
-    // fromScope와 일치하는 첫 엔트리를 채택한다.
-    const registryScope =
-      installedPluginsBefore.plugins[options.assetId]?.find((e) => e.scope === fromScope)?.scope ??
-      installedPluginsBefore.plugins[options.assetId]?.[0]?.scope ??
-      null;
+    // (AC-2.1ⓑ) — journal에는 실측된 실제 값을 담는다(가정하지 않는다). L7 방어는
+    // resolveRegistryScope() 안에 있다(아래 정의).
+    const registryScope = resolveRegistryScope(installedPluginsBefore.plugins, options.assetId, fromScope);
 
     // ---- 2. 백업(H4 — .claude.json도 함께 백업하고, before 스냅샷을 함께 저장한다) ----
     const runId = snapshotIdFsSafe();
