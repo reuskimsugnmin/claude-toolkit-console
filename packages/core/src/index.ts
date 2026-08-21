@@ -23,6 +23,7 @@ export * from "./harness/subagent-meta.schema.js";
 export * from "./harness/installed-plugins.schema.js";
 export * from "./harness/settings-file.schema.js";
 export * from "./harness/claude-json.schema.js";
+export * from "./harness/auth-status.schema.js";
 
 export * from "./guard/tree-diff.js";
 export * from "./guard/whitelist.js";

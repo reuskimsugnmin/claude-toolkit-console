@@ -1,7 +1,19 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { catalogAbsPath } from "./catalog-boundary.js";
-import { assertNoRawPathLeaks, assetJsonPath, catalogIndexPath, PathTraversalDetectedError, type Asset } from "@ctk/core";
+import {
+  annotationMdPath,
+  assertNoRawPathLeaks,
+  assetJsonPath,
+  catalogIndexPath,
+  PathTraversalDetectedError,
+  renderAnnotationMarkdown,
+  renderDocPageMarkdown,
+  usageMdPath,
+  type Annotation,
+  type Asset,
+  type DocPage,
+} from "@ctk/core";
 
 /**
  * sync/src/asset-store.ts — `catalog/assets/<kind>/<name>/asset.json` + `catalog/index.json`
@@ -57,10 +69,21 @@ export function listAllAssets(catalogRoot: string): Asset[] {
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
+/**
+ * Step 4 — `gen`의 부분 실패 상태 규약(§4 Step 4 "gen의 부분 실패(반개) 상태"). 처리된 자산은
+ * `"fresh"`, 아직 처리되지 않은 자산은 `"pending"`, 원본이 바뀌었으나 재생성에 실패한 자산은
+ * `"stale"`이다. 이 값이 없으면(Step 2까지의 자산) `gen`이 아직 그 자산을 다루지 않은 것이다.
+ */
+export type GenIndexState = "fresh" | "pending" | "stale";
+
 export interface CatalogIndexEntry {
   id: string;
   kind: Asset["kind"];
   name: string;
+  gen_state?: GenIndexState;
+  /** 마지막으로 `gen_state:"fresh"`를 만든 시점의 원본 콘텐츠 sha256 — `gen/src/plan.ts`의
+   * 증분 대상 판정 키다. */
+  gen_content_sha256?: string;
 }
 
 export interface CatalogIndex {
@@ -68,12 +91,39 @@ export interface CatalogIndex {
   assets: CatalogIndexEntry[];
 }
 
-/** `catalog/assets/**\/asset.json` 전수를 다시 읽어 `catalog/index.json`을 재생성한다. */
+function readExistingIndexOrNull(catalogRoot: string): CatalogIndex | null {
+  const absPath = catalogAbsPath(catalogRoot, catalogIndexPath());
+  if (!existsSync(absPath)) return null;
+  try {
+    return JSON.parse(readFileSync(absPath, "utf8")) as CatalogIndex;
+  } catch {
+    return null; // 손상된 인덱스는 새로 만든다 — gen_state 이월은 최선일 뿐 필수 불변식이 아니다.
+  }
+}
+
+/**
+ * `catalog/assets/**\/asset.json` 전수를 다시 읽어 `catalog/index.json`을 재생성한다.
+ *
+ * ⚠️ **`gen_state`/`gen_content_sha256`는 이월한다.** `ctk scan`이 매번 이 함수를 호출하는데,
+ * scan은 자산의 설치 상태만 갱신할 뿐 gen 산출물과는 무관하다 — 재생성마다 gen 상태를
+ * 지워버리면 매 scan 후 모든 자산이 "미생성"으로 보이는 조용한 회귀가 된다(§4 Step 4 부분
+ * 실패 규약과 충돌). 기존 인덱스를 먼저 읽어 id별 gen 상태를 이월하고, 새로 등장한 자산에는
+ * 필드를 아예 넣지 않는다(생성물 없음 = "gen이 아직 안 다뤘다"를 필드 부재로 표현).
+ */
 export function rebuildCatalogIndex(catalogRoot: string): { path: string; index: CatalogIndex } {
   const assetsRoot = path.join(catalogRoot, "catalog", "assets");
+  const previous = readExistingIndexOrNull(catalogRoot);
+  const previousById = new Map((previous?.assets ?? []).map((e) => [e.id, e]));
+
   const entries: CatalogIndexEntry[] = listAssetJsonFiles(assetsRoot)
     .map((file) => JSON.parse(readFileSync(file, "utf8")) as Asset)
-    .map((asset) => ({ id: asset.id, kind: asset.kind, name: asset.name }))
+    .map((asset) => {
+      const prior = previousById.get(asset.id);
+      const entry: CatalogIndexEntry = { id: asset.id, kind: asset.kind, name: asset.name };
+      if (prior?.gen_state !== undefined) entry.gen_state = prior.gen_state;
+      if (prior?.gen_content_sha256 !== undefined) entry.gen_content_sha256 = prior.gen_content_sha256;
+      return entry;
+    })
     .sort((a, b) => a.id.localeCompare(b.id));
 
   const index: CatalogIndex = { schema_version: 1, assets: entries };
@@ -82,4 +132,59 @@ export function rebuildCatalogIndex(catalogRoot: string): { path: string; index:
   mkdirSync(path.dirname(absPath), { recursive: true });
   writeFileSync(absPath, `${JSON.stringify(index, null, 2)}\n`, "utf8");
   return { path: absPath, index };
+}
+
+/**
+ * Step 4 — `annotation.md`/`usage.md`를 렌더링해 쓴다. 경로는 항상
+ * `core/catalog/layout.ts`의 `annotationMdPath`/`usageMdPath`(ctk 생성 id에서만 산출, H2)로만
+ * 만든다 — `gen`이 이 문자열들을 만들지 않고 `Annotation`/`DocPage`의 `asset_id`로 카탈로그가
+ * 이미 알고 있는 `kind`/`name`을 재사용해야 하므로, 이 함수는 `kind`/`name`을 별도 인자로
+ * 받는다(레코드 자체에는 카탈로그 경로 세그먼트가 없다 — Asset이 그 권위 출처다).
+ */
+export function writeAnnotationDoc(
+  catalogRoot: string,
+  kind: Asset["kind"],
+  name: string,
+  annotation: Annotation,
+): { path: string } {
+  const relPath = annotationMdPath(kind, name);
+  const absPath = catalogAbsPath(catalogRoot, relPath);
+  mkdirSync(path.dirname(absPath), { recursive: true });
+  writeFileSync(absPath, renderAnnotationMarkdown(annotation), "utf8");
+  return { path: absPath };
+}
+
+export function writeUsageDoc(catalogRoot: string, kind: Asset["kind"], name: string, docPage: DocPage): { path: string } {
+  const relPath = usageMdPath(kind, name);
+  const absPath = catalogAbsPath(catalogRoot, relPath);
+  mkdirSync(path.dirname(absPath), { recursive: true });
+  writeFileSync(absPath, renderDocPageMarkdown(docPage), "utf8");
+  return { path: absPath };
+}
+
+/**
+ * 자산 하나의 `gen_state`/`gen_content_sha256`만 갱신한다(인덱스 전체 재생성 없이) — gen 루프가
+ * 자산을 처리할 때마다 호출한다. 대상 id가 인덱스에 없으면(scan이 아직 안 됐거나 드리프트)
+ * 아무것도 하지 않고 `false`를 반환한다(추정으로 새 엔트리를 만들지 않는다, P2).
+ */
+export function setAssetGenState(
+  catalogRoot: string,
+  assetId: string,
+  state: GenIndexState,
+  contentSha256?: string,
+): boolean {
+  const current = readExistingIndexOrNull(catalogRoot);
+  if (current === null) return false;
+  const entry = current.assets.find((e) => e.id === assetId);
+  if (entry === undefined) return false;
+  entry.gen_state = state;
+  if (contentSha256 !== undefined) entry.gen_content_sha256 = contentSha256;
+  const absPath = catalogAbsPath(catalogRoot, catalogIndexPath());
+  writeFileSync(absPath, `${JSON.stringify(current, null, 2)}\n`, "utf8");
+  return true;
+}
+
+/** 현재 카탈로그 인덱스를 읽는다(없으면 빈 인덱스) — `gen/src/plan.ts`가 증분 대상을 정할 때 쓴다. */
+export function readCatalogIndex(catalogRoot: string): CatalogIndex {
+  return readExistingIndexOrNull(catalogRoot) ?? { schema_version: 1, assets: [] };
 }

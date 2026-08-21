@@ -128,6 +128,17 @@ Tier-2 허용목록의 유일한 근거다** — AC-0.8(플러그인 명령·격
 - 배경 churn(ctk와 무관한, 실행 중인 다른 세션에 의한 변경)은 8초 관측에서 0건이었다 —
   상황에 따라 다르므로 격리 판정은 여전히 허용목록 기준으로 한다.
 
+## `claude auth status` — 0원 인증 가용성 신호 (Step 4 실측, 2026-08-21)
+
+- `claude auth status --json`(그리고 `claude --safe-mode auth status --json`도 동일하게)은
+  **구조적 서브커맨드**이고 모델을 호출하지 않는다(실측: 2026-08-21, claude 2.1.238, 1초 이내
+  응답) — `gen/src/estimate.ts`의 "sealed-live 기준 인증 가용성" 선검사에 정확히 맞는 0원 신호다.
+  `--safe-mode`를 붙여도 깨지지 않는다(`plugin list --json`과 같은 부류).
+- 출력에 `loggedIn`(boolean) 외에 **`email`·`orgId`·`orgName` 같은 개인식별정보가 포함된다** —
+  이 프로젝트는 공개 저장소이므로(CLAUDE.md) 이 출력을 그대로 로그·run-log·에러 메시지에 남기지
+  않는다. `core/harness/auth-status.schema.ts`는 `loggedIn`만 강제 검증하고 나머지는
+  `.passthrough()`로 받되, 호출부는 `loggedIn` 외 필드를 읽지 않는다.
+
 ## Anthropic SDK (`@anthropic-ai/sdk`)
 
 - **`ANTHROPIC_API_KEY` 미설정이 "크레덴셜 없음"을 뜻하지 않는다.** SDK는 네 단계로 해석한다 —
