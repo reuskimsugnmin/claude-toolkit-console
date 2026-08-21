@@ -33,8 +33,14 @@ function sha256(text: string): string {
 
 /**
  * 텍스트 하나를 3상태로 측정한다. 캐시 히트면 네트워크 호출 없이 `measured`를 즉시 반환한다.
- * 크레덴셜이 없으면 호출을 시도조차 하지 않고 `unmeasured(reason: credential_missing)`(AC-4.5 —
- * "크레덴셜 없는 환경에서 occupancy가 unmeasured로 표기되고 추정치가 들어가지 않는다").
+ *
+ * ⚠️ **`ANTHROPIC_API_KEY` 미설정이 "크레덴셜 없음"을 뜻하지 않는다.** SDK는 네 단계로 해석한다 —
+ * `ANTHROPIC_API_KEY` → `ANTHROPIC_AUTH_TOKEN` → `ant auth login` 프로파일 → Workload Identity
+ * Federation. 따라서 env 하나만 보고 포기하면 `ant` 프로파일을 쓰는 사용자가 측정 가능한데도
+ * `unmeasured`로 떨어진다. **인자 없는 생성자에 해석을 맡기고, 실패했을 때 그 원인을 구분한다**
+ * (안전 원칙 5 — "없음"과 "실패"를 구분한다: 크레덴셜 부재와 호출 실패는 다른 상태다).
+ *
+ * AC-4.5는 그대로 유지된다 — 어느 경로로도 크레덴셜이 없으면 `unmeasured`이고 추정치는 넣지 않는다.
  */
 export async function countTokensMeasured(options: CountTokensOptions): Promise<OccupancyValue> {
   const { text, tokenizerModel, cache } = options;
@@ -45,12 +51,19 @@ export async function countTokensMeasured(options: CountTokensOptions): Promise<
     return { state: "measured", value_tokens: cached, tokenizer_model: tokenizerModel, measured_at: new Date().toISOString() };
   }
 
+  // 명시 키가 있으면 그것을 쓰고, 없으면 **인자 없는 생성자**로 SDK의 전체 크레덴셜 체인에 맡긴다.
+  // 생성자 자체가 던지는 경우(해석 가능한 크레덴셜이 하나도 없음)만 `credential_missing`이다.
   const apiKey = options.apiKey ?? process.env.ANTHROPIC_API_KEY;
-  if (apiKey === undefined || apiKey.length === 0) {
-    return { state: "unmeasured", value_tokens: null, reason: "credential_missing" };
+  let client = options.client;
+  if (client === undefined) {
+    try {
+      client = (apiKey !== undefined && apiKey.length > 0 ? new Anthropic({ apiKey }) : new Anthropic())
+        .messages;
+    } catch {
+      return { state: "unmeasured", value_tokens: null, reason: "credential_missing" };
+    }
   }
 
-  const client = options.client ?? new Anthropic({ apiKey }).messages;
   try {
     const result = await client.countTokens({
       model: tokenizerModel,
@@ -63,9 +76,29 @@ export async function countTokensMeasured(options: CountTokensOptions): Promise<
       tokenizer_model: tokenizerModel,
       measured_at: new Date().toISOString(),
     };
-  } catch {
-    return { state: "unmeasured", value_tokens: null, reason: "measurement_failed" };
+  } catch (err) {
+    return {
+      state: "unmeasured",
+      value_tokens: null,
+      reason: isCredentialAbsence(err) ? "credential_missing" : "measurement_failed",
+    };
   }
+}
+
+/**
+ * 크레덴셜 부재와 그 밖의 측정 실패를 구분한다(안전 원칙 5 — 두 상태를 뭉개면 사용자가 무엇을
+ * 고쳐야 하는지 알 수 없다: 전자는 "로그인해라", 후자는 "네트워크·레이트리밋을 봐라"다).
+ *
+ * ⚠️ **SDK는 크레덴셜 미해석을 타입으로 알려주지 않는다** — 실측 결과 `AuthenticationError`도
+ * `AnthropicError`도 아닌 **평범한 `Error`**를 던지고, 구분 가능한 신호는 메시지 문자열뿐이다
+ * ("Could not resolve authentication method. Expected one of apiKey, authToken, ..."). 문자열
+ * 매칭은 SDK 버전이 오르면 깨지는 취약한 판정이므로, **깨지면 `measurement_failed`로 열화할 뿐
+ * 잘못된 값을 만들지는 않는다**(안전한 방향의 실패). 401 응답은 `AuthenticationError`로 오므로
+ * 그쪽은 타입으로 잡는다.
+ */
+function isCredentialAbsence(err: unknown): boolean {
+  if (err instanceof Anthropic.AuthenticationError) return true;
+  return err instanceof Error && /could not resolve authentication/i.test(err.message);
 }
 
 /** 측정 대상 텍스트가 없는 경우(예: cli 자산의 idle/loaded) — 호출 자체를 생략하는 지름길. */

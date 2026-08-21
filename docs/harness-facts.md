@@ -109,6 +109,20 @@
   세그먼트 자체를 `<plugin>`과 `<server>`로 다시 쪼개는 일반 규칙은 없다 — 둘 다 하이픈을 포함할
   수 있어 정규식으로 경계를 확정할 수 없다(예: `plugin_chrome-devtools-mcp_chrome-devtools`).
 
+## Anthropic SDK (`@anthropic-ai/sdk`)
+
+- **`ANTHROPIC_API_KEY` 미설정이 "크레덴셜 없음"을 뜻하지 않는다.** SDK는 네 단계로 해석한다 —
+  `ANTHROPIC_API_KEY` → `ANTHROPIC_AUTH_TOKEN` → `ant auth login` 프로파일 → Workload Identity
+  Federation. 인자 없는 생성자가 이 체인을 밟으므로, env 하나만 보고 포기하면 프로파일 사용자가
+  측정 가능한데도 미측정으로 떨어진다.
+- 크레덴셜을 하나도 해석하지 못하면 **생성자가 아니라 첫 호출**에서 실패하고, 던지는 것은
+  `AuthenticationError`도 `AnthropicError`도 아닌 **평범한 `Error`**다(실측). 메시지가
+  `"Could not resolve authentication method. Expected one of apiKey, authToken, ..."`이며
+  **타입으로 구분할 방법이 없다** — 문자열 매칭이 유일한 신호이고 SDK 버전에 취약하다.
+  401 응답은 `AuthenticationError`로 오므로 그쪽은 타입으로 잡힌다.
+- 토큰 실측은 `client.messages.countTokens({model, messages})` (비-beta). **tiktoken 계열은
+  Claude 토큰을 과소 집계하므로 쓰지 않는다.**
+
 ## 그 밖에
 
 - 일부 설치 스크립트는 `CLAUDE.md`까지 수정한다. 설치 로그의 **마지막 줄까지** 읽고,

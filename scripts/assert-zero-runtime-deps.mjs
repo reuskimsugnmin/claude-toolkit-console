@@ -25,6 +25,12 @@ import { fileURLToPath } from "node:url";
 // 하는지를 여기 주석으로 남긴다.
 export const APPROVED_RUNTIME_DEPS = new Set([
   "zod", // 결정 1: 스키마·런타임 검증 엔진. 파싱이 런타임에 실행되므로 dev로 둘 수 없다.
+  // ADR-005(점유 토큰 실측)가 명시한 측정 수단. `messages.countTokens` 한 메서드만 쓴다.
+  // fetch로 대체하지 않는 이유: TypeScript 프로젝트에서는 공식 SDK가 기본이고 raw HTTP로
+  // 내려가는 것은 명시적 안티패턴이다(claude-api 스킬 Output Requirement). SDK가 4단계
+  // 크레덴셜 체인(API 키 → AUTH_TOKEN → ant 프로파일 → WIF)을 해석해주는 것도 직접 구현
+  // 대상이 아니다 — P6(하네스가 주는 것은 재발명하지 않는다).
+  "@anthropic-ai/sdk",
 ]);
 
 function isWorkspaceLink(depEntry) {
