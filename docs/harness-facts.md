@@ -21,19 +21,49 @@
 - `~/.claude.json`의 프로젝트 엔트리에 `enabledMcpServers`/`disabledMcpServers`가 있고
   **실사용 중이다.** 단 MCP 전용이 아니라 claude.ai 커넥터·`computer-use` 같은 내장 기능까지
   담는 범용 토글 목록이다 — 이름 패턴이 아니라 **로컬에 정의가 있는가**로 자산 여부를 판정한다.
-- `~/.claude.json`에 `skillUsage`·`pluginUsage`(`{usageCount, lastUsedAt}`)가 이미 있다.
+- `~/.claude.json`에 `skillUsage`·`pluginUsage`(`{usageCount, lastUsedAt}`, `lastUsedAt`은
+  **epoch ms** — ISO 문자열이 아니다)가 이미 있다. `pluginUsage`의 키는 `name@marketplace`
+  (Asset.id와 동형) · `skillUsage`의 키는 스킬 이름 베어 형태다(실측, 2026-08-21, 실제
+  `~/.claude.json`).
 - 세션 트랜스크립트에 `attributionSkill`·`attributionPlugin`·`attributionMcpServer` 필드가
   **이미 있다.** 귀속을 접두어 매칭으로 재발명하기 전에 이 필드를 먼저 본다. 단 모든 세션에
   있지는 않으므로, 부재의 **원인**(구버전인가 `--bare`인가)을 확인하기 전에는 단정하지 않는다.
 - `tool_result` 블록은 `user` 행에만 있다(`tool_use`는 `assistant` 행). 서브에이전트 스폰
   도구명은 `Agent`다.
-- **서브에이전트 기록은 같은 트랜스크립트 파일 안에 `isSidechain: true` 행으로 들어간다**
-  (전수 실측: 663개 중 324개 파일에 존재). Step 0이 "표본 79,420행에서 0건"으로 관측한 것은
-  **한 파일만 본 표본 편향**이었다 — 부재를 단정하기 전에 전수를 확인한다.
-- sidechain 행은 사용량 귀속에 필요한 것을 전부 갖는다: `assistant` 행에 `usage`가 실리고,
-  **`attributionAgent`** 필드가 스폰된 에이전트를 지목하며(값은 `general-purpose` 또는
+- **⚠️ 정정(Step 3, 2026-08-21 재실측) — 서브에이전트 기록은 메인 트랜스크립트 파일 "안"에
+  `isSidechain: true` 행으로 인라인되지 않는다.** 이전 판(위 문단, Step 0 근거)이 "같은 파일
+  안에 들어간다"고 적었던 것은 **틀렸다** — 실측(2026-08-21, `~/.claude/projects` 666개 `.jsonl`
+  전수 재확인)에서 `isSidechain:true`를 포함하는 파일 326개 중 **325개가
+  `<project>/<session-uuid>/subagents/agent-<hash>.jsonl`이라는 별도 파일**이었다(나머지 1개는
+  `tool-results/*.txt` 안의 우연한 문자열 일치로 애초에 트랜스크립트 행이 아니었다). 메인 세션
+  파일(`<project>/<session-uuid>.jsonl`) 자체에서 `isSidechain:true`가 나온 사례는 **0건**이었다.
+  즉 세션 디렉터리 구조는 `<project>/<session-uuid>.jsonl`(메인) + `<project>/<session-uuid>/`
+  (같은 이름의 디렉터리) 하위에 `subagents/agent-<hash>.jsonl`(서브에이전트별 트랜스크립트) +
+  `subagents/agent-<hash>.meta.json`(사이드카, 아래) + `tool-results/*.txt`(아래)가 함께 있다.
+  파서는 **두 위치를 모두** 훑어야 서브에이전트 사용량을 놓치지 않는다.
+- `subagents/agent-<hash>.meta.json` 사이드카에 `{"agentType":"general-purpose",
+  "description":"...","toolUseId":"toolu_...","spawnDepth":1,"model":"sonnet"}`가 실린다.
+  `toolUseId`가 **부모 세션 파일의 `Agent` tool_use 블록 `id`와 정확히 일치**해 역추적이
+  가능하다(실측 재현: 22건 Agent tool_use ↔ 22개 subagent 메타파일 1:1 대응 사례 확인).
+- 서브에이전트 파일의 행은 사용량 귀속에 필요한 것을 전부 갖는다: `assistant` 행에 `usage`가
+  실리고, **`attributionAgent`** 필드가 스폰된 에이전트를 지목하며(값은 `general-purpose` 또는
   `oh-my-claudecode:critic`처럼 **자산 id와 그대로 대응**), `agentId`로 같은 실행을 묶을 수 있다.
-  즉 귀속 필드는 넷이다 — `attributionSkill`·`attributionPlugin`·`attributionMcpServer`·`attributionAgent`.
+  `sessionId` 필드는 **부모 세션과 동일한 값**을 갖는다(서브에이전트도 부모 세션의 일부로 집계
+  가능). 즉 귀속 필드는 넷이다 —
+  `attributionSkill`·`attributionPlugin`·`attributionMcpServer`·`attributionAgent`.
+- **대형 tool_result 페이로드는 트랜스크립트에 전문이 남지 않는다.** 하네스가 본문을 잘라
+  `<persisted-output>\nOutput too large (36.6KB). Full output saved to: <홈 절대경로>\n\nPreview
+  (first 2KB):\n...`로 치환하고, 실제 페이로드는 `<session-dir>/tool-results/<id>.txt`에 별도
+  저장한다(실측). 이 절대경로 자체가 AC-1.7이 금지하는 홈 절대경로 원문이므로, 카탈로그로 가는
+  어떤 필드에도 이 경로를 그대로 옮기면 안 된다.
+- `message.content`는 배열(tool_use/tool_result 블록)뿐 아니라 **평문 문자열**일 수도 있다 —
+  사람이 직접 입력한 프롬프트의 표준 단축형이며, 실측상 오히려 이 형태가 `type:"user"` 행의
+  다수를 차지한다(합성 픽스처만 보고 배열만 있다고 가정하면 실제 트랜스크립트의 상당수 행이
+  parse 실패로 떨어진다 — Step 3에서 실제 환경 562행 표본 중 5건으로 처음 재현).
+- 트랜스크립트 행 `type` 값은 AC-0.6b가 확인한 16종 외에 **`agent-name`**(세션 표시 이름 메타
+  데이터, `{"type":"agent-name","agentName":"...","sessionId":"..."}`)도 존재한다(Step 3,
+  84MB/24,698행 표본에서 재현) — usage 파싱과는 무관하지만 미지의 `type`을 만나면 parse가
+  실패하므로(R13 의도된 동작) 열거값에 반영해둔다. 16종 표본은 표본 크기의 한계였을 뿐이다.
 
 ## CLI 동작
 
@@ -63,6 +93,21 @@
 - 인증은 파일이 아니라 **macOS 키체인**에 있고, 항목명이 `Claude Code-credentials-<hex>`로
   **config dir별로 분리**된다. 따라서 `CLAUDE_CONFIG_DIR`를 격리하면 인증이 불가능하다.
 - 슬래시 커맨드 라우팅은 **인증 이전에** 결정된다 — 커맨드 존재 여부 판정은 모델 호출 없이 $0에 가능하다.
+- `claude plugin details <id>`(`--json` 없음, 텍스트 출력)의 첫 줄은 `<name>[ <version>]` 형태다.
+  **버전이 항상 붙지는 않는다** — 실측(2026-08-21, 공개 마켓플레이스 플러그인 3건 직접 실행):
+  `"oh-my-claudecode 4.15.7"`처럼 붙는 경우도, `"context7"`처럼 전혀 안 붙는 경우도 있었다.
+  "Component inventory" 절의 각 줄은 `<Kind> (<n>)`이고 `n>0`이면 뒤에 콤마 구분 목록과(MCP·
+  Hooks는) 괄호 안 하네시 판정 문구가 따라붙는다. "Projected token cost" 절의
+  `Always-on:   ~<n> tok   added to every session`에서 `<n>`은 1,000단위 콤마가 섞일 수 있다
+  (`~3,169 tok`).
+- MCP tool_use 이름(`mcp__<server>__<tool>` 또는 `mcp__plugin_<plugin>_<server>__<tool>`)은
+  **이중 밑줄("__")로 정확히 3부분(mcp / 서버-또는-플러그인 세그먼트 / 도구명)이 갈린다** — 두
+  번째 세그먼트 내부의 단일 밑줄·하이픈은 이 분리에 영향을 주지 않는다(실측 재확인: 이 세션
+  자신이 호출하는 도구명들 — `mcp__notebooklm__add_notebook`,
+  `mcp__plugin_oh-my-claudecode_t__ast_grep_search`,
+  `mcp__plugin_chrome-devtools-mcp_chrome-devtools__click` 등). 단 `plugin_<plugin>_<server>`
+  세그먼트 자체를 `<plugin>`과 `<server>`로 다시 쪼개는 일반 규칙은 없다 — 둘 다 하이픈을 포함할
+  수 있어 정규식으로 경계를 확정할 수 없다(예: `plugin_chrome-devtools-mcp_chrome-devtools`).
 
 ## 그 밖에
 
