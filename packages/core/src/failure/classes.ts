@@ -22,6 +22,10 @@ export const FAILURE_CLASSES = [
   "path_normalize_failed", // 경로를 ~/… 상대화도 path_hash도 할 수 없어 기록 불가 (F4) — Step 2
   "seal_env_leak", // 허용목록 밖 환경변수가 자식 프로세스에 도달함 (iter 8 · B2) — Step 2
   "seal_timeout", // 서브프로세스가 --timeout-sec 벽시계를 초과 (iter 8 · M4) — Step 2
+  "whitelist_violation", // ctk가 쓰지 않은 경로가 churn 허용목록 밖에서 변경됨 (AC-2.7) — Step 5
+  "forbidden_path_write", // 금지 목록 경로(CLAUDE.md·installed_plugins.json·MCP 서브트리 등) 변경 — 최우선 경보 (AC-2.7-c) — Step 5
+  "verify_mismatch", // 조치 후 probe 재실측이 기대와 다름 — 자동 롤백 (AC-2.6) — Step 5
+  "rollback_failed", // 롤백 자체가 실패 — 최악, 백업 경로 그대로 출력 + 수동 복구 절차 안내 — Step 5
   "unclassified",
 ] as const;
 

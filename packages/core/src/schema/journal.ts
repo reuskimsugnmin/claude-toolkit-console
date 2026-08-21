@@ -3,8 +3,10 @@ import { machineDependentTag, schemaVersion } from "./common.js";
 
 /** v1 이관 범위 — 플러그인 enablement 수정과 스킬 디렉터리 이동만 (스펙 Constraints). */
 export const JournalActionSchema = z.enum(["move_plugin_enablement", "move_skill_dir", "rollback"]);
+export type JournalAction = z.infer<typeof JournalActionSchema>;
 
 export const JournalResultSchema = z.enum(["success", "failure", "rolled_back"]);
+export type JournalResult = z.infer<typeof JournalResultSchema>;
 
 /**
  * Journal — 머신 종속. actuator의 before/after 감사 레코드 (`journal/<iso8601>.jsonl`, 카탈로그 결정 2).
