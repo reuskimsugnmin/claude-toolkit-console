@@ -13,6 +13,46 @@ import {
 } from "@ctk/core";
 
 /**
+ * ⚠️ **Step 5 보안 심사 수정(M5)** — 감사 위반은 이전엔 평문 `Error`로만 던져졌다.
+ * `FailureClass`에 `whitelist_violation`·`forbidden_path_write`가 **선언만 되고 아무도 쓰지
+ * 않는** 상태였다(security-reviewer 지적의 핵심 — "규칙이 선언만 되고 아무도 쓰지 않는다").
+ * 이 두 타입 오류를 호출부(`cli/move.ts`)가 던지게 해, run-log/journal의 `failure_class`가
+ * 실제로 이 값을 담게 한다.
+ */
+export class ForbiddenPathWriteError extends Error {
+  readonly failureClass = "forbidden_path_write" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "ForbiddenPathWriteError";
+  }
+}
+
+export class WhitelistViolationError extends Error {
+  readonly failureClass = "whitelist_violation" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "WhitelistViolationError";
+  }
+}
+
+/**
+ * 감사 결과를 타입 오류로 변환한다 — 위반 중 하나라도 금지 목록(AC_2_7_C_FORBIDDEN_RULES,
+ * `matchedRule` 존재)에 걸렸으면 `forbidden_path_write`(최우선 경보), 아니면(허용목록에 없을
+ * 뿐인 일반 위반) `whitelist_violation`이다. `auditPassed(result)`가 false일 때만 호출한다.
+ */
+export function auditFailureError(result: RootAuditResult, contextMessage: string): ForbiddenPathWriteError | WhitelistViolationError {
+  const anyForbidden =
+    result.verdict.violations.some((v) => v.matchedRule !== undefined) ||
+    (result.claudeJsonSemantic?.violations.some((v) => v.mcpForbidden) ?? false);
+  const detail = `${contextMessage}: ${JSON.stringify(result.verdict.violations)}${
+    result.claudeJsonSemantic !== null && result.claudeJsonSemantic.overallStatus === "violation"
+      ? ` / .claude.json 의미 위반: ${JSON.stringify(result.claudeJsonSemantic.violations)}`
+      : ""
+  }`;
+  return anyForbidden ? new ForbiddenPathWriteError(detail) : new WhitelistViolationError(detail);
+}
+
+/**
  * actuator/src/audit.ts — `probe/tree-collect`로 전후 트리를 수집 → `core/guard/{tree-diff,
  * whitelist,forbidden}`에 넘겨 3검사 판정(AC-2.7-a/b/c). 판정 로직은 여기 없다(H1) — 수집과
  * 배선만 한다.
@@ -48,17 +88,38 @@ export interface AuditRootConfig {
 
 export interface RootAuditSnapshot {
   entries: FileEntry[];
+  /** M3 — 수집 중 읽기 실패 건수. 0보다 크면 이 스냅샷은 불완전한 관측이다. */
+  collectErrors: number;
+  symlinkCount: number;
+  emptyDirCount: number;
 }
 
 export function captureRootSnapshot(rootAbs: string): RootAuditSnapshot {
-  return { entries: collectTree(rootAbs).entries };
+  const result = collectTree(rootAbs);
+  return {
+    entries: result.entries,
+    collectErrors: result.errors,
+    symlinkCount: result.symlinkCount,
+    emptyDirCount: result.emptyDirCount,
+  };
 }
 
+/** Node의 파일시스템 오류 코드만 조회한다(존재 여부와 "읽기 실패"를 구분하기 위해). */
+function fsErrorCode(err: unknown): string | undefined {
+  return typeof err === "object" && err !== null && "code" in err ? (err as { code?: string }).code : undefined;
+}
+
+/**
+ * M2 수정 — 이전에는 모든 오류(ENOENT뿐 아니라 EISDIR·EACCES 등)를 "파일 없음"으로 뭉갰다.
+ * "없음"과 "읽기 실패"를 구분한다(CLAUDE.md 안전 원칙 5) — ENOENT만 null(정상적인 부재)로
+ * 취급하고, 그 외 오류는 그대로 던진다.
+ */
 export function readClaudeJsonRawOrNull(rootAbs: string): string | null {
   try {
     return readFileSync(path.join(rootAbs, ".claude.json"), "utf8");
-  } catch {
-    return null;
+  } catch (err) {
+    if (fsErrorCode(err) === "ENOENT") return null;
+    throw err;
   }
 }
 
@@ -66,6 +127,10 @@ export interface RootAuditResult {
   verdict: TreeDiffVerdict;
   /** config 루트에서 `.claude.json`이 churn으로 잡혔을 때만 채워진다. 그 외에는 null. */
   claudeJsonSemantic: ClaudeJsonSemanticVerdict | null;
+  /** M3 — before/after 수집 중 하나라도 읽기 실패가 있었거나 심볼릭 링크·빈 디렉터리 개수가
+   * 달라졌으면 true. 파일 목록만으로는 안 보이는 변경이 있었을 수 있다는 뜻이라 `auditPassed`가
+   * 무조건 실패로 취급한다(fail-closed). */
+  incompleteObservation: boolean;
 }
 
 function claudeJsonTouchedAsChurn(v: TreeDiffVerdict): boolean {
@@ -73,11 +138,21 @@ function claudeJsonTouchedAsChurn(v: TreeDiffVerdict): boolean {
   return all.some((entry) => entry.path === ".claude.json" && entry.status === "allowed_churn");
 }
 
-function readJsonOrEmpty(absPath: string): unknown {
+/**
+ * M2 수정 — 이전 구현(`readJsonOrEmpty`)은 "파일 없음"과 "파일이 있는데 깨졌다"를 똑같이
+ * `{}`로 뭉갰다. before가 `{}`(부재)이고 after도 손상돼 `{}`로 읽히면 deep-equal이 성립해
+ * **손상이 감사를 조용히 통과**했다(R7 시나리오 그 자체). ENOENT만 정상적인 부재로 취급하고,
+ * 그 외(JSON 구문 오류 등)는 `WhitelistViolationError`로 던져 감사가 실패로 떨어지게 한다.
+ */
+function readJsonOrThrowOnCorruption(rootAbs: string): unknown {
+  const raw = readClaudeJsonRawOrNull(rootAbs);
+  if (raw === null) return {};
   try {
-    return JSON.parse(readFileSync(absPath, "utf8")) as unknown;
-  } catch {
-    return {};
+    return JSON.parse(raw) as unknown;
+  } catch (cause) {
+    throw new WhitelistViolationError(
+      `${path.join(rootAbs, ".claude.json")} 파싱 실패(손상 의심) — 감사를 통과시키지 않는다: ${String(cause)}`,
+    );
   }
 }
 
@@ -99,15 +174,23 @@ export function auditRoot(
   let claudeJsonSemantic: ClaudeJsonSemanticVerdict | null = null;
   if (config.allowTier2Churn && claudeJsonTouchedAsChurn(verdict)) {
     const beforeValue = claudeJsonBeforeRaw !== null ? (JSON.parse(claudeJsonBeforeRaw) as unknown) : {};
-    const afterValue = readJsonOrEmpty(path.join(config.rootAbs, ".claude.json"));
+    const afterValue = readJsonOrThrowOnCorruption(config.rootAbs);
     claudeJsonSemantic = claudeJsonSemanticVerdict(beforeValue, afterValue, claudeJsonAllowedChurnKeys);
   }
 
-  return { verdict, claudeJsonSemantic };
+  // M3 — 수집 자체가 불완전했으면(읽기 실패) "변경 없음"으로 보여도 신뢰할 수 없다 —
+  // fail-closed. 심볼릭 링크·빈 디렉터리 개수는 정보로 반환하되(RootAuditSnapshot), 정상적인
+  // 조치도 디렉터리 생성/제거로 이 개수를 자연스럽게 바꾸므로(예: 스킬 디렉터리 이동이 목적지에
+  // 새 디렉터리를 만듦) 개수 불일치 자체를 자동 위반으로 취급하지 않는다 — 호출자가 필요하면
+  // 이 개수로 별도 판정을 내릴 수 있게 반환만 한다(과잉 차단으로 정상 조치를 막지 않는다).
+  const incompleteObservation = before.collectErrors > 0 || after.collectErrors > 0;
+
+  return { verdict, claudeJsonSemantic, incompleteObservation };
 }
 
-/** 감사 결과 전체가 위반 없이 통과했는가. `.claude.json` 의미 위반도 포함한다. */
+/** 감사 결과 전체가 위반 없이 통과했는가. `.claude.json` 의미 위반·불완전한 관측도 포함한다. */
 export function auditPassed(result: RootAuditResult): boolean {
+  if (result.incompleteObservation) return false;
   if (result.verdict.overallStatus === "violation") return false;
   if (result.claudeJsonSemantic !== null && result.claudeJsonSemantic.overallStatus === "violation") return false;
   return true;

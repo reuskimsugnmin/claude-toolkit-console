@@ -3,7 +3,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TIER1_INTENTIONAL_WRITES } from "@ctk/core";
-import { auditPassed, auditRoot, captureRootSnapshot, readClaudeJsonRawOrNull } from "../src/audit.js";
+import {
+  ForbiddenPathWriteError,
+  WhitelistViolationError,
+  auditFailureError,
+  auditPassed,
+  auditRoot,
+  captureRootSnapshot,
+  readClaudeJsonRawOrNull,
+} from "../src/audit.js";
 
 describe("actuator/audit — probe/tree-collect 수집 -> core/guard 판정 배선(AC-2.7)", () => {
   let root: string;
@@ -108,4 +116,55 @@ describe("actuator/audit — probe/tree-collect 수집 -> core/guard 판정 배�
     const result = auditRoot({ rootAbs: root, tier1, allowTier2Churn: false }, before, after, null);
     expect(auditPassed(result)).toBe(false);
   });
+
+  it(
+    "✅ M2 재현 — before가 부재(.claude.json 없음)이고 after가 손상돼 있으면(구문 오류) " +
+      "예전엔 둘 다 {}로 뭉개져 deep-equal이 성립해 손상이 감사를 조용히 통과했다. 지금은 " +
+      "파싱 실패를 감지해 던진다(auditRoot가 throw — auditPassed로 조용히 false가 되는 게 " +
+      "아니라 호출 자체가 실패한다)",
+    () => {
+      writeFileSync(path.join(root, "settings.json"), "{}", "utf8");
+      const before = captureRootSnapshot(root); // .claude.json 부재
+      const claudeJsonBeforeRaw = readClaudeJsonRawOrNull(root); // null(정상 부재)
+      writeFileSync(path.join(root, "settings.json"), "{}", "utf8"); // churn 유발 없음 — 아래서 직접 구성
+      // Tier-2 churn 판정이 .claude.json을 "바뀜"으로 잡으려면 트리에도 나타나야 한다.
+      writeFileSync(path.join(root, ".claude.json"), "{not valid json", "utf8");
+      const after = captureRootSnapshot(root);
+
+      expect(() =>
+        auditRoot({ rootAbs: root, tier1: TIER1_INTENTIONAL_WRITES, allowTier2Churn: true }, before, after, claudeJsonBeforeRaw),
+      ).toThrow(WhitelistViolationError);
+    },
+  );
+
+  it(
+    "✅ M5 재현 — auditFailureError()는 감사 위반의 failure_class를 실제로 채운다. 금지 목록" +
+      "(CLAUDE.md 등)에 걸린 위반은 forbidden_path_write, 단순히 허용목록 밖인 위반은 " +
+      "whitelist_violation이다(수정 전에는 평문 Error만 던져져 failure_class가 항상 " +
+      "unclassified로 남았다)",
+    () => {
+      // 1) 단순 허용목록 밖 위반 — whitelist_violation.
+      writeFileSync(path.join(root, "settings.json"), "{}", "utf8");
+      writeFileSync(path.join(root, "extra.json"), "before", "utf8");
+      const before1 = captureRootSnapshot(root);
+      writeFileSync(path.join(root, "extra.json"), "after", "utf8");
+      const after1 = captureRootSnapshot(root);
+      const result1 = auditRoot({ rootAbs: root, tier1: TIER1_INTENTIONAL_WRITES, allowTier2Churn: false }, before1, after1, null);
+      expect(auditPassed(result1)).toBe(false);
+      const err1 = auditFailureError(result1, "테스트");
+      expect(err1).toBeInstanceOf(WhitelistViolationError);
+      expect(err1.failureClass).toBe("whitelist_violation");
+
+      // 2) 금지 목록(AC-2.7-c) 위반 — forbidden_path_write.
+      writeFileSync(path.join(root, "CLAUDE.md"), "original", "utf8");
+      const before2 = captureRootSnapshot(root);
+      writeFileSync(path.join(root, "CLAUDE.md"), "tampered", "utf8");
+      const after2 = captureRootSnapshot(root);
+      const result2 = auditRoot({ rootAbs: root, tier1: TIER1_INTENTIONAL_WRITES, allowTier2Churn: true }, before2, after2, null);
+      expect(auditPassed(result2)).toBe(false);
+      const err2 = auditFailureError(result2, "테스트");
+      expect(err2).toBeInstanceOf(ForbiddenPathWriteError);
+      expect(err2.failureClass).toBe("forbidden_path_write");
+    },
+  );
 });

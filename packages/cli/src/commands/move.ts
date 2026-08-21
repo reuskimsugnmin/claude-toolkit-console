@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   assertMovableAssetKind,
+  auditFailureError,
   auditPassed,
   auditRoot,
   backupFile,
@@ -296,34 +297,36 @@ async function movePluginAsset(
     }
 
     // ---- 4. 감사(AC-2.7) ----
-    const configAfter = captureRootSnapshot(configRoot);
-    const configAudit = auditRoot(
-      { rootAbs: configRoot, tier1: TIER1_INTENTIONAL_WRITES, allowTier2Churn: true },
-      configBefore,
-      configAfter,
-      claudeJsonBeforeRaw,
-    );
-    if (!auditPassed(configAudit)) {
-      rollbackAndThrow(
-        new Error(
-          `config 트리 감사 위반: ${JSON.stringify(configAudit.verdict.violations)} / .claude.json 의미 위반: ${JSON.stringify(
-            configAudit.claudeJsonSemantic?.violations ?? [],
-          )}`,
-        ),
+    // M2/M5 — auditRoot는 .claude.json이 손상돼 있으면(파싱 실패) 이제 throw한다(조용히 {}로
+    // 뭉개 감사를 통과시키지 않는다). 그 throw도 감사 위반과 동일하게 self-rollback을 트리거해야
+    // 하므로 이 블록 전체를 try/catch로 감싼다. 감사 위반 자체도 M5 수정으로 평문 Error가 아니라
+    // ForbiddenPathWriteError/WhitelistViolationError를 던진다(failure_class가 실제로 채워진다).
+    try {
+      const configAfter = captureRootSnapshot(configRoot);
+      const configAudit = auditRoot(
+        { rootAbs: configRoot, tier1: TIER1_INTENTIONAL_WRITES, allowTier2Churn: true },
+        configBefore,
+        configAfter,
+        claudeJsonBeforeRaw,
       );
-    }
-    for (const projectPath of involvedProjectPaths) {
-      const before = projectBefores.get(projectPath)!;
-      const after = captureRootSnapshot(path.join(projectPath, ".claude"));
-      const projectAudit = auditRoot(
-        { rootAbs: path.join(projectPath, ".claude"), tier1: TIER1_INTENTIONAL_WRITES, allowTier2Churn: false },
-        before,
-        after,
-        null,
-      );
-      if (!auditPassed(projectAudit)) {
-        rollbackAndThrow(new Error(`project 트리 감사 위반(${projectPath}): ${JSON.stringify(projectAudit.verdict.violations)}`));
+      if (!auditPassed(configAudit)) {
+        throw auditFailureError(configAudit, "config 트리 감사 위반");
       }
+      for (const projectPath of involvedProjectPaths) {
+        const before = projectBefores.get(projectPath)!;
+        const after = captureRootSnapshot(path.join(projectPath, ".claude"));
+        const projectAudit = auditRoot(
+          { rootAbs: path.join(projectPath, ".claude"), tier1: TIER1_INTENTIONAL_WRITES, allowTier2Churn: false },
+          before,
+          after,
+          null,
+        );
+        if (!auditPassed(projectAudit)) {
+          throw auditFailureError(projectAudit, `project 트리 감사 위반(${projectPath})`);
+        }
+      }
+    } catch (err) {
+      rollbackAndThrow(err);
     }
 
     // ---- 5. 검증(재스캔 실측, AC-2.1/2.6) ----
@@ -458,19 +461,25 @@ async function moveSkillAsset(
   }
 
   // ---- 4. 감사 ----
+  // M2/M5 — auditRoot 호출 자체가 던질 수 있으므로(손상된 .claude.json) 이 블록도 try/catch로
+  // 감싸 self-rollback을 트리거한다. 감사 위반은 타입 오류(auditFailureError)로 던진다.
   const skillTier1 = [{ pattern: new RegExp(`^skills/${escapeRegExp(dirName)}(/|$)`), note: "Tier-1 대상 스킬" }];
-  const configAfter = captureRootSnapshot(configRoot);
-  const configAudit = auditRoot({ rootAbs: configRoot, tier1: skillTier1, allowTier2Churn: true }, configBefore, configAfter, readClaudeJsonRawOrNull(configRoot));
-  if (!auditPassed(configAudit)) {
-    rollbackAndThrow(new Error(`config 트리 감사 위반: ${JSON.stringify(configAudit.verdict.violations)}`));
-  }
-  for (const projectPath of involvedProjectPaths) {
-    const before = projectBefores.get(projectPath)!;
-    const after = captureRootSnapshot(path.join(projectPath, ".claude"));
-    const projectAudit = auditRoot({ rootAbs: path.join(projectPath, ".claude"), tier1: skillTier1, allowTier2Churn: false }, before, after, null);
-    if (!auditPassed(projectAudit)) {
-      rollbackAndThrow(new Error(`project 트리 감사 위반(${projectPath}): ${JSON.stringify(projectAudit.verdict.violations)}`));
+  try {
+    const configAfter = captureRootSnapshot(configRoot);
+    const configAudit = auditRoot({ rootAbs: configRoot, tier1: skillTier1, allowTier2Churn: true }, configBefore, configAfter, readClaudeJsonRawOrNull(configRoot));
+    if (!auditPassed(configAudit)) {
+      throw auditFailureError(configAudit, "config 트리 감사 위반");
     }
+    for (const projectPath of involvedProjectPaths) {
+      const before = projectBefores.get(projectPath)!;
+      const after = captureRootSnapshot(path.join(projectPath, ".claude"));
+      const projectAudit = auditRoot({ rootAbs: path.join(projectPath, ".claude"), tier1: skillTier1, allowTier2Churn: false }, before, after, null);
+      if (!auditPassed(projectAudit)) {
+        throw auditFailureError(projectAudit, `project 트리 감사 위반(${projectPath})`);
+      }
+    }
+  } catch (err) {
+    rollbackAndThrow(err);
   }
 
   // ---- 5. 검증 ----

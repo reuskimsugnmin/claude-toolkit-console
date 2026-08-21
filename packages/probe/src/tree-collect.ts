@@ -11,32 +11,56 @@ import type { FileEntry } from "@ctk/core";
  * 자체는 건너뛴다) — 링크를 따라가면 순환 참조나 "같은 파일이 두 경로로 이중 목록"되는 사고가
  * 나고, `core/guard/tree-diff.ts`의 `verdict()`는 중복 경로 입력을 판정 불가로 거부한다
  * (`DuplicatePathVerdictError`) — 이 수집기가 애초에 중복을 만들지 않아야 그 계약이 의미가 있다.
+ *
+ * ⚠️ **Step 5 보안 심사 수정(M3)** — 이전에는 `readdirSync`/`sha256File` 실패를 조용히
+ * 건너뛰었다(권한이 막힌 서브트리의 변경이 감사에 영구히 보이지 않을 수 있었다). 지금은
+ * `errors` 카운트로 "이 수집이 완전한 관측이었는가"를 호출자가 판정할 수 있게 반환한다.
+ * 심볼릭 링크·빈 디렉터리도 파일 목록에서는 빠지지만(위 문서) 개수는 따로 세어 반환한다 —
+ * 감사가 "심볼릭 링크가 생기거나 사라졌는데 파일 목록만 보면 무변화"처럼 보이는 사각지대를
+ * 줄인다.
  */
 
 export interface TreeCollectResult {
   entries: FileEntry[];
+  /** 수집 중 읽기 실패(readdir/sha256) 건수 — 0보다 크면 이 수집은 불완전한 관측이다. */
+  errors: number;
+  /** 건너뛴 심볼릭 링크 개수(따라가지 않지만 개수는 센다). */
+  symlinkCount: number;
+  /** 빈 디렉터리 개수(파일이 없어 `entries`에는 어떤 흔적도 안 남긴다). */
+  emptyDirCount: number;
 }
 
 function sha256File(absPath: string): string {
   return createHash("sha256").update(readFileSync(absPath)).digest("hex");
 }
 
-function walk(rootAbs: string, currentAbs: string, out: FileEntry[]): void {
+interface WalkStats {
+  errors: number;
+  symlinkCount: number;
+  emptyDirCount: number;
+}
+
+function walk(rootAbs: string, currentAbs: string, out: FileEntry[], stats: WalkStats): void {
   let dirents;
   try {
     dirents = readdirSync(currentAbs, { withFileTypes: true });
   } catch {
-    // 경합으로 디렉터리가 스캔 도중 사라졌을 수 있다 — 조용히 건너뛴다(스캔 중단보다 안전).
+    // 경합으로 디렉터리가 스캔 도중 사라졌을 수 있다 — 스캔은 중단하지 않되(부분 관측이 아예
+    // 없는 것보다 낫다), 이 실패를 집계해 호출자가 "완전한 관측이었는가"를 판정할 수 있게 한다.
+    stats.errors++;
     return;
   }
+  let sawEntry = false;
   for (const dirent of dirents) {
+    sawEntry = true;
     const absChild = path.join(currentAbs, dirent.name);
     if (dirent.isSymbolicLink()) {
-      // 심볼릭 링크는 따라가지 않는다 — 순환·이중 목록 방지(위 문서 주석).
+      // 심볼릭 링크는 따라가지 않는다 — 순환·이중 목록 방지(위 문서 주석). 개수만 센다.
+      stats.symlinkCount++;
       continue;
     }
     if (dirent.isDirectory()) {
-      walk(rootAbs, absChild, out);
+      walk(rootAbs, absChild, out, stats);
       continue;
     }
     if (!dirent.isFile()) {
@@ -46,12 +70,14 @@ function walk(rootAbs: string, currentAbs: string, out: FileEntry[]): void {
     try {
       sha256 = sha256File(absChild);
     } catch {
-      // 경합으로 파일이 스캔 도중 사라졌을 수 있다 — 해당 항목만 건너뛴다.
+      // 경합으로 파일이 스캔 도중 사라졌을 수 있다 — 해당 항목만 건너뛰되 오류로 집계한다.
+      stats.errors++;
       continue;
     }
     const relPath = path.relative(rootAbs, absChild).split(path.sep).join("/");
     out.push({ path: relPath, sha256 });
   }
+  if (!sawEntry) stats.emptyDirCount++;
 }
 
 /**
@@ -61,15 +87,16 @@ function walk(rootAbs: string, currentAbs: string, out: FileEntry[]): void {
  */
 export function collectTree(rootAbs: string): TreeCollectResult {
   const entries: FileEntry[] = [];
+  const stats: WalkStats = { errors: 0, symlinkCount: 0, emptyDirCount: 0 };
   let rootStat;
   try {
     rootStat = statSync(rootAbs);
   } catch {
-    return { entries };
+    return { entries, errors: 0, symlinkCount: 0, emptyDirCount: 0 };
   }
   if (!rootStat.isDirectory()) {
-    return { entries };
+    return { entries, errors: 0, symlinkCount: 0, emptyDirCount: 0 };
   }
-  walk(rootAbs, rootAbs, entries);
-  return { entries };
+  walk(rootAbs, rootAbs, entries, stats);
+  return { entries, errors: stats.errors, symlinkCount: stats.symlinkCount, emptyDirCount: stats.emptyDirCount };
 }
