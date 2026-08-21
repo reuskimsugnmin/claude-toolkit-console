@@ -102,6 +102,11 @@ describe("transcript-row.schema — AC-0.6b 실측 형에 대한 합성 픽스�
     expect(parseTranscriptRow(row).message?.content).toBe("그냥 텍스트");
   });
 
+  it("type:'agent-name' 행이 parse된다 (Step 3 실측 추가 — 17번째 관측 타입, 세션 표시 이름 메타데이터)", () => {
+    const row = { type: "agent-name", agentName: "some-session-name", sessionId: "sess-1" };
+    expect(() => parseTranscriptRow(row)).not.toThrow();
+  });
+
   it("tool_result는 type:'user' 행에서 관측된다 (AC-0.6b ⓐ)", () => {
     const rows = readFixtureJsonl("transcripts/attribution-present.jsonl") as {
       type: string;

@@ -30,6 +30,12 @@ export const TranscriptRowTypeSchema = z.enum([
   "atis-latch",
   "relocated",
   "worktree-state",
+  // ⚠️ Step 3 실측 추가(2026-08-21, 실제 트랜스크립트 84MB/24,698행 표본에서 재현) — AC-0.6b의
+  // 30파일 표본에는 없었던 17번째 타입. `{"type":"agent-name","agentName":"...","sessionId":"..."}`
+  // 형태로, 세션 표시 이름만 담는 메타데이터 행이다(usage/tool_use와 무관 — extract.ts는
+  // assistant/user 타입만 처리하므로 이 타입 추가가 추출 로직에 영향을 주지 않는다). R13이 정확히
+  // 의도한 대로 "모르는 타입"을 parse_failure로 드러냈기에 발견했다 — 조용히 스킵됐다면 못 봤다.
+  "agent-name",
 ]);
 export type TranscriptRowType = z.infer<typeof TranscriptRowTypeSchema>;
 
