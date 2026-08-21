@@ -150,7 +150,12 @@ export async function spawnClaude(options: SpawnClaudeOptions): Promise<SpawnCla
     throw new ForbiddenArgvViolationError(argvVerdict.violations);
   }
 
-  const env = buildChildEnv(options.profile, options.home.ctkHome, options.home.ctkConfigDir);
+  const env = buildChildEnv(
+    options.profile,
+    options.home.ctkHome,
+    options.home.ctkConfigDir,
+    options.home.configDirExplicit,
+  );
   const envVerdict = assertEnvWhitelist(env);
   if (envVerdict.status === "violation") {
     throw new SealEnvLeakError(envVerdict.leakedKeys);

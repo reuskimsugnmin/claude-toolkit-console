@@ -63,13 +63,20 @@ export function buildFullArgv(profile: SealProfile, subcommand: readonly string[
 
 /**
  * 공통 강제 사항 8번 — env는 상속하지 않고 명시 화이트리스트로 구성한다(`env -i` 규약,
- * 두 프로파일 모두 승계). `HOME`/`CLAUDE_CONFIG_DIR`은 항상 `ctkHome`/`ctkConfigDir`로
- * **덮어써서** 설정한다(부모 프로세스의 값이 아니라).
+ * 두 프로파일 모두 승계). `HOME`은 항상 `ctkHome`으로 **덮어써서** 설정한다(부모 프로세스의
+ * 값이 아니라).
+ *
+ * ⚠️ **H5 수정** — `CLAUDE_CONFIG_DIR`은 더 이상 항상 주입하지 않는다. `configDirExplicit`이
+ * true일 때만(격리 테스트가 `CTK_CONFIG_DIR`을 명시 설정한 경우) 주입한다. 프로덕션(미설정)에서는
+ * 이 env를 아예 자식 env 레코드에 넣지 않는다 — 그래야 자식 `claude`가 `$HOME/.claude`로
+ * 자연스럽게 기본값을 잡고(probe가 읽는 `ctkConfigDir` 기본값과 동일한 위치), probe와 자식
+ * 서브프로세스가 서로 다른 `.claude.json`을 보는 사고(H5 원문)가 구조적으로 사라진다.
  */
 export function buildChildEnv(
   profile: SealProfile,
   ctkHome: string,
   ctkConfigDir: string,
+  configDirExplicit: boolean,
   parentEnv: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
   const allowlist =
@@ -82,8 +89,8 @@ export function buildChildEnv(
       continue;
     }
     if (key === "CLAUDE_CONFIG_DIR") {
-      env.CLAUDE_CONFIG_DIR = ctkConfigDir;
-      continue;
+      if (configDirExplicit) env.CLAUDE_CONFIG_DIR = ctkConfigDir;
+      continue; // 명시 안 됐으면(프로덕션 기본 경로) 자식이 $HOME 기준 기본값을 쓰게 둔다(H5).
     }
     if (key === "CLAUDE_CODE_SAFE_MODE") {
       // safe mode의 자기 선언 — 플래그 파싱 의미가 바뀌어도 이 경로는 남는다(§1.3 결정 6).

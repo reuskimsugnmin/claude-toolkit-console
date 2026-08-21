@@ -120,7 +120,7 @@ export function buildFixtureHome(): FixtureHome {
   });
 
   return {
-    home: { ctkHome, ctkConfigDir },
+    home: { ctkHome, ctkConfigDir, configDirExplicit: false },
     projectAlpha,
     projectBeta,
     cleanup: () => rmSync(ctkHome, { recursive: true, force: true }),

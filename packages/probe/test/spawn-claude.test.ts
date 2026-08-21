@@ -19,7 +19,7 @@ describe("probe/harness/spawn-claude — §1.3 결정 6 봉인 래퍼 (가짜 cl
 
   beforeEach(() => {
     binDir = mkdtempSync(path.join(tmpdir(), "ctk-fake-claude-bin-"));
-    home = { ctkHome: mkdtempSync(path.join(tmpdir(), "ctk-fake-home-")), ctkConfigDir: "" };
+    home = { ctkHome: mkdtempSync(path.join(tmpdir(), "ctk-fake-home-")), ctkConfigDir: "", configDirExplicit: true };
     home = { ...home, ctkConfigDir: path.join(home.ctkHome, ".claude") };
     mkdirSync(home.ctkConfigDir, { recursive: true });
     originalPath = process.env.PATH;
@@ -71,6 +71,26 @@ describe("probe/harness/spawn-claude — §1.3 결정 6 봉인 래퍼 (가짜 cl
       delete process.env.SOME_SECRET;
     }
   });
+
+  it(
+    "✅ H5 수정(Step 5 보안 심사) — CTK_CONFIG_DIR이 명시되지 않은 프로덕션 기본 경로에서는 " +
+      "자식 프로세스에 CLAUDE_CONFIG_DIR을 아예 주입하지 않는다(자식이 $HOME 기준 기본값을 " +
+      "쓰게 둬 probe와 자식이 같은 .claude.json을 보게 한다) — 재현: 수정 전에는 이 테스트가 " +
+      "실패했다(항상 CLAUDE_CONFIG_DIR=<값>이 찍혔다)",
+    async () => {
+      writeFakeClaude('printf "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-absent}\\n"');
+      const prodHome: HomeContext = { ctkHome: home.ctkHome, ctkConfigDir: path.join(home.ctkHome, ".claude"), configDirExplicit: false };
+      const result = await spawnClaude({
+        profile: "test-isolated",
+        subcommand: ["--version"],
+        home: prodHome,
+        cwd: prodHome.ctkHome,
+        timeoutSec: 5,
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("CLAUDE_CONFIG_DIR=absent");
+    },
+  );
 
   it(
     "✅ 실측 확인(Step 2 검증 요청) — ANTHROPIC_BASE_URL·ANTHROPIC_API_KEY처럼 도메인 특화 위험 " +

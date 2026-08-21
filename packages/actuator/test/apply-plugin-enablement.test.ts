@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { movePluginEnablement, PluginEnablementCommandFailedError } from "../src/apply/plugin-enablement.js";
 import type { SpawnClaudeOptions, SpawnClaudeResult } from "@ctk/probe";
 
-const HOME = { ctkHome: "/synthetic/home", ctkConfigDir: "/synthetic/home/.claude" };
+const HOME = { ctkHome: "/synthetic/home", ctkConfigDir: "/synthetic/home/.claude", configDirExplicit: false };
 
 function fakeSpawn(
   script: (options: SpawnClaudeOptions) => SpawnClaudeResult,
