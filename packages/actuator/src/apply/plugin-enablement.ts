@@ -13,6 +13,14 @@ import { spawnClaude, type HomeContext, type SpawnClaudeResult } from "@ctk/prob
  *
  * 종료 코드를 반드시 확인한다(Step 2에서 `spawnClaude`가 실패를 빈 stdout으로 삼킨 전례 —
  * 여기서 같은 실수를 반복하지 않는다) — 0이 아니면 즉시 던진다.
+ *
+ * ⚠️ **Step 5 보안 심사 수정(M6)** — 이전에는 `profile: "test-isolated"`가 하드코딩돼 있었다.
+ * `--safe-mode`는 `sealed-live` 프로파일에만 붙는데(seal-profiles.ts), 이 모듈이 사용자 환경을
+ * **실제로 바꾸는 유일한 호출**(plugin enable/disable)이라는 점을 생각하면 봉인 없이 임의
+ * 프로젝트 cwd에서 실행되고 있었다는 뜻이다 — 훅·커스터마이즈가 살아있는 채로 특권 쓰기가
+ * 실행된 것. `--safe-mode`는 실측상(docs/harness-facts.md) `plugin list --json`을 깨지 않고
+ * 인증도 정상 동작하므로(비용 0의 강화) `sealed-live`로 바꿨다 — 이름에 "test-"가 들어간
+ * 프로파일이 프로덕션 쓰기 경로에 남아있지 않게 한다.
  */
 
 export type PluginScope = "user" | "project" | "local";
@@ -55,7 +63,7 @@ export async function movePluginEnablement(
   const { assetId, fromScope, toScope, home, fromCwd, toCwd, timeoutSec, spawnFn = spawnClaude } = options;
 
   const disable = await spawnFn({
-    profile: "test-isolated",
+    profile: "sealed-live",
     subcommand: ["plugin", "disable", assetId, "-s", fromScope],
     home,
     cwd: fromCwd,
@@ -66,7 +74,7 @@ export async function movePluginEnablement(
   }
 
   const enable = await spawnFn({
-    profile: "test-isolated",
+    profile: "sealed-live",
     subcommand: ["plugin", "enable", assetId, "-s", toScope],
     home,
     cwd: toCwd,

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { assertEnvWhitelist, assertForbiddenArgv } from "@ctk/core";
+import { assertEnvWhitelist, assertForbiddenArgv, ENV_WHITELIST_COMMON, ENV_WHITELIST_SEALED_LIVE_EXTRA } from "@ctk/core";
 import type { HomeContext } from "../home.js";
 import { buildChildEnv, buildFullArgv, isModelSessionSubcommand, isSealProfile, type SealProfile } from "./seal-profiles.js";
 
@@ -156,7 +156,15 @@ export async function spawnClaude(options: SpawnClaudeOptions): Promise<SpawnCla
     options.home.ctkConfigDir,
     options.home.configDirExplicit,
   );
-  const envVerdict = assertEnvWhitelist(env);
+  // 실측(M6 검증 중 발견) — 이 마지막 방어선이 프로파일과 무관하게 항상 ENV_WHITELIST_COMMON만
+  // 봤다. sealed-live가 실제로 spawn되는 경로가 이전에 없었기 때문에(actuator/apply/
+  // plugin-enablement.ts가 test-isolated를 하드코딩했다, M6) 드러나지 않았을 뿐 — sealed-live의
+  // 정당한 CLAUDE_CODE_SAFE_MODE=1 자기 선언(buildChildEnv, seal-profiles.ts)조차 "허용 목록 밖
+  // 유출"로 오판해 SealEnvLeakError를 던지는 잠재 버그였다. buildChildEnv와 동일한 allowlist
+  // 선택 로직을 그대로 재사용한다(재구현 금지).
+  const allowlist =
+    options.profile === "sealed-live" ? [...ENV_WHITELIST_COMMON, ...ENV_WHITELIST_SEALED_LIVE_EXTRA] : ENV_WHITELIST_COMMON;
+  const envVerdict = assertEnvWhitelist(env, allowlist);
   if (envVerdict.status === "violation") {
     throw new SealEnvLeakError(envVerdict.leakedKeys);
   }

@@ -130,6 +130,24 @@ describe("probe/harness/spawn-claude — §1.3 결정 6 봉인 래퍼 (가짜 cl
     },
   );
 
+  it(
+    "✅ M6 검증 중 발견한 회귀 재현 — sealed-live 프로파일은 buildChildEnv가 정당하게 심는 " +
+      "CLAUDE_CODE_SAFE_MODE=1 자기 선언을 SealEnvLeakError로 오판하지 않는다(마지막 방어선인 " +
+      "assertEnvWhitelist가 프로파일과 무관하게 항상 ENV_WHITELIST_COMMON만 봐서, sealed-live가 " +
+      "실제로 spawn되는 경로가 생기기 전까지는 드러나지 않았던 잠재 버그)",
+    async () => {
+      writeFakeClaude("exit 0");
+      const result = await spawnClaude({
+        profile: "sealed-live",
+        subcommand: ["plugin", "list", "--json"],
+        home,
+        cwd: home.ctkHome,
+        timeoutSec: 5,
+      });
+      expect(result.exitCode).toBe(0);
+    },
+  );
+
   it("타임아웃을 초과하면 프로세스를 죽이고 SealTimeoutError로 거부한다", async () => {
     writeFakeClaude("sleep 5");
     await expect(

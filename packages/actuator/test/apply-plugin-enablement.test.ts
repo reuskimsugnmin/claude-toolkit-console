@@ -34,8 +34,9 @@ describe("actuator/apply/plugin-enablement — 결정 6C: disable(from) -> enabl
     expect(calls[0]?.cwd).toBe("/tmp/from");
     expect(calls[1]?.subcommand).toEqual(["plugin", "enable", "demo@demo-mp", "-s", "project"]);
     expect(calls[1]?.cwd).toBe("/synthetic/project");
-    // 두 호출 모두 test-isolated 프로파일을 쓴다(구조적 서브커맨드 — 모델 세션이 아니다).
-    expect(calls.every((c) => c.profile === "test-isolated")).toBe(true);
+    // M6 — 두 호출 모두 sealed-live 프로파일을 쓴다(--safe-mode로 봉인된 채 실행돼야 한다 —
+    // 이 모듈이 사용자 환경을 실제로 바꾸는 유일한 특권 쓰기 경로다).
+    expect(calls.every((c) => c.profile === "sealed-live")).toBe(true);
   });
 
   it("disable 종료 코드가 0이 아니면 즉시 던지고 enable을 호출하지 않는다(회귀 방지 — 실패를 삼키지 않는다)", async () => {
