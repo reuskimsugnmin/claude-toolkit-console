@@ -198,4 +198,59 @@ describe("cli — ctk move / ctk rollback 왕복 e2e (Step 5, AC-2.1/2.2/2.3/2.4
     const afterTree = collectTree(ctkConfigDir).entries;
     expect(afterTree).toEqual(beforeTree); // 어떤 파일도 변경되지 않음
   });
+
+  it(
+    "✅ Step 5 e2e에서 발견한 경로 순회 취약점(H2) — SKILL.md frontmatter name 위조로 " +
+      "카탈로그 루트 밖에 파일이 써지지 않는다. `ctk scan` 단계에서부터 거부된다(sync/asset-store.ts)",
+    async () => {
+      const initResult = await runInit({});
+      // 디렉터리명은 평범하지만 frontmatter `name`이 경로 순회 문자열을 자칭한다 — probe/
+      // sources/skills.ts는 frontmatter.name을 검증 없이 그대로 asset id로 쓴다. 고쳐진
+      // sync/asset-store.ts가 이 값을 카탈로그 경로 세그먼트로 쓰기 직전에 막는다.
+      mkdirSync(path.join(ctkConfigDir, "skills", "malicious-skill"), { recursive: true });
+      writeFileSync(
+        path.join(ctkConfigDir, "skills", "malicious-skill", "SKILL.md"),
+        "---\nname: ../../evil\n---\n",
+        "utf8",
+      );
+
+      await expect(
+        runScan({ spawnFn: async () => ({ exitCode: 0, stdout: "[]", stderr: "", timedOut: false }) }),
+      ).rejects.toMatchObject({ failureClass: "path_traversal_detected" });
+
+      // 카탈로그 디렉터리의 부모(="../../evil"이 실제로 탈출하면 파일이 생겼을 자리)에
+      // 그 이름을 담은 경로가 전혀 생기지 않았다 — run-log/machine.json처럼 실패 자체를
+      // 기록하는 정상적인 부수 쓰기는 허용하되(byte-for-byte 트리 동일성은 과한 단언이다),
+      // 취약점 클래스(경로 세그먼트 탈출) 자체가 재현되지 않았음만 정확히 확인한다.
+      const catalogParentAfter = collectTree(path.dirname(initResult.catalogPath)).entries;
+      expect(catalogParentAfter.some((e) => e.path.includes("evil"))).toBe(false);
+    },
+  );
+
+  it(
+    "✅ 방어 심층 — 카탈로그 index.json에 이미 경로 순회 id가 올라간 최악의 경우에도 " +
+      "`ctk move`가 그 값을 skills/<id> 경로 세그먼트로 쓰지 않는다(H2, move.ts 자체 검증)",
+    async () => {
+      const result = await runInit({});
+      mkdirSync(path.join(ctkConfigDir, "skills", "demo-skill"), { recursive: true });
+      writeFileSync(path.join(ctkConfigDir, "skills", "demo-skill", "SKILL.md"), "---\nname: demo-skill\n---\n", "utf8");
+      await runScan({ spawnFn: async () => ({ exitCode: 0, stdout: "[]", stderr: "", timedOut: false }) });
+
+      // 카탈로그 자체 방어(sync/asset-store.ts)를 우회해 index.json에 직접 악성 항목을
+      // 주입한다 — "만약 이 방어선이 없었다면"을 재현하는 방어 심층 테스트다.
+      const indexAbsPath = path.join(result.catalogPath, "catalog", "index.json");
+      const index = JSON.parse(readFileSync(indexAbsPath, "utf8")) as { assets: unknown[] };
+      index.assets.push({ id: "../../evil", kind: "skill", name: "../../evil" });
+      writeFileSync(indexAbsPath, JSON.stringify(index, null, 2), "utf8");
+
+      const beforeTree = collectTree(ctkConfigDir).entries;
+
+      await expect(runMove({ assetId: "../../evil", to: "project", toProjectIndex: 0 })).rejects.toThrow(
+        /경로 구분자|금지된 경로 패턴/,
+      );
+
+      const afterTree = collectTree(ctkConfigDir).entries;
+      expect(afterTree).toEqual(beforeTree);
+    },
+  );
 });

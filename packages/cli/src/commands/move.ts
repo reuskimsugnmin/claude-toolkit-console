@@ -21,7 +21,9 @@ import {
 } from "@ctk/actuator";
 import { listKnownProjectPaths, resolveHomeContext, type HomeContext } from "@ctk/probe";
 import {
+  FORBIDDEN_RULES,
   TIER1_INTENTIONAL_WRITES,
+  matchesForbidden,
   normalizePath,
   parseInstalledPluginsFile,
   snapshotIdFsSafe,
@@ -59,6 +61,25 @@ export class ProjectIndexOutOfRangeError extends Error {
   constructor(index: number, known: number) {
     super(`--project-index ${index}가 범위를 벗어났다 — 알려진 프로젝트 ${known}개(0..${known - 1}).`);
     this.name = "ProjectIndexOutOfRangeError";
+  }
+}
+
+/**
+ * `path_traversal_detected`류 방어(H2와 동일 논리) — 스킬 자산 id는 SKILL.md frontmatter의
+ * `name` 필드에서 온다(probe/sources/skills.ts). 그 필드는 서드파티 스킬 저자가 쓰는 값이고,
+ * 이 함수가 곧바로 `path.join(root, "skills", assetId)`의 세그먼트로 쓰인다 — frontmatter에
+ * `name: ../../evil`류 값을 자칭하면 스킬 디렉터리 트리 밖으로 쓰기를 탈출시킬 수 있다.
+ * `core/guard/forbidden.ts`의 판정을 그대로 재사용한다(경로 순회·절대경로·NUL 금지 — H1과
+ * 동형으로 여기서도 판정기를 재구현하지 않는다) + 단일 경로 세그먼트여야 하므로 `/` 자체도 막는다.
+ */
+function assertSafePathSegment(value: string, fieldName: string): void {
+  if (value.length === 0) throw new Error(`${fieldName}가 비어있다`);
+  if (value.includes("/") || value.includes("\\")) {
+    throw new Error(`${fieldName}에 경로 구분자가 포함될 수 없다(단일 경로 세그먼트여야 한다): ${value}`);
+  }
+  const forbidden = matchesForbidden(value, FORBIDDEN_RULES);
+  if (forbidden) {
+    throw new Error(`${fieldName}가 금지된 경로 패턴과 일치한다(${forbidden.note}): ${value}`);
   }
 }
 
@@ -263,6 +284,7 @@ async function moveSkillAsset(
   catalogPath: string,
   options: MoveOptions,
 ): Promise<MoveSummary> {
+  assertSafePathSegment(options.assetId, "--asset"); // assetId가 곧 skills/<assetId> 경로 세그먼트가 된다.
   const fromScope: "user" | "project" = options.from ?? "user";
   const toScope: "user" | "project" = options.to;
   const fromProjectPath = fromScope === "project" ? resolveProjectPath(home, options.fromProjectIndex) : null;
