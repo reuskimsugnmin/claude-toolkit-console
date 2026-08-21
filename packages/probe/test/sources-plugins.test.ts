@@ -1,3 +1,5 @@
+import { writeFileSync } from "node:fs";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { collectPlugins } from "../src/sources/plugins.js";
 import { CommandFailedError } from "../src/sources/errors.js";
@@ -168,6 +170,44 @@ describe("probe/sources/plugins — id 기준 고유 집계 + install_scope/enab
     expect(result.assets.map((a) => a.name)).toEqual(["shared-name", "shared-name"]);
     expect(new Set(result.assets.map((a) => a.marketplace))).toEqual(new Set(["marketplace-one", "marketplace-two"]));
   });
+
+  it(
+    "✅ 회귀 방지(Step 5, 실측 발견) — user 스코프로 설치된 플러그인이 `-s project`로 특정 " +
+      "프로젝트에서만 켜지면(installed_plugins.json은 무변경) 재스캔이 install_scope=user · " +
+      "enabled_at=project · project_path_hash=해당 프로젝트인 별도 Installation 레코드를 만든다 " +
+      "(actuator move의 user→project 전이를 재스캔으로 검증할 수 있어야 AC-2.1이 성립한다)",
+    async () => {
+      fixture = buildFixtureHome();
+      // demo-plugin@demo-marketplace는 fixture상 user 스코프로만 설치돼 있다. alpha 프로젝트의
+      // settings.json에도 같은 id를 켠 상태로 만든다 — `claude plugin enable ... -s project`가
+      // 실제로 만드는 파일 모양과 동일(installed_plugins.json 엔트리는 추가되지 않는다, AC-0.8 실측).
+      writeFileSync(
+        path.join(fixture.projectAlpha, ".claude", "settings.json"),
+        JSON.stringify({
+          enabledPlugins: { "demo-local@demo-marketplace": true, "demo-plugin@demo-marketplace": true },
+        }),
+      );
+      const result = await collectPlugins({
+        home: fixture.home,
+        machineId: "m1",
+        cwd: fixture.home.ctkHome,
+        timeoutSec: 5,
+        spawnFn: fakeSpawn(PLUGIN_LIST_STDOUT),
+      });
+      const projectEnablement = result.installations.find(
+        (i) => i.asset_id === "demo-plugin@demo-marketplace" && i.enabled_at === "project",
+      );
+      expect(projectEnablement).toBeDefined();
+      expect(projectEnablement?.install_scope).toBe("user");
+      expect(projectEnablement?.project_path_hash).not.toBeNull();
+      // 원래의 user 스코프 레코드(전역 settings.json 기준 enabled_at="user")는 그대로 남아있다 —
+      // 이 새 레코드는 대체가 아니라 추가다(같은 자산이 여러 스코프에서 동시에 켜질 수 있다).
+      const globalEnablement = result.installations.find(
+        (i) => i.asset_id === "demo-plugin@demo-marketplace" && i.enabled_at === "user",
+      );
+      expect(globalEnablement).toBeDefined();
+    },
+  );
 
   it(
     "claude plugin list --json이 0이 아닌 종료 코드로 실패하면 빈 stdout을 '플러그인 0개'로 " +
