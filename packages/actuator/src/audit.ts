@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { collectTree } from "@ctk/probe";
+import { collectTree, type TreeCollectCache } from "@ctk/probe";
 import {
   AC_2_7_C_FORBIDDEN_RULES,
   TIER2_CHURN_ALLOWLIST,
@@ -92,15 +92,24 @@ export interface RootAuditSnapshot {
   collectErrors: number;
   symlinkCount: number;
   emptyDirCount: number;
+  /** M10 — 이 수집에서 관측한 (size, mtimeMs, sha256). 다음 captureRootSnapshot 호출에 캐시로
+   * 넘기면(예: after 캡처에 before의 cache를 넘긴다) 안 바뀐 파일은 재해시를 건너뛴다. */
+  cache: TreeCollectCache;
 }
 
-export function captureRootSnapshot(rootAbs: string): RootAuditSnapshot {
-  const result = collectTree(rootAbs);
+/**
+ * `cache`(M10, 선택)를 넘기면 이전 캡처에서 (size, mtimeMs)가 같았던 파일은 재해시를
+ * 건너뛴다 — `ctk move` 1회가 큰 config 트리를 최소 2번(before·after) 전량 재해시하던 비용을
+ * 줄인다. 호출자가 넘기지 않으면 항상 전량 재해시한다(옵트인, 기본 동작 불변).
+ */
+export function captureRootSnapshot(rootAbs: string, cache?: TreeCollectCache): RootAuditSnapshot {
+  const result = collectTree(rootAbs, cache);
   return {
     entries: result.entries,
     collectErrors: result.errors,
     symlinkCount: result.symlinkCount,
     emptyDirCount: result.emptyDirCount,
+    cache: result.cache,
   };
 }
 

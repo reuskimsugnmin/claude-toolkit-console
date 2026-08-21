@@ -97,6 +97,45 @@ describe("probe/tree-collect — config 트리 수집 (I/O만, 판정은 core/gu
     },
   );
 
+  it(
+    "✅ M10 재현 — (size, mtimeMs)가 캐시와 동일한 파일은 내용을 다시 읽지 않고 캐시된 sha256을 " +
+      "재사용한다(성능 최적화 — 이동 1회당 큰 config 트리 전량 재해시를 줄인다). 캐시를 " +
+      "일부러 틀린 값으로 채워 '진짜로 재읽기를 건너뛰는지'를 직접 관측한다",
+    () => {
+      const target = path.join(root, "settings.json");
+      writeFileSync(target, "original-content", "utf8");
+      const first = collectTree(root);
+      const originalSha = first.entries.find((e) => e.path === "settings.json")!.sha256;
+
+      // 캐시를 의도적으로 틀린 sha256으로 오염시킨다(size/mtimeMs는 실제 stat과 동일하게 유지).
+      const tamperedCache = new Map(first.cache);
+      const key = [...tamperedCache.keys()][0]!;
+      tamperedCache.set(key, { ...tamperedCache.get(key)!, sha256: "deadbeef".repeat(8) });
+
+      const second = collectTree(root, tamperedCache);
+      const secondSha = second.entries.find((e) => e.path === "settings.json")!.sha256;
+      // 재읽기를 건너뛰었다면 오염된 캐시 값이 그대로 나온다 — 진짜 내용(originalSha)이 아니다.
+      expect(secondSha).toBe("deadbeef".repeat(8));
+      expect(secondSha).not.toBe(originalSha);
+
+      // 캐시 없이(기본 동작) 돌리면 항상 실제 내용으로 재해시한다 — 캐시는 옵트인일 뿐이다.
+      const noCache = collectTree(root);
+      expect(noCache.entries.find((e) => e.path === "settings.json")!.sha256).toBe(originalSha);
+    },
+  );
+
+  it("파일이 실제로 바뀌면(mtime도 함께 바뀜) 캐시를 넘겨도 새 내용으로 재해시한다", () => {
+    const target = path.join(root, "settings.json");
+    writeFileSync(target, "v1", "utf8");
+    const first = collectTree(root);
+
+    writeFileSync(target, "v2-longer-content", "utf8"); // size가 바뀌므로 캐시가 무효화된다.
+    const second = collectTree(root, first.cache);
+    const sha = second.entries.find((e) => e.path === "settings.json")!.sha256;
+    const expectedSha = collectTree(root).entries.find((e) => e.path === "settings.json")!.sha256;
+    expect(sha).toBe(expectedSha);
+  });
+
   it("심볼릭 링크·빈 디렉터리 개수를 별도로 센다(M3 — 파일 목록에는 안 남는 신호)", () => {
     mkdirSync(path.join(root, "empty-one"), { recursive: true });
     mkdirSync(path.join(root, "empty-two"), { recursive: true });

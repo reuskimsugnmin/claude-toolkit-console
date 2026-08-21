@@ -324,7 +324,8 @@ async function movePluginAsset(
     // 하므로 이 블록 전체를 try/catch로 감싼다. 감사 위반 자체도 M5 수정으로 평문 Error가 아니라
     // ForbiddenPathWriteError/WhitelistViolationError를 던진다(failure_class가 실제로 채워진다).
     try {
-      const configAfter = captureRootSnapshot(configRoot);
+      // M10 — before의 캐시를 넘겨 안 바뀐 파일은 재해시를 건너뛴다.
+      const configAfter = captureRootSnapshot(configRoot, configBefore.cache);
       const configAudit = auditRoot(
         { rootAbs: configRoot, tier1: TIER1_INTENTIONAL_WRITES, allowTier2Churn: true },
         configBefore,
@@ -336,7 +337,7 @@ async function movePluginAsset(
       }
       for (const projectPath of involvedProjectPaths) {
         const before = projectBefores.get(projectPath)!;
-        const after = captureRootSnapshot(path.join(projectPath, ".claude"));
+        const after = captureRootSnapshot(path.join(projectPath, ".claude"), before.cache);
         const projectAudit = auditRoot(
           { rootAbs: path.join(projectPath, ".claude"), tier1: TIER1_INTENTIONAL_WRITES, allowTier2Churn: false },
           before,
@@ -487,14 +488,15 @@ async function moveSkillAsset(
   // 감싸 self-rollback을 트리거한다. 감사 위반은 타입 오류(auditFailureError)로 던진다.
   const skillTier1 = [{ pattern: new RegExp(`^skills/${escapeRegExp(dirName)}(/|$)`), note: "Tier-1 대상 스킬" }];
   try {
-    const configAfter = captureRootSnapshot(configRoot);
+    // M10 — before의 캐시를 넘겨 안 바뀐 파일은 재해시를 건너뛴다.
+    const configAfter = captureRootSnapshot(configRoot, configBefore.cache);
     const configAudit = auditRoot({ rootAbs: configRoot, tier1: skillTier1, allowTier2Churn: true }, configBefore, configAfter, readClaudeJsonRawOrNull(configRoot));
     if (!auditPassed(configAudit)) {
       throw auditFailureError(configAudit, "config 트리 감사 위반");
     }
     for (const projectPath of involvedProjectPaths) {
       const before = projectBefores.get(projectPath)!;
-      const after = captureRootSnapshot(path.join(projectPath, ".claude"));
+      const after = captureRootSnapshot(path.join(projectPath, ".claude"), before.cache);
       const projectAudit = auditRoot({ rootAbs: path.join(projectPath, ".claude"), tier1: skillTier1, allowTier2Churn: false }, before, after, null);
       if (!auditPassed(projectAudit)) {
         throw auditFailureError(projectAudit, `project 트리 감사 위반(${projectPath})`);
