@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { collectTree } from "@ctk/probe";
 import {
@@ -170,4 +170,43 @@ export function readBeforeSnapshotOrNull(backupRoot: string): BeforeSnapshot | n
 /** 백업 런 디렉터리를 통째로 지운다 — 롤백 완료 후 정리용(선택적, journal에는 backup_ref가 남는다). */
 export function removeBackupRun(backupRoot: string): void {
   rmSync(backupRoot, { recursive: true, force: true });
+}
+
+/**
+ * 백업 보존 정책 — 최근 `keep`개만 남기고 오래된 런을 정리한다(M1 후속).
+ *
+ * ⚠️ **중단된 복원이 있는 런은 절대 지우지 않는다.** `.restore-evicted`가 남아 있다는 것은
+ * 사용자 파일이 그 안에만 존재할 수 있다는 뜻이고, 그것을 지우면 복구 가능한 상태가 진짜
+ * 손실이 된다. 보존 정책이 데이터 손실의 원인이 되어서는 안 된다.
+ *
+ * 롤백 대상이 될 수 있는 **가장 최근 런**도 보호한다 — `ctk rollback --last`가 참조한다.
+ */
+export function pruneBackupRuns(backupsRoot: string, keep = 10): { removed: string[]; kept: string[] } {
+  const removed: string[] = [];
+  const kept: string[] = [];
+  if (!existsSync(backupsRoot)) return { removed, kept };
+
+  let runIds: string[];
+  try {
+    runIds = readdirSync(backupsRoot, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name)
+      .sort(); // run_id는 ISO8601 접두라 사전순 = 시간순
+  } catch {
+    // 못 읽으면 "정리할 것이 없다"가 아니라 판정 불가다(안전 원칙 5).
+    throw new Error(`백업 루트를 읽을 수 없어 보존 정책을 적용할 수 없다: ${backupsRoot}`);
+  }
+
+  const candidates = runIds.slice(0, Math.max(0, runIds.length - keep));
+  for (const runId of runIds) {
+    const backupRoot = path.join(backupsRoot, runId);
+    const interrupted = existsSync(path.join(backupRoot, ".restore-evicted"));
+    if (!candidates.includes(runId) || interrupted) {
+      kept.push(runId);
+      continue;
+    }
+    removeBackupRun(backupRoot);
+    removed.push(runId);
+  }
+  return { removed, kept };
 }

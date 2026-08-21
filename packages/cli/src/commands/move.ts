@@ -21,6 +21,7 @@ import {
   verifySkillDirMove,
   writeBeforeSnapshot,
   writeManifest,
+  pruneBackupRuns,
   type BeforeSnapshotRoot,
 } from "@ctk/actuator";
 import { claudeJsonPath, findSkillDirsById, listKnownProjectPaths, resolveHomeContext, type HomeContext } from "@ctk/probe";
@@ -400,6 +401,9 @@ async function movePluginAsset(
     });
     const { path: journalPath } = writeJournalEntry(catalogPath, entry);
     commitAll(catalogPath, `ctk move: ${options.assetId} ${fromScope} -> ${toScope}`);
+    // 조치가 성공적으로 기록된 뒤에만 오래된 백업을 정리한다 — 중단된 복원이 있는 런과
+    // 최근 keep개는 보호되므로 `ctk rollback --last`의 대상은 남는다(M1 후속).
+    pruneBackupRuns(path.join(home.ctkHome, ".ctk-backups"));
 
     return {
       assetId: options.assetId,
