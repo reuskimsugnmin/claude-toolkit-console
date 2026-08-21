@@ -26,8 +26,14 @@
   **이미 있다.** 귀속을 접두어 매칭으로 재발명하기 전에 이 필드를 먼저 본다. 단 모든 세션에
   있지는 않으므로, 부재의 **원인**(구버전인가 `--bare`인가)을 확인하기 전에는 단정하지 않는다.
 - `tool_result` 블록은 `user` 행에만 있다(`tool_use`는 `assistant` 행). 서브에이전트 스폰
-  도구명은 `Agent`다. `isSidechain: true`는 표본 79,420행에서 0건 — 서브에이전트 기록 경로는
-  미확정이며, 사용량 귀속이 조용히 0이 될 위험이 있다.
+  도구명은 `Agent`다.
+- **서브에이전트 기록은 같은 트랜스크립트 파일 안에 `isSidechain: true` 행으로 들어간다**
+  (전수 실측: 663개 중 324개 파일에 존재). Step 0이 "표본 79,420행에서 0건"으로 관측한 것은
+  **한 파일만 본 표본 편향**이었다 — 부재를 단정하기 전에 전수를 확인한다.
+- sidechain 행은 사용량 귀속에 필요한 것을 전부 갖는다: `assistant` 행에 `usage`가 실리고,
+  **`attributionAgent`** 필드가 스폰된 에이전트를 지목하며(값은 `general-purpose` 또는
+  `oh-my-claudecode:critic`처럼 **자산 id와 그대로 대응**), `agentId`로 같은 실행을 묶을 수 있다.
+  즉 귀속 필드는 넷이다 — `attributionSkill`·`attributionPlugin`·`attributionMcpServer`·`attributionAgent`.
 
 ## CLI 동작
 
