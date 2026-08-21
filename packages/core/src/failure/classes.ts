@@ -26,6 +26,7 @@ export const FAILURE_CLASSES = [
   "forbidden_path_write", // 금지 목록 경로(CLAUDE.md·installed_plugins.json·MCP 서브트리 등) 변경 — 최우선 경보 (AC-2.7-c) — Step 5
   "verify_mismatch", // 조치 후 probe 재실측이 기대와 다름 — 자동 롤백 (AC-2.6) — Step 5
   "rollback_failed", // 롤백 자체가 실패 — 최악, 백업 경로 그대로 출력 + 수동 복구 절차 안내 — Step 5
+  "path_traversal_detected", // 외부 입력 유래 문자열(자산 id·이름 등)에 ../ 등이 존재 — 공격 시도, path_normalize_failed와 분리(H2) — Step 5 e2e에서 실제로 재현(악성 SKILL.md frontmatter name)
   "unclassified",
 ] as const;
 
