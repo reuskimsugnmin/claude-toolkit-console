@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { machineIndependentTag, schemaVersion } from "./common.js";
-import { GenModeSchema } from "./annotation.js";
+import { GenModeSchema, GenSourceTrustSchema } from "./annotation.js";
 
 /** 인용 근거 — P5(인용 강제). 원문 라인 범위를 자동으로 붙인다 (특히 rule_extract 경로). */
 export const CitationSchema = z
@@ -26,6 +26,8 @@ export const DocPageSchema = z
     body: z.string(),
     citations: z.array(CitationSchema),
     gen_mode: GenModeSchema,
+    /** iter 8 · B1-4 — 이 문서가 근거로 삼은 서드파티 원문의 출처. */
+    gen_source_trust: GenSourceTrustSchema,
     generated_at: z.string().datetime(),
   })
   .strict();

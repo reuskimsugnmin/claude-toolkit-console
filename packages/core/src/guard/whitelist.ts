@@ -58,6 +58,44 @@ export const TIER2_CHURN_ALLOWLIST: readonly AllowlistRule[] = [
  * 프로파일(예: `gen`의 `-p` 모델 세션)이 그 항목들을 자체적으로 실측해 확인한 뒤에만 채택
  * 대상이다. 가드 약화 금지 원칙에 따라 정보를 버리지 않고 이름을 분리해 남겨둔다.
  */
+/**
+ * `sealed-live` 전용 Tier-2 churn 허용목록 (iter 8 · B3 — AC-0.11 실측, docs/harness-facts.md
+ * "`sealed-live` 봉인 세션의 churn" 절). **`TIER2_CHURN_ALLOWLIST`(AC-0.8, 격리 홈에서 measured
+ * 4개 명령)를 전용하지 않는다** — 워크로드가 다르다(AC-0.8 = `plugin list/details/enable/disable`
+ * · AC-0.11 = 실제 config dir에 대한 `claude -p` 모델 세션 3회).
+ *
+ * AC-0.11 실측값: `plugins/`는 mtime만 바뀌어 sha256 기준 diff에는 애초에 나타나지 않는다.
+ * `sessions/`는 mtime과 함께 `<pid>.json` · `<pid>.<hash>.key` 파일이 새로 생긴다.
+ * `--no-session-persistence`를 함께 쓰면(§1.3 결정 6 `sealed-live` 명세) `projects/` churn이
+ * 통째로 사라지므로 이 목록에 넣지 않는다 — 실제로 나타나지 않을 churn을 허용목록에 올리면
+ * "허용목록이 조용히 넓어진다"(Pre-mortem H)는 바로 그 실패 모드를 자초하는 것이다.
+ * `.claude.json`은 바이트 수준에서는 AC-0.8과 같은 경로이므로 기존 항목을 그대로 재사용하되,
+ * **내용(JSON) 수준**은 `SEALED_LIVE_CLAUDE_JSON_ALLOWED_CHURN_KEYS`로 별도로 좁힌다(단
+ * 하나 — `cachedGrowthBookFeaturesAt`).
+ */
+export const TIER2_CHURN_ALLOWLIST_SEALED_LIVE: readonly AllowlistRule[] = [
+  { exact: ".claude.json", note: "AC-0.11 실측 — sealed-live claude -p 3회 실행 전부에서 바뀜(의미 diff는 별도 좁힘)" },
+  {
+    pattern: /^\.claude\.json\.tmp\.\d+\.[A-Za-z0-9]+$/,
+    note: "AC-0.8과 동형의 원자적 쓰기 임시파일 — AC-0.11에서도 같은 갱신 경로를 쓴다",
+  },
+  {
+    pattern: /^sessions\/\d+\.json$/,
+    note: "AC-0.11 실측 — sealed-live claude -p 실행마다 생성되는 세션 메타 파일(<pid>.json)",
+  },
+  {
+    pattern: /^sessions\/\d+\.[A-Za-z0-9]+\.key$/,
+    note: "AC-0.11 실측 — sealed-live claude -p 실행마다 생성되는 세션 키 파일(<pid>.<hash>.key)",
+  },
+];
+
+/**
+ * `.claude.json`의 의미(JSON) diff에서 `sealed-live`가 허용하는 유일한 최상위 키
+ * (`core/guard/claude-json-semantic.ts`의 `allowedChurnKeys`에 그대로 넘긴다). AC-0.11 실측 —
+ * 3회 실행 전부에서 `projects` 맵은 무변경이었고 바뀐 최상위 키는 이 하나뿐이었다.
+ */
+export const SEALED_LIVE_CLAUDE_JSON_ALLOWED_CHURN_KEYS: readonly string[] = ["cachedGrowthBookFeaturesAt"];
+
 export const TIER2_CHURN_ALLOWLIST_KNOWN_UNMEASURED: readonly AllowlistRule[] = [
   { exact: "mcp-needs-auth-cache.json", note: "다른 명령에서 알려짐 (미실측, 병기 유지)" },
   { exact: "stats-cache.json", note: "다른 명령에서 알려짐 (미실측, 병기 유지)" },

@@ -31,6 +31,8 @@ export * from "./guard/forbidden-argv.js";
 export * from "./guard/injection-patterns.js";
 export * from "./guard/env-whitelist.js";
 export * from "./guard/claude-json-semantic.js";
+export * from "./guard/preflight-version.js";
+export * from "./guard/managed-policy.js";
 
 export * from "./snapshot/snapshot.js";
 export * from "./snapshot/diff.js";

@@ -80,6 +80,7 @@ describe("스키마 라운드트립 — 합성 카탈로그 픽스처 (fixtures/
       purpose: "테스트",
       when_to_use: "테스트할 때",
       gen_mode: "rule_extract",
+      gen_source_trust: "local",
       generated_at: "2026-08-01T00:00:00.000Z",
     };
     expect(() => AnnotationSchema.parse(annotation)).not.toThrow();
@@ -93,6 +94,7 @@ describe("스키마 라운드트립 — 합성 카탈로그 픽스처 (fixtures/
       body: "합성 본문",
       citations: [],
       gen_mode: "rule_extract",
+      gen_source_trust: "local",
       generated_at: "2026-08-01T00:00:00.000Z",
     };
     expect(() => DocPageSchema.parse(docPage)).not.toThrow();
