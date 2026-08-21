@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { diffById, machineDir, parseInstallation, type Installation } from "@ctk/core";
 import { resolveHomeContext } from "@ctk/probe";
+import { findInterruptedRestores, type InterruptedRestore } from "@ctk/actuator";
 import { readLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
 
 export class NoSnapshotsError extends Error {
@@ -82,4 +83,32 @@ export function runDoctorDrift(): DriftSummary {
     removed: diff.removed.map((i) => i.asset_id),
     unchangedCount: diff.unchanged.length,
   };
+}
+
+/**
+ * `ctk doctor`의 **최상단 경보**. 중단된 복원이 남아 있으면 다른 어떤 요약보다 먼저 보여야 한다(§7.2) —
+ * 대상 자리가 비어 있어 사용자 눈에는 파일이 소실된 것으로 보이지만 실제로는 evicted에 온전히 남아
+ * 있는 상태이고, 그 사실을 알려주지 않으면 복구 가능한 상황을 손실로 오인하게 된다.
+ */
+export function runDoctorInterruptedRestores(): InterruptedRestore[] {
+  const home = resolveHomeContext();
+  return findInterruptedRestores(path.join(home.ctkHome, ".ctk-backups"));
+}
+
+/** 최상단 경보를 사람이 읽는 형태로 만든다. 잔존물이 없으면 `null`. */
+export function formatInterruptedRestoreAlert(found: readonly InterruptedRestore[]): string | null {
+  if (found.length === 0) return null;
+  const lines = [
+    `⚠️  중단된 복원 ${found.length}건 — 복구 가능한 사본이 남아 있다.`,
+    "",
+    "   복원 중 프로세스가 멈춰 대상 자리가 비어 있을 수 있다. 파일은 삭제되지 않았고",
+    "   아래 위치에 온전히 보관돼 있다. 수동 복구: evicted 경로를 대상 경로로 옮긴다.",
+    "",
+  ];
+  for (const item of found) {
+    lines.push(`   [${item.key}] ${item.targetMissing ? "대상 자리 비어 있음" : "대상 존재"}`);
+    lines.push(`     보관: ${item.evictedAbs}`);
+    lines.push(`     대상: ${item.targetAbs ?? "(manifest를 읽을 수 없어 미상)"}`);
+  }
+  return lines.join("\n");
 }

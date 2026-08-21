@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { catalogAbsPath } from "./catalog-boundary.js";
 import { assertNoRawPathLeaks, journalPath, toJsonlLine, type JournalEntry } from "@ctk/core";
 
 /**
@@ -13,7 +14,7 @@ import { assertNoRawPathLeaks, journalPath, toJsonlLine, type JournalEntry } fro
 export function writeJournalEntry(catalogRoot: string, entry: JournalEntry): { path: string } {
   assertNoRawPathLeaks(entry);
   const relPath = journalPath(entry.timestamp.replace(/:/g, "-"));
-  const absPath = path.join(catalogRoot, relPath);
+  const absPath = catalogAbsPath(catalogRoot, relPath);
   mkdirSync(path.dirname(absPath), { recursive: true });
   writeFileSync(absPath, `${toJsonlLine(entry)}\n`, "utf8");
   return { path: absPath };

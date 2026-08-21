@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { catalogAbsPath } from "./catalog-boundary.js";
 import { assertNoRawPathLeaks, assetJsonPath, catalogIndexPath, PathTraversalDetectedError, type Asset } from "@ctk/core";
 
 /**
@@ -26,7 +27,7 @@ export { PathTraversalDetectedError };
 export function upsertAsset(catalogRoot: string, asset: Asset): { path: string } {
   assertNoRawPathLeaks(asset);
   const relPath = assetJsonPath(asset.kind, asset.name);
-  const absPath = path.join(catalogRoot, relPath);
+  const absPath = catalogAbsPath(catalogRoot, relPath);
   mkdirSync(path.dirname(absPath), { recursive: true });
   writeFileSync(absPath, `${JSON.stringify(asset, null, 2)}\n`, "utf8");
   return { path: absPath };
@@ -68,7 +69,7 @@ export function rebuildCatalogIndex(catalogRoot: string): { path: string; index:
 
   const index: CatalogIndex = { schema_version: 1, assets: entries };
   const relPath = catalogIndexPath();
-  const absPath = path.join(catalogRoot, relPath);
+  const absPath = catalogAbsPath(catalogRoot, relPath);
   mkdirSync(path.dirname(absPath), { recursive: true });
   writeFileSync(absPath, `${JSON.stringify(index, null, 2)}\n`, "utf8");
   return { path: absPath, index };

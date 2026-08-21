@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { catalogAbsPath } from "./catalog-boundary.js";
 import { assertNoRawPathLeaks, machineJsonPath, type Machine } from "@ctk/core";
 
 /**
@@ -11,7 +12,7 @@ import { assertNoRawPathLeaks, machineJsonPath, type Machine } from "@ctk/core";
 export function ensureMachine(catalogRoot: string, machine: Machine): { path: string; created: boolean } {
   assertNoRawPathLeaks(machine);
   const relPath = machineJsonPath(machine.id);
-  const absPath = path.join(catalogRoot, relPath);
+  const absPath = catalogAbsPath(catalogRoot, relPath);
   if (existsSync(absPath)) {
     return { path: absPath, created: false };
   }

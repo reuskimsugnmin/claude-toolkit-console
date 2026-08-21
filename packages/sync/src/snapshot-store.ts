@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { catalogAbsPath } from "./catalog-boundary.js";
 import { assertNoRawPathLeaks, snapshotPath, toJsonl, type AppendOnlyRecord } from "@ctk/core";
 
 /**
@@ -20,7 +21,7 @@ export function writeSnapshot(
   // 파일명은 콜론이 없는 파일시스템 안전 변형을 쓴다(core/snapshot/id.ts의 snapshotIdFsSafe와
   // 동형 — 기존 픽스처 `2026-08-01T00-00-00Z.jsonl`과 동일한 명명 규약).
   const relPath = snapshotPath(machineId, isoTimestamp.replace(/:/g, "-"));
-  const absPath = path.join(catalogRoot, relPath);
+  const absPath = catalogAbsPath(catalogRoot, relPath);
   mkdirSync(path.dirname(absPath), { recursive: true });
   writeFileSync(absPath, `${toJsonl(records)}\n`, "utf8");
   return { path: absPath };

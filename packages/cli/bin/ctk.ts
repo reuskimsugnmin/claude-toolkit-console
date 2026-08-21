@@ -8,7 +8,12 @@
 
 import { runInit } from "../src/commands/init.js";
 import { runScan, CatalogNotInitializedError } from "../src/commands/scan.js";
-import { runDoctorDrift, NoSnapshotsError } from "../src/commands/doctor.js";
+import {
+  runDoctorDrift,
+  runDoctorInterruptedRestores,
+  formatInterruptedRestoreAlert,
+  NoSnapshotsError,
+} from "../src/commands/doctor.js";
 import { runVerifyAc1, NotYetScannedError } from "../src/commands/verify-ac1.js";
 import { runMove, AssetNotFoundError, NoOpMoveError, ProjectIndexOutOfRangeError } from "../src/commands/move.js";
 import { runRollback, NoRollbackTargetError } from "../src/commands/rollback.js";
@@ -49,6 +54,13 @@ async function main(): Promise<void> {
         return;
       }
       case "doctor": {
+        // §7.2 — 중단된 복원은 다른 어떤 요약보다 먼저 표시한다. 대상 자리가 비어 보이지만
+        // 사본이 남아 있는 유일한 상태이므로, 이 경보가 묻히면 복구 가능한 상황을 손실로 오인한다.
+        const alert = formatInterruptedRestoreAlert(runDoctorInterruptedRestores());
+        if (alert !== null) {
+          console.error(alert);
+          console.error("");
+        }
         if (rest.includes("--drift")) {
           const drift = runDoctorDrift();
           console.log(`드리프트 (${drift.fromSnapshot} → ${drift.toSnapshot})`);

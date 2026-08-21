@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
 import { claudeJsonPath, collectTree, listKnownProjectPaths, type HomeContext } from "@ctk/probe";
-import { FORBIDDEN_RULES, matchesForbidden, verdict as treeDiffVerdict } from "@ctk/core";
+import { BackupManifestSchema, FORBIDDEN_RULES, matchesForbidden, verdict as treeDiffVerdict } from "@ctk/core";
 import { atomicWriteFile } from "./guard/atomic-write.js";
 import { manifestSha256Of, readBeforeSnapshotOrNull, readManifest, type BackupEntry } from "./backup.js";
 
@@ -375,4 +375,66 @@ export function restoreFromBackup(
   } catch (cause) {
     throw new RollbackFailedError(backupRoot, cause);
   }
+}
+
+/**
+ * 중단된 복원의 잔존물. 2-phase 복원은 대상을 삭제하지 않고 `.restore-evicted/<key>`로 퇴피시킨
+ * 뒤 교체하므로, 그 사이에 프로세스가 죽으면 **사용자 파일이 evicted에만 존재**한다. 대상 자리는
+ * 비어 있으므로 사용자에게는 "사라진" 것처럼 보인다 — 실제로는 복구 가능하다는 사실을 아무도
+ * 알려주지 않는 것이 진짜 문제다(안전 원칙 5: 없음과 실패를 구분한다).
+ */
+export interface InterruptedRestore {
+  readonly backupRoot: string;
+  readonly key: string;
+  readonly evictedAbs: string;
+  /** 이 항목이 원래 있어야 할 자리. manifest에서 복원하며, 읽을 수 없으면 `null`. */
+  readonly targetAbs: string | null;
+  /** 대상 자리가 현재 비어 있는가 — 비어 있으면 사용자 눈에는 파일이 소실된 것으로 보인다. */
+  readonly targetMissing: boolean;
+}
+
+/**
+ * 백업 루트들을 훑어 중단된 복원의 잔존물을 찾는다. `ctk doctor`가 이 결과를 **다른 어떤 요약보다
+ * 먼저** 표시해야 한다(§7.2) — 사용자 파일이 눈앞에서 사라진 것처럼 보이는 유일한 상태이기 때문이다.
+ */
+export function findInterruptedRestores(backupsRoot: string): InterruptedRestore[] {
+  const found: InterruptedRestore[] = [];
+  if (!existsSync(backupsRoot)) return found;
+
+  let runDirs: string[];
+  try {
+    runDirs = readdirSync(backupsRoot, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch {
+    // 백업 루트를 못 읽는 것은 "잔존물 없음"이 아니라 판정 불가다 — 조용히 빈 배열을 주지 않는다.
+    throw new Error(`백업 루트를 읽을 수 없어 중단된 복원 여부를 판정할 수 없다: ${backupsRoot}`);
+  }
+
+  for (const runId of runDirs) {
+    const backupRoot = path.join(backupsRoot, runId);
+    const evictedRoot = path.join(backupRoot, ".restore-evicted");
+    if (!existsSync(evictedRoot)) continue;
+
+    let manifestEntries: Record<string, BackupEntry> = {};
+    try {
+      manifestEntries = BackupManifestSchema.parse(
+        JSON.parse(readFileSync(path.join(backupRoot, "manifest.json"), "utf8")),
+      ).entries;
+    } catch {
+      // manifest를 못 읽어도 잔존물 자체는 보고한다 — targetAbs만 미상으로 둔다.
+    }
+
+    for (const key of readdirSync(evictedRoot, { withFileTypes: true }).map((d) => d.name)) {
+      const targetAbs = manifestEntries[key]?.targetAbs ?? null;
+      found.push({
+        backupRoot,
+        key,
+        evictedAbs: path.join(evictedRoot, key),
+        targetAbs,
+        targetMissing: targetAbs !== null && !existsSync(targetAbs),
+      });
+    }
+  }
+  return found;
 }
