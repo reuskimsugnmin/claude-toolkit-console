@@ -46,6 +46,8 @@ export interface BuildPluginEnablementJournalOptions {
   before: PluginEnablementState;
   after: PluginEnablementState;
   backupRootAbs: string;
+  /** 백업 manifest.json 바이트의 sha256(H2/AC-2.13, `backup.ts`의 `writeManifest().manifestSha256`). */
+  manifestSha256: string;
   result: JournalResult;
   timestamp?: string;
 }
@@ -61,6 +63,7 @@ export function buildPluginEnablementJournalEntry(options: BuildPluginEnablement
     before: { ...options.before },
     after: { ...options.after },
     backup_ref,
+    backup_manifest_sha256: options.manifestSha256,
     result: options.result,
     timestamp: options.timestamp ?? new Date().toISOString(),
   };
@@ -81,6 +84,7 @@ export interface BuildSkillDirJournalOptions {
   before: SkillDirLocationState;
   after: SkillDirLocationState;
   backupRootAbs: string;
+  manifestSha256: string;
   result: JournalResult;
   timestamp?: string;
 }
@@ -96,6 +100,7 @@ export function buildSkillDirJournalEntry(options: BuildSkillDirJournalOptions):
     before: { ...options.before },
     after: { ...options.after },
     backup_ref,
+    backup_manifest_sha256: options.manifestSha256,
     result: options.result,
     timestamp: options.timestamp ?? new Date().toISOString(),
   };
@@ -110,6 +115,7 @@ export interface BuildRollbackJournalOptions {
   before: Record<string, unknown>;
   after: Record<string, unknown>;
   backupRootAbs: string;
+  manifestSha256: string;
   result: JournalResult;
   timestamp?: string;
 }
@@ -125,6 +131,7 @@ export function buildRollbackJournalEntry(options: BuildRollbackJournalOptions):
     before: { original_action: options.originalAction, ...options.before },
     after: { ...options.after },
     backup_ref,
+    backup_manifest_sha256: options.manifestSha256,
     result: options.result,
     timestamp: options.timestamp ?? new Date().toISOString(),
   };

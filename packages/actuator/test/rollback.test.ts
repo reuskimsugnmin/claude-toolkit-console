@@ -2,13 +2,23 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { HomeContext } from "@ctk/probe";
 import { backupDirectory, backupFile, beginBackupRun, writeManifest } from "../src/backup.js";
-import { restoreFromBackup, RollbackFailedError } from "../src/rollback.js";
+import {
+  BackupManifestTamperedError,
+  ForbiddenRestoreTargetError,
+  RollbackFailedError,
+  restoreFromBackup,
+} from "../src/rollback.js";
 
 describe("actuator/rollback — 백업에서 직접 파일 복원(AC-2.5: 롤백 후 조치 이전과 완전히 동일)", () => {
   let home: string;
+  let homeCtx: HomeContext;
   beforeEach(() => {
     home = mkdtempSync(path.join(tmpdir(), "ctk-rollback-"));
+    // 이 테스트 스위트의 복원 대상은 전부 `home` 바로 아래에 있다 — assertRestorableTarget(H2)이
+    // "config 또는 알려진 project/.claude 안"만 허용하므로, `home` 자체를 ctkConfigDir로 지정한다.
+    homeCtx = { ctkHome: home, ctkConfigDir: home, configDirExplicit: false };
   });
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
@@ -21,7 +31,7 @@ describe("actuator/rollback — 백업에서 직접 파일 복원(AC-2.5: 롤백
 
     writeFileSync(target, '{"enabledPlugins":{"a@b":false}}', "utf8"); // 조치가 바꾼 상태 흉내
 
-    restoreFromBackup(backupRoot);
+    restoreFromBackup(backupRoot, homeCtx);
     expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ enabledPlugins: { "a@b": true } });
   });
 
@@ -33,7 +43,7 @@ describe("actuator/rollback — 백업에서 직접 파일 복원(AC-2.5: 롤백
 
     writeFileSync(target, '{"enabledPlugins":{"a@b":true}}', "utf8"); // 조치가 새로 만든 파일
 
-    restoreFromBackup(backupRoot);
+    restoreFromBackup(backupRoot, homeCtx);
     expect(existsSync(target)).toBe(false);
   });
 
@@ -47,24 +57,108 @@ describe("actuator/rollback — 백업에서 직접 파일 복원(AC-2.5: 롤백
 
     rmSync(sourceDir, { recursive: true, force: true }); // 조치가 이동시켰다고 가정(원본 삭제)
 
-    restoreFromBackup(backupRoot);
+    restoreFromBackup(backupRoot, homeCtx);
     expect(readFileSync(path.join(sourceDir, "SKILL.md"), "utf8")).toBe("---\nname: demo-skill\n---\n");
   });
 
   it("manifest 자체가 없으면 RollbackFailedError를 던진다(부분 성공을 성공으로 보고하지 않는다)", () => {
     const fakeBackupRoot = path.join(home, "nonexistent-backup");
-    expect(() => restoreFromBackup(fakeBackupRoot)).toThrow(RollbackFailedError);
+    expect(() => restoreFromBackup(fakeBackupRoot, homeCtx)).toThrow(RollbackFailedError);
   });
+
+  it(
+    "✅ H1/AC-2.11 재현 — 백업 저장 사본이 손상되면(sha256 불일치) preflight가 어떤 쓰기도 " +
+      "하기 전에 RollbackFailedError를 던지고, 대상 파일은 0바이트도 바뀌지 않는다(수정 전에는 " +
+      "복원이 먼저 대상에 손상된 내용을 써버린 뒤에야 검증 실패를 보고했다)",
+    () => {
+      const target = path.join(home, "settings.json");
+      writeFileSync(target, "{}", "utf8");
+      const { backupRoot } = beginBackupRun(home, "run4");
+      const entry = backupFile(backupRoot, "config_settings", target);
+      // 백업 저장소의 사본을 손상시켜 sha256 불일치를 인위적으로 재현한다.
+      writeFileSync(path.join(backupRoot, entry.storedRelPath!), "{corrupted", "utf8");
+      writeManifest(backupRoot, "run4", { config_settings: entry });
+
+      writeFileSync(target, '{"changed":true}', "utf8"); // 조치가 대상을 바꿨다고 가정
+      const beforeAttempt = readFileSync(target, "utf8");
+
+      expect(() => restoreFromBackup(backupRoot, homeCtx)).toThrow(RollbackFailedError);
+      // preflight에서 걸렸으므로 대상은 여전히 "조치 직후" 상태 그대로다 — 손상된 백업 내용이
+      // 단 1바이트도 쓰이지 않았다.
+      expect(readFileSync(target, "utf8")).toBe(beforeAttempt);
+    },
+  );
+
+  it(
+    "✅ H2/AC-2.12 재현 — manifest에 허용된 루트(config/알려진 project) 밖의 targetAbs를 " +
+      "주입하면 ForbiddenRestoreTargetError(failure_class: forbidden_path_write)로 거부하고 " +
+      "그 경로는 전혀 건드리지 않는다(수정 전에는 rmSync/atomicWriteFile 인자로 무검증 전달됐다)",
+    () => {
+      const outsideTarget = path.join(tmpdir(), `ctk-h2-outside-${Date.now()}`);
+      writeFileSync(outsideTarget, "victim-original", "utf8");
+      try {
+        const { backupRoot } = beginBackupRun(home, "run-h2");
+        writeManifest(backupRoot, "run-h2", {
+          evil: {
+            kind: "file",
+            targetAbs: outsideTarget, // 허용 루트(home) 밖
+            existed: true,
+            sha256: "a".repeat(64),
+            storedRelPath: null,
+          },
+        });
+
+        expect(() => restoreFromBackup(backupRoot, homeCtx)).toThrow(ForbiddenRestoreTargetError);
+        expect(readFileSync(outsideTarget, "utf8")).toBe("victim-original");
+      } finally {
+        rmSync(outsideTarget, { force: true });
+      }
+    },
+  );
+
+  it(
+    "✅ H2 재현 — storedRelPath가 절대경로거나 경로 순회(..)를 담으면(백업 저장소 밖을 읽는 " +
+      "manifest) ForbiddenRestoreTargetError로 거부한다",
+    () => {
+      const target = path.join(home, "settings.json");
+      writeFileSync(target, "{}", "utf8");
+      const { backupRoot } = beginBackupRun(home, "run-h2b");
+      writeManifest(backupRoot, "run-h2b", {
+        evil: {
+          kind: "file",
+          targetAbs: target,
+          existed: true,
+          sha256: "a".repeat(64),
+          storedRelPath: "../../etc/passwd",
+        },
+      });
+      expect(() => restoreFromBackup(backupRoot, homeCtx)).toThrow(ForbiddenRestoreTargetError);
+    },
+  );
+
+  it(
+    "✅ H2/AC-2.13 재현 — journal에 기록된 backup_manifest_sha256과 실측 manifest.json " +
+      "sha256이 다르면(백업 저장소 자체가 변조됐을 가능성) BackupManifestTamperedError로 거부한다",
+    () => {
+      const target = path.join(home, "settings.json");
+      writeFileSync(target, "{}", "utf8");
+      const { backupRoot } = beginBackupRun(home, "run5");
+      const entry = backupFile(backupRoot, "config_settings", target);
+      writeManifest(backupRoot, "run5", { config_settings: entry });
+
+      expect(() => restoreFromBackup(backupRoot, homeCtx, "f".repeat(64))).toThrow(BackupManifestTamperedError);
+    },
+  );
 
   it("복원 후 sha256이 기대와 다르면 RollbackFailedError를 던진다(백업 저장소 자체 손상 감지)", () => {
     const target = path.join(home, "settings.json");
     writeFileSync(target, "{}", "utf8");
-    const { backupRoot } = beginBackupRun(home, "run4");
+    const { backupRoot } = beginBackupRun(home, "run4b");
     const entry = backupFile(backupRoot, "config_settings", target);
     // 백업 저장소의 사본을 손상시켜 sha256 불일치를 인위적으로 재현한다.
     writeFileSync(path.join(backupRoot, entry.storedRelPath!), "{corrupted", "utf8");
-    writeManifest(backupRoot, "run4", { config_settings: entry });
+    writeManifest(backupRoot, "run4b", { config_settings: entry });
 
-    expect(() => restoreFromBackup(backupRoot)).toThrow(RollbackFailedError);
+    expect(() => restoreFromBackup(backupRoot, homeCtx)).toThrow(RollbackFailedError);
   });
 });

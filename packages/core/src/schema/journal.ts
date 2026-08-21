@@ -22,6 +22,12 @@ export const JournalEntrySchema = z
     before: z.record(z.string(), z.unknown()),
     after: z.record(z.string(), z.unknown()),
     backup_ref: z.string().min(1),
+    /** 백업 manifest.json 바이트의 sha256(H2/AC-2.13) — 롤백 시 실측 재계산값과 대조해
+     * 카탈로그 밖(감사 트리 밖) 백업 저장소가 변조되지 않았음을 확인한다. journal은 git으로
+     * append-only 커밋되므로 이 값 자체의 변조는 git diff로 드러난다. */
+    backup_manifest_sha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/),
     result: JournalResultSchema,
     timestamp: z.string().datetime(),
   })

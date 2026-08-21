@@ -1,7 +1,16 @@
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { collectTree } from "@ctk/probe";
+import {
+  parseBackupManifest,
+  type BackupDirEntry as CoreBackupDirEntry,
+  type BackupEntry as CoreBackupEntry,
+  type BackupFileEntry as CoreBackupFileEntry,
+  type BackupManifest as CoreBackupManifest,
+  type FileEntry,
+} from "@ctk/core";
+import { atomicWriteFile } from "./guard/atomic-write.js";
 
 /**
  * actuator/src/backup.ts — 수정 대상 파일/디렉터리를 타임스탬프 디렉터리로 백업한다(AC-2.3).
@@ -12,44 +21,30 @@ import { collectTree } from "@ctk/probe";
  * config/project 트리 안에 있으면 그 존재 자체가 매 실행마다 tree-diff의 "추가된 파일"로 잡혀
  * Tier-1 화이트리스트에 별도로 등재해야 하는데(AC-2.7-a 원문이 "ctk 백업 디렉터리"를 Tier-1로
  * 언급하는 이유이기도 하다), 트리 밖에 두면 애초에 감사 대상에 나타나지 않아 그 등재 자체가
- * 필요 없다 — 더 단순하고 안전한 경계다.
+ * 필요 없다 — 더 단순하고 안전한 경계다. 이 경계 덕분에 **원문 절대경로를 담아도 위생 위반이
+ * 아니다**(AC-1.7은 카탈로그 파일에만 적용) — `snapshot-before.json`(H4)도 이 전제를 그대로 쓴다.
+ *
+ * ⚠️ **Step 5 보안 심사 수정(H2/M1)**:
+ * - manifest는 zod로 파싱한다(`as BackupManifest` 캐스팅 금지) — `@ctk/core`의
+ *   `BackupManifestSchema`를 그대로 쓴다(재구현 금지 원칙과 동형).
+ * - manifest는 원자적 쓰기 + 0600으로 쓴다(평문 JSON이지만 API 키를 담을 수 있는 settings.json의
+ *   백업 사본을 가리키는 경로 등 민감 메타데이터를 포함).
+ * - 백업 런 디렉터리 자체도 0700(그룹/타인 접근 차단).
+ * - `writeManifest`는 이제 manifest 바이트의 sha256도 반환한다 — 호출자(cli/move.ts)가 이를
+ *   journal 레코드에 `backup_manifest_sha256`으로 실어 롤백 시 무결성 대조에 쓴다(AC-2.13).
  */
 
-export interface BackupFileEntry {
-  kind: "file";
-  /** 복원 시 되돌려 쓸 절대경로. 백업 자체는 카탈로그(git) 밖에 있으므로(AC-1.7은 카탈로그
-   * 파일에만 적용) 여기 원문을 담아도 위생 위반이 아니다 — 이래야 `ctk rollback --last`가
-   * 호출부의 별도 컨텍스트 없이 manifest만으로 무엇을 어디에 복원할지 알 수 있다. */
-  targetAbs: string;
-  /** 백업 이전 원본이 존재했는지. false면 롤백은 "삭제"가 아니라 "생성물 제거"를 뜻한다. */
-  existed: boolean;
-  sha256: string | null;
-  /** manifest.json 기준 상대 저장 경로. existed=false면 저장된 바이트가 없다(null). */
-  storedRelPath: string | null;
-}
-
-export interface BackupDirEntry {
-  kind: "directory";
-  targetAbs: string;
-  existed: boolean;
-  /** 디렉터리 내 파일별 sha256(정렬됨) — 존재하지 않았으면 빈 배열. */
-  files: { relPath: string; sha256: string }[];
-  storedRelPath: string | null;
-}
-
-export type BackupEntry = BackupFileEntry | BackupDirEntry;
-
-export interface BackupManifest {
-  run_id: string;
-  created_at: string;
-  /** 백업 대상 키(호출자가 부여하는 논리적 이름, 예: "config_settings" · "project_settings" · "skill_dir") → 항목. */
-  entries: Record<string, BackupEntry>;
-}
+export type BackupFileEntry = CoreBackupFileEntry;
+export type BackupDirEntry = CoreBackupDirEntry;
+export type BackupEntry = CoreBackupEntry;
+export type BackupManifest = CoreBackupManifest;
 
 export interface BackupHandle {
   readonly backupRoot: string;
   readonly manifestPath: string;
   readonly manifest: BackupManifest;
+  /** manifest.json 바이트 그대로의 sha256(H2/AC-2.13). */
+  readonly manifestSha256: string;
 }
 
 function sha256File(absPath: string): string {
@@ -108,24 +103,59 @@ export function backupDirectory(backupRoot: string, key: string, sourceAbs: stri
 
 /**
  * 백업 런을 시작한다 — `<ctkHome>/.ctk-backups/<run_id>/` 디렉터리를 만들고 빈 manifest를 연다.
- * `run_id`는 파일시스템 안전 ISO8601(콜론 제거)이다.
+ * `run_id`는 파일시스템 안전 ISO8601(콜론 제거)이다. 디렉터리 모드는 0700(M1) — `mkdirSync`의
+ * `mode` 옵션은 umask에 깎일 수 있으므로 `chmodSync`로 명시 고정한다.
  */
 export function beginBackupRun(ctkHome: string, runId: string): { backupRoot: string } {
   const backupRoot = path.join(ctkHome, ".ctk-backups", runId);
   mkdirSync(backupRoot, { recursive: true });
+  chmodSync(backupRoot, 0o700);
   return { backupRoot };
 }
 
 export function writeManifest(backupRoot: string, runId: string, entries: Record<string, BackupEntry>): BackupHandle {
   const manifest: BackupManifest = { run_id: runId, created_at: new Date().toISOString(), entries };
   const manifestPath = path.join(backupRoot, "manifest.json");
-  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-  return { backupRoot, manifestPath, manifest };
+  const content = `${JSON.stringify(manifest, null, 2)}\n`;
+  atomicWriteFile(manifestPath, content, { mode: 0o600 });
+  const manifestSha256 = createHash("sha256").update(content).digest("hex");
+  return { backupRoot, manifestPath, manifest, manifestSha256 };
+}
+
+export function manifestSha256Of(backupRoot: string): string {
+  return sha256File(path.join(backupRoot, "manifest.json"));
 }
 
 export function readManifest(backupRoot: string): BackupManifest {
   const manifestPath = path.join(backupRoot, "manifest.json");
-  return JSON.parse(readFileSync(manifestPath, "utf8")) as BackupManifest;
+  return parseBackupManifest(JSON.parse(readFileSync(manifestPath, "utf8")) as unknown);
+}
+
+/**
+ * H4 — 백업 시점의 감사 루트(config·project) 스냅샷을 백업 디렉터리에 함께 저장한다.
+ * 카탈로그 밖이므로 원문 절대경로(`rootAbs`)를 담아도 위생 위반이 아니다(파일 상단 문서 참고).
+ * 롤백 후 `actuator/rollback.ts`가 이 스냅샷과 재수집 트리를 diff해 "조치 이전과 완전히 동일"을
+ * 판정 가능하게 만든다(AC-2.5 — 이전에는 `configBefore`가 지역 변수로만 존재해 판정 자체가
+ * 불가능했다).
+ */
+export interface BeforeSnapshotRoot {
+  rootAbs: string;
+  entries: FileEntry[];
+}
+
+export interface BeforeSnapshot {
+  roots: BeforeSnapshotRoot[];
+}
+
+export function writeBeforeSnapshot(backupRoot: string, snapshot: BeforeSnapshot): void {
+  const p = path.join(backupRoot, "snapshot-before.json");
+  atomicWriteFile(p, `${JSON.stringify(snapshot, null, 2)}\n`, { mode: 0o600 });
+}
+
+export function readBeforeSnapshotOrNull(backupRoot: string): BeforeSnapshot | null {
+  const p = path.join(backupRoot, "snapshot-before.json");
+  if (!existsSync(p)) return null;
+  return JSON.parse(readFileSync(p, "utf8")) as BeforeSnapshot;
 }
 
 /** 백업 런 디렉터리를 통째로 지운다 — 롤백 완료 후 정리용(선택적, journal에는 backup_ref가 남는다). */

@@ -18,10 +18,12 @@ describe("actuator/journal — before/after 필수, 반환만 한다(P1-5)", () 
       before: { install_scope: "user", enabled_at: "user" },
       after: { install_scope: "user", enabled_at: "project" },
       backupRootAbs: `${HOME}/.ctk-backups/run1`,
+      manifestSha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       result: "success",
     });
     expect(() => JournalEntrySchema.parse(entry)).not.toThrow();
     expect(entry.action).toBe("move_plugin_enablement");
+    expect(entry.backup_manifest_sha256).toBe("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     expect(entry.before).toEqual({ install_scope: "user", enabled_at: "user" });
     expect(entry.after).toEqual({ install_scope: "user", enabled_at: "project" });
     expect(entry.backup_ref).toBe("~/.ctk-backups/run1");
@@ -35,6 +37,7 @@ describe("actuator/journal — before/after 필수, 반환만 한다(P1-5)", () 
       before: { location: "user", project_path_hash: null },
       after: { location: "project", project_path_hash: "abcd1234" },
       backupRootAbs: `${HOME}/.ctk-backups/run2`,
+      manifestSha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       result: "success",
     });
     expect(() => JournalEntrySchema.parse(entry)).not.toThrow();
@@ -50,6 +53,7 @@ describe("actuator/journal — before/after 필수, 반환만 한다(P1-5)", () 
       before: { enabled_at: "project" },
       after: { enabled_at: "user" },
       backupRootAbs: `${HOME}/.ctk-backups/run1`,
+      manifestSha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       result: "success",
     });
     expect(entry.action).toBe("rollback");
@@ -65,6 +69,7 @@ describe("actuator/journal — before/after 필수, 반환만 한다(P1-5)", () 
         before: { install_scope: "user", enabled_at: "user" },
         after: { install_scope: "user", enabled_at: "project" },
         backupRootAbs: "/completely/unrelated/path/run1", // HOME 접두사 밖
+        manifestSha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         result: "success",
       }),
     ).toThrow(PathNormalizeFailedError);

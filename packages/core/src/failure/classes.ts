@@ -27,6 +27,9 @@ export const FAILURE_CLASSES = [
   "verify_mismatch", // 조치 후 probe 재실측이 기대와 다름 — 자동 롤백 (AC-2.6) — Step 5
   "rollback_failed", // 롤백 자체가 실패 — 최악, 백업 경로 그대로 출력 + 수동 복구 절차 안내 — Step 5
   "path_traversal_detected", // 외부 입력 유래 문자열(자산 id·이름 등)에 ../ 등이 존재 — 공격 시도, path_normalize_failed와 분리(H2) — Step 5 e2e에서 실제로 재현(악성 SKILL.md frontmatter name)
+  "backup_manifest_tampered", // 롤백 시 manifest.json의 실측 sha256이 journal에 기록된 값과 다르다 — 백업 저장소 자체가 변조됐을 가능성(H2/AC-2.13) — Step 5 보안 심사 수정
+  "config_clobbered", // 백업~롤백 사이 사용자가 대상 파일을 별도로 바꿔 lost update 위험(M8) — 복원 직전 재확인 — Step 5 보안 심사 수정
+  "skill_location_ambiguous", // 스킬 자산 id(frontmatter name)에 대응하는 실제 디렉터리가 0개 또는 2개 이상(H6) — Step 5 보안 심사 수정
   "unclassified",
 ] as const;
 
