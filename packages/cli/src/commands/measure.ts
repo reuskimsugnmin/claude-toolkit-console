@@ -390,13 +390,20 @@ export async function runMeasure(options: RunMeasureOptions = {}): Promise<Measu
           parse_failures: parseFailureCount,
           usage_metrics: usageMetrics.length,
           occupancy: occupancyRecords.length,
+          // R17 — ctk doctor가 이 run-log를 읽어 괴리를 노출한다(수용 기준: "subagent_attribution:
+          // unresolved + ctk doctor 노출" 중 하나로 기록). measure 자신의 stdout 요약과 별도로
+          // 진단 커맨드에서도 조회 가능해야 하므로 run-log에 그대로 싣는다.
+          agent_tool_use_count_this_run: agentToolUseCountThisRun,
+          new_subagent_files_this_run: newSubagentFilesThisRun,
         },
       },
       machine_id: machine.machine_id,
       started_at: startedAt.toISOString(),
       finished_at: finishedAt.toISOString(),
       exit_code: 0,
-      failure_class: null,
+      // 실행 자체는 성공(exit 0)이지만, R17 괴리가 있으면 진단 분류를 run-log에 남겨 ctk doctor가
+      // 조용히 지나치지 않게 한다 — "0을 사실로 기록하는 것이 가장 나쁜 실패"라는 원칙의 연장.
+      failure_class: subagentAttributionGap ? "subagent_attribution_unresolved" : null,
     });
 
     commitAll(catalogPath, `ctk measure: ${startedAt.toISOString()}`);

@@ -7,6 +7,7 @@ import { runInit } from "../src/commands/init.js";
 import { runScan } from "../src/commands/scan.js";
 import { runMeasure } from "../src/commands/measure.js";
 import { runUsage } from "../src/commands/usage.js";
+import { runDoctorSubagentAttribution } from "../src/commands/doctor.js";
 import { readLocalConfig } from "../src/local-config.js";
 import { resolveHomeContext, type SpawnClaudeResult } from "@ctk/probe";
 
@@ -204,5 +205,13 @@ describe("cli — ctk measure / ctk usage 왕복 (Step 3)", () => {
 
   it("credential_missing 사유 없이 크레덴셜 부재 상태로 실행하면(--no-credentials-ok 없이) 거부된다(AC-4.5)", async () => {
     await expect(runMeasure({})).rejects.toThrow(/credential/i);
+  });
+
+  it("ctk doctor — R17 괴리가 있으면 run-log를 읽어 노출한다(수용 기준: subagent_attribution:unresolved + doctor 노출)", async () => {
+    await runMeasure({ noCredentialsOk: true });
+    const report = runDoctorSubagentAttribution();
+    expect(report).not.toBeNull();
+    expect(report?.agentToolUseCount).toBe(1);
+    expect(report?.newSubagentFiles).toBe(0);
   });
 });

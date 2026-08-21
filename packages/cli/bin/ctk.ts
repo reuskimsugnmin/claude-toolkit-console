@@ -11,6 +11,7 @@ import { runScan, CatalogNotInitializedError } from "../src/commands/scan.js";
 import {
   runDoctorDrift,
   runDoctorInterruptedRestores,
+  runDoctorSubagentAttribution,
   formatInterruptedRestoreAlert,
   NoSnapshotsError,
 } from "../src/commands/doctor.js";
@@ -61,6 +62,16 @@ async function main(): Promise<void> {
         const alert = formatInterruptedRestoreAlert(runDoctorInterruptedRestores());
         if (alert !== null) {
           console.error(alert);
+          console.error("");
+        }
+        // R17 — 가장 최근 `ctk measure`가 Agent tool_use 건수 대비 신규 subagent 파일 수 괴리를
+        // 남겼으면 여기서 노출한다(수용 기준: "subagent_attribution: unresolved + ctk doctor 노출").
+        const subagentGap = runDoctorSubagentAttribution();
+        if (subagentGap !== null) {
+          console.error(
+            `⚠️  R17 서브에이전트 귀속 괴리 (${subagentGap.runLogFile}) — Agent tool_use ${subagentGap.agentToolUseCount}건 vs ` +
+              `신규 subagent 파일 ${subagentGap.newSubagentFiles}건. 해당 실행 범위에서 일부 서브에이전트 호출을 미확인.`,
+          );
           console.error("");
         }
         if (rest.includes("--drift")) {
