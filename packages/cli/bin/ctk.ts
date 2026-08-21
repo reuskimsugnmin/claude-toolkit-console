@@ -10,8 +10,11 @@ import { runInit } from "../src/commands/init.js";
 import { runScan, CatalogNotInitializedError } from "../src/commands/scan.js";
 import { runDoctorDrift, NoSnapshotsError } from "../src/commands/doctor.js";
 import { runVerifyAc1, NotYetScannedError } from "../src/commands/verify-ac1.js";
+import { runMove, AssetNotFoundError, NoOpMoveError, ProjectIndexOutOfRangeError } from "../src/commands/move.js";
+import { runRollback, NoRollbackTargetError } from "../src/commands/rollback.js";
 import { LockContendedError } from "@ctk/sync";
 import { DuplicateKeyDiffError } from "@ctk/core";
+import { McpMoveRejectedError, CliToolMoveUnsupportedError, RollbackFailedError } from "@ctk/actuator";
 
 function readFlagValue(args: string[], flag: string): string | undefined {
   const index = args.indexOf(flag);
@@ -77,9 +80,42 @@ async function main(): Promise<void> {
         process.exitCode = 1;
         return;
       }
+      case "move": {
+        const assetId = readFlagValue(rest, "--asset");
+        const to = readFlagValue(rest, "--to");
+        if (!assetId || (to !== "user" && to !== "project")) {
+          console.error("사용법: ctk move --asset <id> --to <user|project> [--project-index N] [--from <user|project>] [--from-project-index N]");
+          process.exitCode = 1;
+          return;
+        }
+        const toProjectIndexRaw = readFlagValue(rest, "--project-index");
+        const fromRaw = readFlagValue(rest, "--from");
+        const fromProjectIndexRaw = readFlagValue(rest, "--from-project-index");
+        const summary = await runMove({
+          assetId,
+          to,
+          toProjectIndex: toProjectIndexRaw !== undefined ? Number(toProjectIndexRaw) : undefined,
+          from: fromRaw === "user" || fromRaw === "project" ? fromRaw : undefined,
+          fromProjectIndex: fromProjectIndexRaw !== undefined ? Number(fromProjectIndexRaw) : undefined,
+        });
+        console.log(`ctk move 완료 — ${summary.assetId}(${summary.kind}) ${summary.from} -> ${summary.to}`);
+        console.log(`  journal: ${summary.journalPath}`);
+        return;
+      }
+      case "rollback": {
+        if (!rest.includes("--last")) {
+          console.error("사용법: ctk rollback --last");
+          process.exitCode = 1;
+          return;
+        }
+        const summary = await runRollback({ last: true });
+        console.log(`ctk rollback 완료 — ${summary.assetId}(${summary.action}) 되돌림`);
+        console.log(`  journal: ${summary.journalPath}`);
+        return;
+      }
       default: {
         console.error(`알 수 없는 명령: ${command ?? "(없음)"}`);
-        console.error("사용법: ctk <init|scan|doctor|verify> [...args]");
+        console.error("사용법: ctk <init|scan|doctor|verify|move|rollback> [...args]");
         process.exitCode = 1;
         return;
       }
@@ -90,8 +126,26 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    if (err instanceof CatalogNotInitializedError || err instanceof NoSnapshotsError || err instanceof NotYetScannedError) {
+    if (
+      err instanceof CatalogNotInitializedError ||
+      err instanceof NoSnapshotsError ||
+      err instanceof NotYetScannedError ||
+      err instanceof AssetNotFoundError ||
+      err instanceof NoOpMoveError ||
+      err instanceof ProjectIndexOutOfRangeError ||
+      err instanceof NoRollbackTargetError
+    ) {
       console.error(`FAIL: ${err.message}`);
+      process.exitCode = 1;
+      return;
+    }
+    if (err instanceof McpMoveRejectedError || err instanceof CliToolMoveUnsupportedError) {
+      console.error(err.message);
+      process.exitCode = 1;
+      return;
+    }
+    if (err instanceof RollbackFailedError) {
+      console.error(`FAIL rollback_failed: ${err.message}`);
       process.exitCode = 1;
       return;
     }
