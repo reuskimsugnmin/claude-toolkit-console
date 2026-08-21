@@ -17,20 +17,24 @@ import {
   restoreFromBackup,
   verifyPluginEnablementMove,
   verifySkillDirMove,
+  writeBeforeSnapshot,
   writeManifest,
+  type BeforeSnapshotRoot,
 } from "@ctk/actuator";
-import { listKnownProjectPaths, resolveHomeContext, type HomeContext } from "@ctk/probe";
+import { claudeJsonPath, findSkillDirsById, listKnownProjectPaths, resolveHomeContext, type HomeContext } from "@ctk/probe";
 import {
-  FORBIDDEN_RULES,
+  FAILURE_CLASSES,
   TIER1_INTENTIONAL_WRITES,
-  matchesForbidden,
   normalizePath,
   parseInstalledPluginsFile,
   snapshotIdFsSafe,
   type AssetKind,
+  type FailureClass,
   type InstallScope,
+  type JournalResult,
+  type RunLogEntry,
 } from "@ctk/core";
-import { acquireLock, writeJournalEntry, commitAll } from "@ctk/sync";
+import { acquireLock, writeJournalEntry, commitAll, writeRunLog } from "@ctk/sync";
 import { readLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
 import { CatalogNotInitializedError } from "./scan.js";
 
@@ -39,6 +43,13 @@ import { CatalogNotInitializedError } from "./scan.js";
  * audit·verify·rollback·journal)을 배선한다 — 순서는 절대 규칙이다: **백업 → 수정 → 검증(재스캔
  * 실측) → 실패 시 롤백**. journal 레코드는 actuator가 반환만 하고, 카탈로그 저장소 append는
  * 여기서 `@ctk/sync`로 한다(P1-5 — actuator에 카탈로그 쓰기 루트를 두지 않는다).
+ *
+ * ⚠️ **Step 5 보안 심사 수정(H3)** — 이전에는 검증(AC-2.1/2.2) 통과 후에만 journal을 썼다.
+ * 그래서 apply는 됐는데 감사·검증이 실패해 자기-롤백한 시도는 **기록이 전혀 없었다**
+ * (`JournalResult`의 `"failure"`/`"rolled_back"`이 스키마에만 있고 코드가 한 번도 안 씀).
+ * 결과적으로 `ctk rollback --last`가 실패한 시도를 건너뛰고 그 이전 성공을 되돌려 **두 조치
+ * 이전 상태로 덮어쓰는** 사고 경로가 있었다. 지금은 **성공·실패·롤백 3종단 모두** journal 1건
+ * + run-log 1건을 남긴다 — `findLastEntry`(cli/rollback.ts)가 항상 최신 시도를 정확히 보게 된다.
  */
 
 export { CatalogNotInitializedError };
@@ -64,22 +75,16 @@ export class ProjectIndexOutOfRangeError extends Error {
   }
 }
 
-/**
- * `path_traversal_detected`류 방어(H2와 동일 논리) — 스킬 자산 id는 SKILL.md frontmatter의
- * `name` 필드에서 온다(probe/sources/skills.ts). 그 필드는 서드파티 스킬 저자가 쓰는 값이고,
- * 이 함수가 곧바로 `path.join(root, "skills", assetId)`의 세그먼트로 쓰인다 — frontmatter에
- * `name: ../../evil`류 값을 자칭하면 스킬 디렉터리 트리 밖으로 쓰기를 탈출시킬 수 있다.
- * `core/guard/forbidden.ts`의 판정을 그대로 재사용한다(경로 순회·절대경로·NUL 금지 — H1과
- * 동형으로 여기서도 판정기를 재구현하지 않는다) + 단일 경로 세그먼트여야 하므로 `/` 자체도 막는다.
- */
-function assertSafePathSegment(value: string, fieldName: string): void {
-  if (value.length === 0) throw new Error(`${fieldName}가 비어있다`);
-  if (value.includes("/") || value.includes("\\")) {
-    throw new Error(`${fieldName}에 경로 구분자가 포함될 수 없다(단일 경로 세그먼트여야 한다): ${value}`);
-  }
-  const forbidden = matchesForbidden(value, FORBIDDEN_RULES);
-  if (forbidden) {
-    throw new Error(`${fieldName}가 금지된 경로 패턴과 일치한다(${forbidden.note}): ${value}`);
+/** H6 — 스킬 자산 id(frontmatter name)에 대응하는 실제 디렉터리가 0개 또는 2개 이상이라 판정 불가. */
+export class SkillLocationAmbiguousError extends Error {
+  readonly failureClass = "skill_location_ambiguous" as const;
+  constructor(assetId: string, count: number) {
+    super(
+      count === 0
+        ? `스킬 자산 id '${assetId}'에 대응하는 실제 디렉터리를 찾지 못했다 — 카탈로그가 드리프트됐을 수 있다(\`ctk scan\`을 다시 실행하라).`
+        : `스킬 자산 id '${assetId}'에 대응하는 실제 디렉터리가 ${count}개다 — 어느 것이 진짜인지 판정할 수 없어 거부한다(추정으로 채우지 않는다).`,
+    );
+    this.name = "SkillLocationAmbiguousError";
   }
 }
 
@@ -129,6 +134,64 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+const FAILURE_CLASS_SET = new Set<string>(FAILURE_CLASSES);
+
+/** 던져진 오류가 알려진 `failure_class`를 싣고 있으면 그대로 쓰고, 아니면 "unclassified"로 남긴다. */
+function extractFailureClass(err: unknown): FailureClass {
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    "failureClass" in err &&
+    typeof (err as { failureClass: unknown }).failureClass === "string" &&
+    FAILURE_CLASS_SET.has((err as { failureClass: string }).failureClass)
+  ) {
+    return (err as { failureClass: FailureClass }).failureClass;
+  }
+  return "unclassified";
+}
+
+/**
+ * H3 — apply 이후 단계에서 실패하면 self-rollback을 시도하고, **그 결과와 무관하게** journal
+ * 레코드를 남긴다(`rolled_back`이면 복원 성공, `failure`면 복원 자체도 실패 — `RollbackFailedError`
+ * 원문이 그대로 cause 체인에 남는다. H3: "원래 실패 원인이 소실"되지 않게 한다).
+ */
+function rollbackAndRecord(options: {
+  cause: unknown;
+  backupRoot: string;
+  manifestSha256: string;
+  home: HomeContext;
+  catalogPath: string;
+  assetId: string;
+  buildEntry: (result: JournalResult) => Parameters<typeof writeJournalEntry>[1];
+  commitMessage: (result: JournalResult) => string;
+}): never {
+  let result: JournalResult;
+  let rollbackCause: unknown = null;
+  try {
+    restoreFromBackup(options.backupRoot, options.home);
+    result = "rolled_back";
+  } catch (rbErr) {
+    result = "failure";
+    rollbackCause = rbErr;
+  }
+
+  try {
+    const entry = options.buildEntry(result);
+    writeJournalEntry(options.catalogPath, entry);
+    commitAll(options.catalogPath, options.commitMessage(result));
+  } catch {
+    // journal 기록 자체가 실패해도 원래 오류를 삼키지 않는다(아래에서 그대로 재throw).
+  }
+
+  if (rollbackCause !== null) {
+    if (rollbackCause instanceof Error && options.cause instanceof Error) {
+      rollbackCause.cause = options.cause;
+    }
+    throw rollbackCause;
+  }
+  throw options.cause;
+}
+
 async function movePluginAsset(
   home: HomeContext,
   machineId: string,
@@ -170,23 +233,52 @@ async function movePluginAsset(
       installedPluginsBefore.plugins[options.assetId]?.[0]?.scope ??
       null;
 
-    // ---- 2. 백업 ----
+    // ---- 2. 백업(H4 — .claude.json도 함께 백업하고, before 스냅샷을 함께 저장한다) ----
     const runId = snapshotIdFsSafe();
     const { backupRoot } = beginBackupRun(home.ctkHome, runId);
     const fromSettingsAbs =
       fromScope === "user" ? path.join(configRoot, "settings.json") : path.join(fromProjectPath!, ".claude", "settings.json");
     const toSettingsAbs =
       toScope === "user" ? path.join(configRoot, "settings.json") : path.join(toProjectPath!, ".claude", "settings.json");
-    const backupEntries: Record<string, ReturnType<typeof backupFile>> = { from_settings: backupFile(backupRoot, "from_settings", fromSettingsAbs) };
+    const backupEntries: Record<string, ReturnType<typeof backupFile>> = {
+      from_settings: backupFile(backupRoot, "from_settings", fromSettingsAbs),
+      // H4 — `claude plugin disable/enable`이 실제로 건드리는 config_claude_json도 백업 대상에
+      // 포함한다(AC-0.8 실측 — 읽기 명령만으로도 갱신된다. 롤백이 이걸 복원 못 하면 AC-2.3/2.5가
+      // 구조적으로 성립하지 않는다).
+      config_claude_json: backupFile(backupRoot, "config_claude_json", claudeJsonPath(home)),
+    };
     if (toSettingsAbs !== fromSettingsAbs) {
       backupEntries.to_settings = backupFile(backupRoot, "to_settings", toSettingsAbs);
     }
-    writeManifest(backupRoot, runId, backupEntries);
+    const { manifestSha256 } = writeManifest(backupRoot, runId, backupEntries);
+    const beforeRoots: BeforeSnapshotRoot[] = [
+      { rootAbs: configRoot, entries: configBefore.entries },
+      ...involvedProjectPaths.map((p) => ({ rootAbs: path.join(p, ".claude"), entries: projectBefores.get(p)!.entries })),
+    ];
+    writeBeforeSnapshot(backupRoot, { roots: beforeRoots });
 
-    const rollbackAndThrow = (cause: unknown): never => {
-      restoreFromBackup(backupRoot);
-      throw cause;
-    };
+    const buildFailureEntry = (result: JournalResult) =>
+      buildPluginEnablementJournalEntry({
+        assetId: options.assetId,
+        machineId,
+        homeDir: home.ctkHome,
+        before: { install_scope: registryScope, enabled_at: fromScope },
+        after: { install_scope: registryScope, enabled_at: result === "rolled_back" ? fromScope : toScope },
+        backupRootAbs: backupRoot,
+        manifestSha256,
+        result,
+      });
+    const rollbackAndThrow = (cause: unknown): never =>
+      rollbackAndRecord({
+        cause,
+        backupRoot,
+        manifestSha256,
+        home,
+        catalogPath,
+        assetId: options.assetId,
+        buildEntry: buildFailureEntry,
+        commitMessage: (result) => `ctk move (${result}): ${options.assetId} ${fromScope} -> ${toScope}`,
+      });
 
     // ---- 3. 적용 ----
     try {
@@ -253,7 +345,7 @@ async function movePluginAsset(
       rollbackAndThrow(err);
     }
 
-    // ---- 6. journal ----
+    // ---- 6. journal(성공) ----
     const entry = buildPluginEnablementJournalEntry({
       assetId: options.assetId,
       machineId,
@@ -261,6 +353,7 @@ async function movePluginAsset(
       before: { install_scope: registryScope, enabled_at: fromScope },
       after: { install_scope: registryScope, enabled_at: toScope },
       backupRootAbs: backupRoot,
+      manifestSha256,
       result: "success",
     });
     const { path: journalPath } = writeJournalEntry(catalogPath, entry);
@@ -284,21 +377,25 @@ async function moveSkillAsset(
   catalogPath: string,
   options: MoveOptions,
 ): Promise<MoveSummary> {
-  assertSafePathSegment(options.assetId, "--asset"); // assetId가 곧 skills/<assetId> 경로 세그먼트가 된다.
   const fromScope: "user" | "project" = options.from ?? "user";
   const toScope: "user" | "project" = options.to;
   const fromProjectPath = fromScope === "project" ? resolveProjectPath(home, options.fromProjectIndex) : null;
   const toProjectPath = toScope === "project" ? resolveProjectPath(home, options.toProjectIndex) : null;
   if (fromScope === toScope && fromProjectPath === toProjectPath) throw new NoOpMoveError();
 
-  const sourceAbs =
-    fromScope === "user"
-      ? path.join(home.ctkConfigDir, "skills", options.assetId)
-      : path.join(fromProjectPath!, ".claude", "skills", options.assetId);
+  // H6 — assetId(frontmatter name)로 경로를 지어내지 않는다. probe로 실제 디렉터리를 되찾고,
+  // 정확히 스코프가 일치하는 항목이 하나여야만 진행한다(0건/2건 이상은 판정 불가로 거부).
+  const matches = findSkillDirsById(home, options.assetId).filter(
+    (d) => d.scope === fromScope && (fromScope === "user" ? d.projectPath === null : d.projectPath === fromProjectPath),
+  );
+  if (matches.length !== 1) {
+    throw new SkillLocationAmbiguousError(options.assetId, matches.length);
+  }
+  const sourceMatch = matches[0]!;
+  const sourceAbs = sourceMatch.absPath;
+  const dirName = sourceMatch.dirName;
   const destAbs =
-    toScope === "user"
-      ? path.join(home.ctkConfigDir, "skills", options.assetId)
-      : path.join(toProjectPath!, ".claude", "skills", options.assetId);
+    toScope === "user" ? path.join(home.ctkConfigDir, "skills", dirName) : path.join(toProjectPath!, ".claude", "skills", dirName);
 
   const configRoot = home.ctkConfigDir;
   const involvedProjectPaths = [...new Set([fromProjectPath, toProjectPath].filter((p): p is string => p !== null))];
@@ -307,24 +404,51 @@ async function moveSkillAsset(
   const configBefore = captureRootSnapshot(configRoot);
   const projectBefores = new Map(involvedProjectPaths.map((p) => [p, captureRootSnapshot(path.join(p, ".claude"))]));
 
-  // ---- 2. 백업(이동 대상 스킬 디렉터리 자체 + 목적지 자리) ----
+  // ---- 2. 백업(이동 대상 스킬 디렉터리 자체 + 목적지 자리, H4: before 스냅샷도 저장) ----
   const runId = snapshotIdFsSafe();
   const { backupRoot } = beginBackupRun(home.ctkHome, runId);
   const backupEntries = {
     skill_dir: backupDirectory(backupRoot, "skill_dir", sourceAbs),
     // 목적지는 이동 전에는 존재하지 않는다(existed:false로 기록됨) — `ctk rollback --last`가
     // 나중에(이 함수 호출이 끝난 뒤에도) manifest만으로 "이동이 새로 만든 디렉터리를 지운다"를
-    // 재현하려면 목적지 자리도 백업 항목으로 남아있어야 한다. 실패 시 즉시 되돌리는
-    // rollbackAndThrow와 달리, 성공 후 `ctk rollback --last`는 이 함수의 지역 변수(destAbs)에
-    // 접근할 수 없고 manifest만 본다.
+    // 재현하려면 목적지 자리도 백업 항목으로 남아있어야 한다.
     skill_dir_dest: backupDirectory(backupRoot, "skill_dir_dest", destAbs),
   };
-  writeManifest(backupRoot, runId, backupEntries);
+  const { manifestSha256 } = writeManifest(backupRoot, runId, backupEntries);
+  const beforeRoots: BeforeSnapshotRoot[] = [
+    { rootAbs: configRoot, entries: configBefore.entries },
+    ...involvedProjectPaths.map((p) => ({ rootAbs: path.join(p, ".claude"), entries: projectBefores.get(p)!.entries })),
+  ];
+  writeBeforeSnapshot(backupRoot, { roots: beforeRoots });
 
-  const rollbackAndThrow = (cause: unknown): never => {
-    restoreFromBackup(backupRoot);
-    throw cause;
-  };
+  const buildFailureEntry = (result: JournalResult) =>
+    buildSkillDirJournalEntry({
+      assetId: options.assetId,
+      machineId,
+      homeDir: home.ctkHome,
+      before: { location: fromScope, project_path_hash: fromProjectPath !== null ? normalizePath(fromProjectPath, home.ctkHome).path_hash : null },
+      after: {
+        location: result === "rolled_back" ? fromScope : toScope,
+        project_path_hash:
+          (result === "rolled_back" ? fromProjectPath : toProjectPath) !== null
+            ? normalizePath((result === "rolled_back" ? fromProjectPath : toProjectPath)!, home.ctkHome).path_hash
+            : null,
+      },
+      backupRootAbs: backupRoot,
+      manifestSha256,
+      result,
+    });
+  const rollbackAndThrow = (cause: unknown): never =>
+    rollbackAndRecord({
+      cause,
+      backupRoot,
+      manifestSha256,
+      home,
+      catalogPath,
+      assetId: options.assetId,
+      buildEntry: buildFailureEntry,
+      commitMessage: (result) => `ctk move (${result}): ${options.assetId} (skill) ${fromScope} -> ${toScope}`,
+    });
 
   // ---- 3. 적용 ----
   try {
@@ -334,7 +458,7 @@ async function moveSkillAsset(
   }
 
   // ---- 4. 감사 ----
-  const skillTier1 = [{ pattern: new RegExp(`^skills/${escapeRegExp(options.assetId)}(/|$)`), note: "Tier-1 대상 스킬" }];
+  const skillTier1 = [{ pattern: new RegExp(`^skills/${escapeRegExp(dirName)}(/|$)`), note: "Tier-1 대상 스킬" }];
   const configAfter = captureRootSnapshot(configRoot);
   const configAudit = auditRoot({ rootAbs: configRoot, tier1: skillTier1, allowTier2Churn: true }, configBefore, configAfter, readClaudeJsonRawOrNull(configRoot));
   if (!auditPassed(configAudit)) {
@@ -365,7 +489,7 @@ async function moveSkillAsset(
     rollbackAndThrow(err);
   }
 
-  // ---- 6. journal ----
+  // ---- 6. journal(성공) ----
   const entry = buildSkillDirJournalEntry({
     assetId: options.assetId,
     machineId,
@@ -373,6 +497,7 @@ async function moveSkillAsset(
     before: { location: fromScope, project_path_hash: fromProjectPath !== null ? normalizePath(fromProjectPath, home.ctkHome).path_hash : null },
     after: { location: toScope, project_path_hash: toProjectPath !== null ? normalizePath(toProjectPath, home.ctkHome).path_hash : null },
     backupRootAbs: backupRoot,
+    manifestSha256,
     result: "success",
   });
   const { path: journalPath } = writeJournalEntry(catalogPath, entry);
@@ -388,6 +513,7 @@ async function moveSkillAsset(
 }
 
 export async function runMove(options: MoveOptions): Promise<MoveSummary> {
+  const startedAt = new Date();
   const home = resolveHomeContext();
   const localConfig = readLocalConfig(home);
   if (localConfig === null) throw new CatalogNotInitializedError();
@@ -397,16 +523,52 @@ export async function runMove(options: MoveOptions): Promise<MoveSummary> {
   const lock = acquireLock(catalogPath, {
     command: "move",
     origin: "cli",
-    started_at: new Date().toISOString(),
+    started_at: startedAt.toISOString(),
     machine_id: machine.machine_id,
   });
 
   try {
     const kind = readCatalogAssetKind(catalogPath, options.assetId);
     assertMovableAssetKind(kind);
-    if (kind === "plugin") return await movePluginAsset(home, machine.machine_id, catalogPath, options);
-    return await moveSkillAsset(home, machine.machine_id, catalogPath, options);
+    const summary = kind === "plugin" ? await movePluginAsset(home, machine.machine_id, catalogPath, options) : await moveSkillAsset(home, machine.machine_id, catalogPath, options);
+
+    writeRunLogSafely(catalogPath, {
+      schema_version: 1,
+      _scope: "machine_dependent",
+      command: "move",
+      args: { asset_id: options.assetId, to: options.to },
+      machine_id: machine.machine_id,
+      started_at: startedAt.toISOString(),
+      finished_at: new Date().toISOString(),
+      exit_code: 0,
+      failure_class: null,
+    });
+    return summary;
+  } catch (err) {
+    // H3 — 실패(자기-롤백 성공/실패 포함)도 run-log를 남긴다(AC-5.1). journal은 각 단계에서
+    // `rollbackAndRecord`가 이미 남겼다 — 여기서는 §7 관측 가능성의 마지막 관문(run-log)만 채운다.
+    writeRunLogSafely(catalogPath, {
+      schema_version: 1,
+      _scope: "machine_dependent",
+      command: "move",
+      args: { asset_id: options.assetId, to: options.to },
+      machine_id: machine.machine_id,
+      started_at: startedAt.toISOString(),
+      finished_at: new Date().toISOString(),
+      exit_code: 1,
+      failure_class: extractFailureClass(err),
+    });
+    throw err;
   } finally {
     lock.release();
+  }
+}
+
+/** run-log 기록 자체의 실패가 원본 오류를 삼키지 않도록 격리한다(H3). */
+function writeRunLogSafely(catalogPath: string, entry: RunLogEntry): void {
+  try {
+    writeRunLog(catalogPath, entry);
+  } catch {
+    // best-effort — 원본 성공/실패 결과에 영향을 주지 않는다.
   }
 }

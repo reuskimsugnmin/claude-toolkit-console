@@ -193,7 +193,9 @@ describe("cli — ctk init / ctk scan 왕복 (Step 2)", () => {
       "항상 unclassified로 로그를 남겼다)",
     async () => {
       await runInit({});
-      writeFileSync(path.join(ctkHome, ".claude.json"), "{not valid json", "utf8");
+      // 이 테스트 스위트는 CTK_CONFIG_DIR을 명시 설정한다(위 beforeEach) — H5 수정 이후
+      // configDirExplicit=true일 때 claudeJsonPath()는 CTK_CONFIG_DIR 안을 본다(probe/home.ts).
+      writeFileSync(path.join(ctkHome, ".claude", ".claude.json"), "{not valid json", "utf8");
 
       await expect(runScan({ spawnFn: fakeSpawn(PLUGIN_LIST_STDOUT) })).rejects.toThrow();
 

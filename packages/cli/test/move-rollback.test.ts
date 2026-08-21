@@ -61,11 +61,13 @@ describe("cli — ctk move / ctk rollback 왕복 e2e (Step 5, AC-2.1/2.2/2.3/2.4
     projectDir = mkdtempSync(path.join(tmpdir(), "ctk-move-e2e-project-"));
     mkdirSync(ctkConfigDir, { recursive: true });
 
-    // 알려진 프로젝트 레지스트리(~/.claude.json의 projects 키) — probe/known-projects.ts와
+    // 알려진 프로젝트 레지스트리(.claude.json의 projects 키) — probe/known-projects.ts와
     // actuator move.ts의 --project-index가 이걸 읽는다. 실제 claude 바이너리는 이 파일을
-    // HOME이 아니라 CLAUDE_CONFIG_DIR 안에 쓴다는 것을 별도로 실측했으므로(Step 5 실측 —
-    // 하네스 실측 사실로 별도 보고), probe가 읽는 위치(HOME 루트)에 테스트가 직접 씨딩한다.
-    writeJson(path.join(ctkHome, ".claude.json"), { projects: { [projectDir]: {} } });
+    // HOME이 아니라 CLAUDE_CONFIG_DIR 안에 쓴다(실측, docs/harness-facts.md) — 이 테스트는
+    // CTK_HOME과 CTK_CONFIG_DIR을 둘 다 명시 설정하므로(아래) configDirExplicit=true가 되고,
+    // H5 수정 이후 `claudeJsonPath()`도 이제 CLAUDE_CONFIG_DIR 안을 본다(probe/src/home.ts).
+    // 실제 claude 서브프로세스가 쓰는 위치와 probe가 읽는 위치가 이제 일치하므로 같은 곳에 씨딩한다.
+    writeJson(path.join(ctkConfigDir, ".claude.json"), { projects: { [projectDir]: {} } });
 
     originalEnv = { CTK_HOME: process.env.CTK_HOME, CTK_CONFIG_DIR: process.env.CTK_CONFIG_DIR };
     process.env.CTK_HOME = ctkHome;
@@ -93,8 +95,14 @@ describe("cli — ctk move / ctk rollback 왕복 e2e (Step 5, AC-2.1/2.2/2.3/2.4
     rmSync(projectDir, { recursive: true, force: true });
   });
 
-  it("플러그인: user → project 전이 → 재스캔 실측 확인 → 롤백 → 원상복구 확인(AC-2.1)", async () => {
-    if (!claudeAvailable) return; // 실제 claude 바이너리/오프라인 마켓플레이스 등록 불가 환경 — 스킵
+  it("플러그인: user → project 전이 → 재스캔 실측 확인 → 롤백 → 원상복구 확인(AC-2.1)", async (ctx) => {
+    // M9 수정 — `if (!claudeAvailable) return;`은 vitest에서 조용한 PASS다(skip이 아니다).
+    // 필수 게이트가 실제 claude 바이너리 부재 환경에서 공허하게 초록으로 찍히는 회귀가 있었다.
+    // `ctx.skip()`은 이 테스트를 명시적으로 "건너뜀"으로 리포트해 PASS와 구분되게 만든다.
+    if (!claudeAvailable) {
+      ctx.skip(); // 실제 claude 바이너리/오프라인 마켓플레이스 등록 불가 환경 — 명시적 스킵
+      return;
+    }
 
     await runInit({});
 
@@ -183,7 +191,9 @@ describe("cli — ctk move / ctk rollback 왕복 e2e (Step 5, AC-2.1/2.2/2.3/2.4
     await runInit({});
     writeJson(path.join(ctkConfigDir, "settings.json"), {});
     // root mcpServers — probe/sources/mcp.ts가 kind:"mcp" Asset으로 잡는 유일한 정의 위치.
-    writeJson(path.join(ctkHome, ".claude.json"), {
+    // H5 수정 이후 이 테스트(CTK_CONFIG_DIR 명시 설정, configDirExplicit=true)의 .claude.json은
+    // ctkConfigDir 안에 있다(위 beforeEach와 동일 근거).
+    writeJson(path.join(ctkConfigDir, ".claude.json"), {
       projects: { [projectDir]: {} },
       mcpServers: { "demo-mcp": { command: "true" } },
     });
@@ -229,7 +239,10 @@ describe("cli — ctk move / ctk rollback 왕복 e2e (Step 5, AC-2.1/2.2/2.3/2.4
 
   it(
     "✅ 방어 심층 — 카탈로그 index.json에 이미 경로 순회 id가 올라간 최악의 경우에도 " +
-      "`ctk move`가 그 값을 skills/<id> 경로 세그먼트로 쓰지 않는다(H2, move.ts 자체 검증)",
+      "`ctk move`가 그 값을 skills/<id> 경로 세그먼트로 쓰지 않는다(H2/H6, move.ts 자체 검증). " +
+      "H6 수정 이후에는 id로 경로를 지어내지 않고 probe로 실제 디렉터리를 찾으므로, 대응하는 " +
+      "실제 디렉터리가 없다는 판정(SkillLocationAmbiguousError)으로 거부된다 — 문자열 패턴 " +
+      "매칭이 아니라 구조적으로 경로 순회가 성립할 수 없다",
     async () => {
       const result = await runInit({});
       mkdirSync(path.join(ctkConfigDir, "skills", "demo-skill"), { recursive: true });
@@ -245,9 +258,9 @@ describe("cli — ctk move / ctk rollback 왕복 e2e (Step 5, AC-2.1/2.2/2.3/2.4
 
       const beforeTree = collectTree(ctkConfigDir).entries;
 
-      await expect(runMove({ assetId: "../../evil", to: "project", toProjectIndex: 0 })).rejects.toThrow(
-        /경로 구분자|금지된 경로 패턴/,
-      );
+      await expect(runMove({ assetId: "../../evil", to: "project", toProjectIndex: 0 })).rejects.toMatchObject({
+        failureClass: "skill_location_ambiguous",
+      });
 
       const afterTree = collectTree(ctkConfigDir).entries;
       expect(afterTree).toEqual(beforeTree);
