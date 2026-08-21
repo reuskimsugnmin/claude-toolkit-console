@@ -7,7 +7,11 @@ import { attribute, type AttributionInput } from "../src/usage/attribution.js";
  * 이미 추출된 입력 형태로 직접 단언한다(probe/transcripts 통합 테스트는 별도).
  */
 describe("usage/attribution — 3단 우선순위 귀속 규칙", () => {
-  it("① harness_field — attributionSkill이 있으면 최우선으로 귀속된다", () => {
+  it("① harness_field — attributionSkill+attributionPlugin이 함께 있으면(plugin-qualified 스킬 호출 실측형) plugin이 우선한다", () => {
+    // 실측(2026-08-21, 실제 트랜스크립트): attributionSkill:"superpowers:systematic-debugging" +
+    // attributionPlugin:"superpowers"가 같은 행에 동시에 실린다. 플러그인 번들 스킬은 카탈로그에
+    // 별도 skill Asset이 없으므로(probe/sources/skills.ts는 전역/프로젝트 skills/만 훑는다) plugin
+    // 자산으로 귀속하는 것이 카탈로그 실체와 일치한다.
     const input: AttributionInput = {
       toolName: "Skill",
       toolInput: { skill: "demo-plugin:demo-skill" },
@@ -16,9 +20,23 @@ describe("usage/attribution — 3단 우선순위 귀속 규칙", () => {
     const result = attribute(input);
     expect(result).toEqual({
       attribution_source: "harness_field",
+      attribution_rule: "harness_field:attributionPlugin",
+      kind: "plugin",
+      ref: "demo-plugin",
+    });
+  });
+
+  it("① harness_field — attributionSkill만 있으면(플러그인 무관 전역/프로젝트 스킬) skill로 귀속된다", () => {
+    const result = attribute({
+      toolName: "Skill",
+      toolInput: { skill: "loose-skill" },
+      explicit: { attributionSkill: "loose-skill" },
+    });
+    expect(result).toEqual({
+      attribution_source: "harness_field",
       attribution_rule: "harness_field:attributionSkill",
       kind: "skill",
-      ref: "demo-plugin:demo-skill",
+      ref: "loose-skill",
     });
   });
 
@@ -34,13 +52,23 @@ describe("usage/attribution — 3단 우선순위 귀속 규칙", () => {
     expect(result.ref).toBe("oh-my-claudecode:critic");
   });
 
-  it("② prefix_rule — attribution* 필드가 없으면 Skill tool_use의 input.skill로 귀속된다(bare-name)", () => {
+  it("② prefix_rule — attribution* 필드가 없으면 Skill tool_use의 input.skill로 귀속된다(bare-name → skill)", () => {
     const result = attribute({ toolName: "Skill", toolInput: { skill: "loose-skill" }, explicit: undefined });
     expect(result).toEqual({
       attribution_source: "prefix_rule",
-      attribution_rule: "prefix_rule:skill_tool_input",
+      attribution_rule: "prefix_rule:skill_tool_input_bare",
       kind: "skill",
       ref: "loose-skill",
+    });
+  });
+
+  it("② prefix_rule — plugin-qualified skill(\"plugin:skill\")은 plugin으로 귀속된다(explicit 필드와 동일한 우선순위 근거)", () => {
+    const result = attribute({ toolName: "Skill", toolInput: { skill: "demo-plugin:demo-skill" }, explicit: undefined });
+    expect(result).toEqual({
+      attribution_source: "prefix_rule",
+      attribution_rule: "prefix_rule:skill_tool_input_plugin_qualified",
+      kind: "plugin",
+      ref: "demo-plugin",
     });
   });
 

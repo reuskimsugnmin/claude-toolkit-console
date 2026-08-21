@@ -1,4 +1,4 @@
-import { SKILL_TOOL_NAME, isSubagentSpawnTool } from "./tool-names.js";
+import { SKILL_TOOL_NAME, classifySkillInput, isSubagentSpawnTool } from "./tool-names.js";
 import type { AttributionSource } from "../schema/usage.js";
 
 /**
@@ -62,22 +62,32 @@ const UNATTRIBUTED: AttributionResult = {
 
 function fromExplicitFields(explicit: ExplicitAttributionFields | undefined): AttributionResult | null {
   if (explicit === undefined) return null;
-  // 우선순위: skill > plugin > mcp_server > agent. 한 tool_use 행에 여러 필드가 동시에 실릴
-  // 것으로 실측되진 않았지만(각 행은 하나의 tool_use), 방어적으로 순서를 고정한다.
-  if (explicit.attributionSkill !== undefined && explicit.attributionSkill.length > 0) {
-    return {
-      attribution_source: "harness_field",
-      attribution_rule: "harness_field:attributionSkill",
-      kind: "skill",
-      ref: explicit.attributionSkill,
-    };
-  }
+  // 우선순위: plugin > skill > mcp_server > agent.
+  //
+  // ⚠️ **skill보다 plugin을 먼저 본다 — v1 Ontology 제약에서 나온 필연적 선택.** 실측(2026-08-21,
+  // 실제 트랜스크립트): `attributionSkill: "superpowers:systematic-debugging"`와
+  // `attributionPlugin: "superpowers"`가 **같은 행에 동시에 실린다**(plugin-qualified 스킬 호출).
+  // v1 Ontology는 자산을 4종(plugin/skill/mcp/cli)만 인정하고, `probe/sources/skills.ts`는
+  // `<config>/skills/`·`<project>/.claude/skills/`만 훑는다 — **플러그인 번들 스킬은 애초에
+  // 별도 Asset으로 카탈로그에 없다**(그 콘텐츠는 결정 5의 "플러그인 idle = 산하 스킬·에이전트의
+  // name+description 합"으로 플러그인 자산에 이미 흡수된다). skill을 먼저 골랐다면 존재하지 않는
+  // 카탈로그 자산을 가리키는 UsageMetric이 나온다 — plugin 우선이 카탈로그 실체와 일치한다.
+  // `attributionPlugin` 없이 `attributionSkill`만 있는 행(전역/프로젝트 스킬, 플러그인 무관)은
+  // 여전히 skill로 정확히 귀속된다.
   if (explicit.attributionPlugin !== undefined && explicit.attributionPlugin.length > 0) {
     return {
       attribution_source: "harness_field",
       attribution_rule: "harness_field:attributionPlugin",
       kind: "plugin",
       ref: explicit.attributionPlugin,
+    };
+  }
+  if (explicit.attributionSkill !== undefined && explicit.attributionSkill.length > 0) {
+    return {
+      attribution_source: "harness_field",
+      attribution_rule: "harness_field:attributionSkill",
+      kind: "skill",
+      ref: explicit.attributionSkill,
     };
   }
   if (explicit.attributionMcpServer !== undefined && explicit.attributionMcpServer.length > 0) {
@@ -120,11 +130,25 @@ function fromMcpToolPrefix(toolName: string): AttributionResult | null {
 function fromSkillToolInput(toolInput: Record<string, unknown> | undefined): AttributionResult | null {
   const skillValue = toolInput?.skill;
   if (typeof skillValue !== "string" || skillValue.length === 0) return null;
-  // classifySkillInput(tool-names.ts)은 plugin_qualified/bare_name 형태 구분만 한다 — 여기서는
-  // ref로 원문을 그대로 쓴다(plugin:skill 형태면 호출자가 ":"로 나눠 marketplace 해석에 쓸 수 있다).
-  // 형태 구분 자체가 필요한 호출자는 classifySkillInput(ref)를 직접 다시 부르면 된다(순수 함수라
-  // 재계산 비용이 무시할 수준).
-  return { attribution_source: "prefix_rule", attribution_rule: "prefix_rule:skill_tool_input", kind: "skill", ref: skillValue };
+  // fromExplicitFields의 plugin-우선 주석과 동일한 근거 — plugin_qualified("plugin:skill") 형태는
+  // 플러그인 번들 스킬이라 카탈로그에 별도 skill Asset이 없다. 접두 규칙에서도 explicit 필드와
+  // 같은 target kind로 귀속해야 ①②가 서로 다른 자산을 가리키는 일이 없다(일관성).
+  if (classifySkillInput(skillValue) === "plugin_qualified") {
+    const pluginName = skillValue.split(":")[0];
+    if (pluginName === undefined || pluginName.length === 0) return null;
+    return {
+      attribution_source: "prefix_rule",
+      attribution_rule: "prefix_rule:skill_tool_input_plugin_qualified",
+      kind: "plugin",
+      ref: pluginName,
+    };
+  }
+  return {
+    attribution_source: "prefix_rule",
+    attribution_rule: "prefix_rule:skill_tool_input_bare",
+    kind: "skill",
+    ref: skillValue,
+  };
 }
 
 function fromAgentToolInput(toolName: string, toolInput: Record<string, unknown> | undefined): AttributionResult | null {
