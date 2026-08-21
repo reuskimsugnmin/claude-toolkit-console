@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6,6 +7,7 @@ import type { HomeContext } from "@ctk/probe";
 import { backupDirectory, backupFile, beginBackupRun, writeManifest } from "../src/backup.js";
 import {
   BackupManifestTamperedError,
+  ConfigClobberedError,
   ForbiddenRestoreTargetError,
   RollbackFailedError,
   restoreFromBackup,
@@ -147,6 +149,49 @@ describe("actuator/rollback — 백업에서 직접 파일 복원(AC-2.5: 롤백
       writeManifest(backupRoot, "run5", { config_settings: entry });
 
       expect(() => restoreFromBackup(backupRoot, homeCtx, "f".repeat(64))).toThrow(BackupManifestTamperedError);
+    },
+  );
+
+  it(
+    "✅ M8 재현 — 백업~롤백 사이 다른 세션이 대상 파일을 바꾸면(lost update 위험), " +
+      "expectedCurrentShas와 대조해 ConfigClobberedError로 중단하고 그 변경을 덮어쓰지 않는다 " +
+      "(수정 전에는 확인 없이 그대로 덮어썼다)",
+    () => {
+      const target = path.join(home, "settings.json");
+      writeFileSync(target, '{"enabledPlugins":{"a@b":true}}', "utf8");
+      const { backupRoot } = beginBackupRun(home, "run-m8");
+      const entry = backupFile(backupRoot, "config_settings", target);
+      writeManifest(backupRoot, "run-m8", { config_settings: entry });
+
+      // "조치 직후 우리가 남긴 값" — 조치가 실제로 만든 상태.
+      writeFileSync(target, '{"enabledPlugins":{"a@b":false}}', "utf8");
+      const expectedCurrentSha = createHash("sha256").update(readFileSync(target)).digest("hex");
+
+      // 다른 세션이 그 사이 끼어들어 파일을 또 바꿨다 — 우리가 예상한 값과 달라진다.
+      writeFileSync(target, '{"enabledPlugins":{"a@b":false},"userEdit":true}', "utf8");
+
+      expect(() =>
+        restoreFromBackup(backupRoot, homeCtx, undefined, { config_settings: expectedCurrentSha }),
+      ).toThrow(ConfigClobberedError);
+      // 사용자가 끼어들어 만든 값이 그대로 남아있다 — 조용히 덮어써지지 않았다.
+      expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ enabledPlugins: { "a@b": false }, userEdit: true });
+    },
+  );
+
+  it(
+    "expectedCurrentShas가 실측과 일치하면(다른 세션의 개입 없음) 정상적으로 복원한다",
+    () => {
+      const target = path.join(home, "settings.json");
+      writeFileSync(target, '{"enabledPlugins":{"a@b":true}}', "utf8");
+      const { backupRoot } = beginBackupRun(home, "run-m8b");
+      const entry = backupFile(backupRoot, "config_settings", target);
+      writeManifest(backupRoot, "run-m8b", { config_settings: entry });
+
+      writeFileSync(target, '{"enabledPlugins":{"a@b":false}}', "utf8");
+      const expectedCurrentSha = createHash("sha256").update(readFileSync(target)).digest("hex");
+
+      restoreFromBackup(backupRoot, homeCtx, undefined, { config_settings: expectedCurrentSha });
+      expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ enabledPlugins: { "a@b": true } });
     },
   );
 

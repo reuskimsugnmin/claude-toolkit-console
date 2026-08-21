@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -135,6 +136,12 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** M8 — "조치 직후 우리가 남긴 sha256"을 계산한다. 대상이 없으면 undefined(검사 생략 대상). */
+function sha256FileOrUndefined(absPath: string): string | undefined {
+  if (!existsSync(absPath)) return undefined;
+  return createHash("sha256").update(readFileSync(absPath)).digest("hex");
+}
+
 const FAILURE_CLASS_SET = new Set<string>(FAILURE_CLASSES);
 
 /** 던져진 오류가 알려진 `failure_class`를 싣고 있으면 그대로 쓰고, 아니면 "unclassified"로 남긴다. */
@@ -165,11 +172,14 @@ function rollbackAndRecord(options: {
   assetId: string;
   buildEntry: (result: JournalResult) => Parameters<typeof writeJournalEntry>[1];
   commitMessage: (result: JournalResult) => string;
+  /** M8 — manifest 키 → "조치 직후 우리가 남긴 sha256". restoreFromBackup이 복원 직전 이 값과
+   * 실측을 대조해, 백업~롤백 사이 다른 세션이 파일을 바꿨으면 조용히 덮어쓰지 않고 중단한다. */
+  expectedCurrentShas?: Readonly<Record<string, string | undefined>>;
 }): never {
   let result: JournalResult;
   let rollbackCause: unknown = null;
   try {
-    restoreFromBackup(options.backupRoot, options.home);
+    restoreFromBackup(options.backupRoot, options.home, undefined, options.expectedCurrentShas);
     result = "rolled_back";
   } catch (rbErr) {
     result = "failure";
@@ -269,6 +279,12 @@ async function movePluginAsset(
         manifestSha256,
         result,
       });
+    // M8 — "조치 직후 우리가 남긴 값". apply(3단계) 성공 직후에만 채워진다 — 그 전에
+    // rollbackAndThrow가 호출되면(apply 자체 실패) 아직 우리가 무엇을 썼는지 확정할 수 없으므로
+    // undefined로 두고 검사를 생략한다. 박스(객체) 자체는 const로 두고 `.value`만 나중에 채운다 —
+    // rollbackAndThrow 클로저가 항상 호출 시점의 최신 값을 읽어야 하므로 `let` 재할당 대신
+    // 프로퍼티 갱신을 쓴다.
+    const expectedCurrentShasBox: { value: Record<string, string | undefined> | undefined } = { value: undefined };
     const rollbackAndThrow = (cause: unknown): never =>
       rollbackAndRecord({
         cause,
@@ -279,6 +295,7 @@ async function movePluginAsset(
         assetId: options.assetId,
         buildEntry: buildFailureEntry,
         commitMessage: (result) => `ctk move (${result}): ${options.assetId} ${fromScope} -> ${toScope}`,
+        expectedCurrentShas: expectedCurrentShasBox.value,
       });
 
     // ---- 3. 적용 ----
@@ -295,6 +312,11 @@ async function movePluginAsset(
     } catch (err) {
       rollbackAndThrow(err);
     }
+    expectedCurrentShasBox.value = {
+      from_settings: sha256FileOrUndefined(fromSettingsAbs),
+      config_claude_json: sha256FileOrUndefined(claudeJsonPath(home)),
+      ...(toSettingsAbs !== fromSettingsAbs ? { to_settings: sha256FileOrUndefined(toSettingsAbs) } : {}),
+    };
 
     // ---- 4. 감사(AC-2.7) ----
     // M2/M5 — auditRoot는 .claude.json이 손상돼 있으면(파싱 실패) 이제 throw한다(조용히 {}로

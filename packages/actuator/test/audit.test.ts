@@ -167,4 +167,21 @@ describe("actuator/audit — probe/tree-collect 수집 -> core/guard 판정 배�
       expect(err2.failureClass).toBe("forbidden_path_write");
     },
   );
+
+  it(
+    "✅ M7 재현 — plugins/repos/** (플러그인 코드 트리) 변경은 실제 조치 감사(Tier-2 churn)를 " +
+      "통과하지 못한다. 이전에는 미실측 항목까지 같은 TIER2_CHURN_ALLOWLIST에 섞여 있어 조치 " +
+      "도중 플러그인 소스가 바뀌어도(공급망 위협 시나리오) 조용히 허용됐다",
+    () => {
+      writeFileSync(path.join(root, "settings.json"), "{}", "utf8");
+      mkdirSync(path.join(root, "plugins", "repos", "demo-plugin"), { recursive: true });
+      writeFileSync(path.join(root, "plugins", "repos", "demo-plugin", "index.js"), "original", "utf8");
+      const before = captureRootSnapshot(root);
+      writeFileSync(path.join(root, "plugins", "repos", "demo-plugin", "index.js"), "tampered", "utf8");
+      const after = captureRootSnapshot(root);
+
+      const result = auditRoot({ rootAbs: root, tier1: TIER1_INTENTIONAL_WRITES, allowTier2Churn: true }, before, after, null);
+      expect(auditPassed(result)).toBe(false);
+    },
+  );
 });

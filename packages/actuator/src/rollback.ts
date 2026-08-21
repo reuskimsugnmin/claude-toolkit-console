@@ -59,6 +59,23 @@ export class ForbiddenRestoreTargetError extends Error {
   }
 }
 
+/**
+ * M8 — 백업~롤백 사이(특히 self-rollback의 짧은 창) 사용자가 대화형 세션에서 대상 파일을
+ * 별도로 바꾸면, 복원이 현재 내용을 확인하지 않고 그대로 덮어써 그 변경을 조용히 잃어버릴 수
+ * 있었다(lost update). 복원 직전 현재 sha256을 "조치 직후 우리가 남긴 값"과 대조해 다르면
+ * 이 오류로 중단한다 — 무엇을 덮어쓰려 했는지 알 수 있게 상신한다.
+ */
+export class ConfigClobberedError extends Error {
+  readonly failureClass = "config_clobbered" as const;
+  constructor(targetAbs: string) {
+    super(
+      `복원 직전 ${targetAbs}의 현재 내용이 우리 조치 직후 남긴 값과 다르다 — 그 사이 다른 ` +
+        `세션이 이 파일을 바꿨을 수 있다. 그 변경을 조용히 덮어쓰지 않기 위해 복원을 중단한다.`,
+    );
+    this.name = "ConfigClobberedError";
+  }
+}
+
 /** H2/AC-2.13 — manifest.json의 실측 sha256이 journal에 기록된 값과 다르다(백업 저장소 변조 의심). */
 export class BackupManifestTamperedError extends Error {
   readonly failureClass = "backup_manifest_tampered" as const;
@@ -200,9 +217,25 @@ function verifyRestoredDirectory(absPath: string, entry: Extract<BackupEntry, { 
 /**
  * H1 — 파일 복원. `existed:false`(생성물 제거) 케이스도 `rmSync`가 아니라 **퇴피(rename)**로
  * 처리한다 — "살아있는 대상을 무조건 삭제"하는 코드 경로를 이 파일 전체에서 없앤다.
+ *
+ * `expectedCurrentSha256`(M8)이 주어지고 대상이 존재하면, 복원 직전 실측 sha256과 대조한다 —
+ * 다르면 다른 세션이 그 사이 파일을 바꿨다는 뜻이므로 `ConfigClobberedError`로 중단한다
+ * (`undefined`면 검사를 생략한다 — 호출자가 "조치 직후 값"을 모르는 경로, 예: 구버전 백업).
  */
-function restoreFileEntry(key: string, entry: Extract<BackupEntry, { kind: "file" }>, backupRoot: string): void {
+function restoreFileEntry(
+  key: string,
+  entry: Extract<BackupEntry, { kind: "file" }>,
+  backupRoot: string,
+  expectedCurrentSha256: string | undefined,
+): void {
   const targetAbs = entry.targetAbs;
+
+  if (expectedCurrentSha256 !== undefined && existsSync(targetAbs)) {
+    if (sha256File(targetAbs) !== expectedCurrentSha256) {
+      throw new ConfigClobberedError(targetAbs);
+    }
+  }
+
   const evictedAbs = evictedPathFor(backupRoot, key);
   mkdirSync(path.dirname(evictedAbs), { recursive: true });
   rmSync(evictedAbs, { recursive: true, force: true }); // 이전 시도의 잔존물 정리(멱등).
@@ -306,21 +339,33 @@ function verifyNoResidualDiff(backupRoot: string): void {
  * journal 레코드를 이미 갖고 있는 호출자만 넘긴다 — move.ts의 즉시 자기-롤백(같은 런 안에서
  * 아직 journal을 쓰기 전)은 비교 대상이 없으므로 생략(undefined)한다.
  *
+ * `expectedCurrentShas`(M8)는 manifest 키 → "조치 직후 우리가 남긴 sha256"이다. 주어지면
+ * 파일 복원 직전 실측값과 대조해, 백업~롤백 사이 다른 세션이 그 파일을 바꿨으면
+ * `ConfigClobberedError`로 중단한다(그 변경을 조용히 덮어쓰지 않는다). 키가 없거나 값이
+ * `undefined`면(예: 아직 대상이 없었던 항목) 검사를 생략한다.
+ *
  * 하나라도 phase 2 도중 실패하면 즉시 `RollbackFailedError`로 던진다(부분 복원 상태를 성공으로
  * 보고하지 않는다) — 이미 복원된 항목들은 그대로 남는다(추가 되돌리기 시도는 하지 않는다,
- * "롤백의 롤백"은 더 큰 손상 위험).
+ * "롤백의 롤백"은 더 큰 손상 위험). `ConfigClobberedError`는 이 규칙의 예외다 — 그대로
+ * 재throw해 호출자가 정확한 failure_class를 볼 수 있게 한다(RollbackFailedError로 뭉개지 않는다).
  */
-export function restoreFromBackup(backupRoot: string, home: HomeContext, expectedManifestSha256?: string): void {
+export function restoreFromBackup(
+  backupRoot: string,
+  home: HomeContext,
+  expectedManifestSha256?: string,
+  expectedCurrentShas?: Readonly<Record<string, string | undefined>>,
+): void {
   const entries = preflightRestore(backupRoot, home, expectedManifestSha256);
 
   for (const [key, entry] of Object.entries(entries)) {
     try {
       if (entry.kind === "file") {
-        restoreFileEntry(key, entry, backupRoot);
+        restoreFileEntry(key, entry, backupRoot, expectedCurrentShas?.[key]);
       } else {
         restoreDirectoryEntry(key, entry, backupRoot);
       }
     } catch (cause) {
+      if (cause instanceof ConfigClobberedError) throw cause;
       throw new RollbackFailedError(backupRoot, new Error(`키 '${key}' 복원 실패: ${String(cause)}`));
     }
   }
