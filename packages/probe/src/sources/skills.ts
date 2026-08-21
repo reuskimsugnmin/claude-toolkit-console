@@ -25,6 +25,13 @@ export interface SkillSourceResult {
 
 interface DiscoveredSkill {
   id: string;
+  /** 실제 디렉터리 이름(`dirent.name`) — OS가 반환한 값이라 경로 순회 세그먼트가 될 수 없다
+   * (H6). `id`(frontmatter `name`)는 서드파티 저자가 자칭하는 값이라 실제 디렉터리와 다를 수
+   * 있다 — 경로를 지을 때는 항상 `dirName`을 쓰고 `id`를 쓰지 않는다. */
+  dirName: string;
+  /** 이 스킬 디렉터리의 실제 절대경로 — `move`가 이동시킬 대상은 이 값이어야 한다(id로 경로를
+   * 지어내지 않는다, H6). */
+  absPath: string;
   description: string | undefined;
   scope: "user" | "project";
   projectPath: string | null;
@@ -55,9 +62,25 @@ function readSkillDir(skillsRootAbs: string, scope: "user" | "project", projectP
     }
     const frontmatter = parseSimpleFrontmatter(content);
     const id = frontmatter.name && frontmatter.name.length > 0 ? frontmatter.name : dirent.name;
-    found.push({ id, description: frontmatter.description, scope, projectPath });
+    found.push({ id, dirName: dirent.name, absPath: skillDirAbs, description: frontmatter.description, scope, projectPath });
   }
   return found;
+}
+
+/**
+ * H6 — 스킬 자산 id(frontmatter `name`)에 대응하는 **실제 디렉터리**를 되찾는다. `id`를 곧바로
+ * `path.join(root, "skills", id)`의 세그먼트로 쓰면(과거 `cli/move.ts`), frontmatter `name`이
+ * 실제 디렉터리명과 다를 때(실측: 라우터 스킬이 다른 스킬의 이름을 자칭 — Step 2 커밋 7c069ab)
+ * **엉뚱한 디렉터리를 이동시킨다.** 호출자는 이 함수가 돌려주는 항목 수로 판정한다 — 0건이면
+ * 카탈로그가 드리프트됐다는 뜻이고, 2건 이상이면 어느 것이 진짜인지 판정 불가이므로 항상 거부한다
+ * (추정으로 채우지 않는다, CLAUDE.md 안전 원칙과 동형).
+ */
+export function findSkillDirsById(home: HomeContext, assetId: string): DiscoveredSkill[] {
+  const discovered: DiscoveredSkill[] = [...readSkillDir(path.join(home.ctkConfigDir, "skills"), "user", null)];
+  for (const projectPath of listKnownProjectPaths(home)) {
+    discovered.push(...readSkillDir(path.join(projectPath, ".claude", "skills"), "project", projectPath));
+  }
+  return discovered.filter((d) => d.id === assetId);
 }
 
 export interface CollectSkillsOptions {
