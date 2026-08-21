@@ -150,6 +150,15 @@ export default tseslint.config(
     },
   },
 
+  // ── 전역: 카탈로그 경로 세그먼트 검증은 core/catalog/layout.ts 단일 관문만 쓴다(Step 5 보안
+  // 심사 수정 — 호출부 중복 가드가 두 벌로 발산했던 문제의 재발 방지).
+  {
+    files: ["packages/**/src/**/*.ts"],
+    rules: {
+      "ctk/no-adhoc-path-guard": "error",
+    },
+  },
+
   {
     rules: {
       "@typescript-eslint/no-unused-vars": [

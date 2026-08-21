@@ -12,6 +12,7 @@ export * from "./schema/journal.js";
 export * from "./schema/run-log.js";
 export * from "./schema/toggle.js";
 export * from "./schema/catalog-config.js";
+export * from "./schema/backup-manifest.js";
 
 export * from "./harness/plugin-list.schema.js";
 export * from "./harness/plugin-details.schema.js";
@@ -26,6 +27,7 @@ export * from "./guard/forbidden.js";
 export * from "./guard/forbidden-argv.js";
 export * from "./guard/injection-patterns.js";
 export * from "./guard/env-whitelist.js";
+export * from "./guard/claude-json-semantic.js";
 
 export * from "./snapshot/snapshot.js";
 export * from "./snapshot/diff.js";

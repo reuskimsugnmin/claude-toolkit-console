@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { spawnClaude, SealProfileMissingError, SealTimeoutError } from "../src/harness/spawn-claude.js";
+import { ClaudeExecutableNotFoundError, spawnClaude, SealProfileMissingError, SealTimeoutError } from "../src/harness/spawn-claude.js";
 import type { HomeContext } from "../src/home.js";
 
 /**
@@ -19,7 +19,7 @@ describe("probe/harness/spawn-claude — §1.3 결정 6 봉인 래퍼 (가짜 cl
 
   beforeEach(() => {
     binDir = mkdtempSync(path.join(tmpdir(), "ctk-fake-claude-bin-"));
-    home = { ctkHome: mkdtempSync(path.join(tmpdir(), "ctk-fake-home-")), ctkConfigDir: "" };
+    home = { ctkHome: mkdtempSync(path.join(tmpdir(), "ctk-fake-home-")), ctkConfigDir: "", configDirExplicit: true };
     home = { ...home, ctkConfigDir: path.join(home.ctkHome, ".claude") };
     mkdirSync(home.ctkConfigDir, { recursive: true });
     originalPath = process.env.PATH;
@@ -34,7 +34,13 @@ describe("probe/harness/spawn-claude — §1.3 결정 6 봉인 래퍼 (가짜 cl
 
   function writeFakeClaude(script: string): void {
     const p = path.join(binDir, "claude");
-    writeFileSync(p, `#!/bin/sh\n${script}\n`);
+    // L6 — spawnClaude가 처음 보는 실행 파일마다 `--version` sanity check을 하므로(가짜
+    // 바이너리가 실제 claude와 동일한 응답을 준다는 최소 확인), 그 인자로 불릴 때만 가짜
+    // semver를 찍고 즉시 종료한다. 그 외 인자는 원래 테스트 스크립트 그대로 실행된다.
+    writeFileSync(
+      p,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "9.9.9 (fake claude for tests)"; exit 0; fi\n${script}\n`,
+    );
     chmodSync(p, 0o755);
   }
 
@@ -44,7 +50,7 @@ describe("probe/harness/spawn-claude — §1.3 결정 6 봉인 래퍼 (가짜 cl
       spawnClaude({
         // @ts-expect-error 의도적으로 잘못된 값을 넣어 런타임 거부를 확인한다
         profile: "not-a-real-profile",
-        subcommand: ["--version"],
+        subcommand: ["__noop__"],
         home,
         cwd: home.ctkHome,
         timeoutSec: 5,
@@ -58,7 +64,7 @@ describe("probe/harness/spawn-claude — §1.3 결정 6 봉인 래퍼 (가짜 cl
     try {
       const result = await spawnClaude({
         profile: "test-isolated",
-        subcommand: ["--version"],
+        subcommand: ["__noop__"],
         home,
         cwd: home.ctkHome,
         timeoutSec: 5,
@@ -71,6 +77,26 @@ describe("probe/harness/spawn-claude — §1.3 결정 6 봉인 래퍼 (가짜 cl
       delete process.env.SOME_SECRET;
     }
   });
+
+  it(
+    "✅ H5 수정(Step 5 보안 심사) — CTK_CONFIG_DIR이 명시되지 않은 프로덕션 기본 경로에서는 " +
+      "자식 프로세스에 CLAUDE_CONFIG_DIR을 아예 주입하지 않는다(자식이 $HOME 기준 기본값을 " +
+      "쓰게 둬 probe와 자식이 같은 .claude.json을 보게 한다) — 재현: 수정 전에는 이 테스트가 " +
+      "실패했다(항상 CLAUDE_CONFIG_DIR=<값>이 찍혔다)",
+    async () => {
+      writeFakeClaude('printf "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-absent}\\n"');
+      const prodHome: HomeContext = { ctkHome: home.ctkHome, ctkConfigDir: path.join(home.ctkHome, ".claude"), configDirExplicit: false };
+      const result = await spawnClaude({
+        profile: "test-isolated",
+        subcommand: ["__noop__"],
+        home: prodHome,
+        cwd: prodHome.ctkHome,
+        timeoutSec: 5,
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("CLAUDE_CONFIG_DIR=absent");
+    },
+  );
 
   it(
     "✅ 실측 확인(Step 2 검증 요청) — ANTHROPIC_BASE_URL·ANTHROPIC_API_KEY처럼 도메인 특화 위험 " +
@@ -92,7 +118,7 @@ describe("probe/harness/spawn-claude — §1.3 결정 6 봉인 래퍼 (가짜 cl
       try {
         const result = await spawnClaude({
           profile: "test-isolated",
-          subcommand: ["--version"],
+          subcommand: ["__noop__"],
           home,
           cwd: home.ctkHome,
           timeoutSec: 5,
@@ -110,12 +136,73 @@ describe("probe/harness/spawn-claude — §1.3 결정 6 봉인 래퍼 (가짜 cl
     },
   );
 
+  it(
+    "✅ M6 검증 중 발견한 회귀 재현 — sealed-live 프로파일은 buildChildEnv가 정당하게 심는 " +
+      "CLAUDE_CODE_SAFE_MODE=1 자기 선언을 SealEnvLeakError로 오판하지 않는다(마지막 방어선인 " +
+      "assertEnvWhitelist가 프로파일과 무관하게 항상 ENV_WHITELIST_COMMON만 봐서, sealed-live가 " +
+      "실제로 spawn되는 경로가 생기기 전까지는 드러나지 않았던 잠재 버그)",
+    async () => {
+      writeFakeClaude("exit 0");
+      const result = await spawnClaude({
+        profile: "sealed-live",
+        subcommand: ["plugin", "list", "--json"],
+        home,
+        cwd: home.ctkHome,
+        timeoutSec: 5,
+      });
+      expect(result.exitCode).toBe(0);
+    },
+  );
+
+  it(
+    "✅ L6 재현 — PATH에 'claude'라는 이름의 실행 파일이 없으면 spawn 자체를 시도하지 않고 " +
+      "ClaudeExecutableNotFoundError로 거부한다(빈 PATH로 재현)",
+    async () => {
+      const originalP = process.env.PATH;
+      process.env.PATH = "";
+      try {
+        await expect(
+          spawnClaude({
+            profile: "test-isolated",
+            subcommand: ["__noop__"],
+            home,
+            cwd: home.ctkHome,
+            timeoutSec: 5,
+          }),
+        ).rejects.toBeInstanceOf(ClaudeExecutableNotFoundError);
+      } finally {
+        process.env.PATH = originalP;
+      }
+    },
+  );
+
+  it(
+    "✅ L6 재현 — PATH가 가리키는 'claude'가 --version에 버전 형식이 아닌 값을 반환하면 " +
+      "(동명의 다른 바이너리 의심) ClaudeExecutableNotFoundError로 거부하고, 실제 요청한 " +
+      "서브커맨드는 실행되지 않는다",
+    async () => {
+      // writeFakeClaude와 달리 --version을 버전 형식이 아닌 값으로 답하는 가짜 바이너리.
+      const p = path.join(binDir, "claude");
+      writeFileSync(p, `#!/bin/sh\necho "not-a-version"\n`);
+      chmodSync(p, 0o755);
+      await expect(
+        spawnClaude({
+          profile: "test-isolated",
+          subcommand: ["__noop__"],
+          home,
+          cwd: home.ctkHome,
+          timeoutSec: 5,
+        }),
+      ).rejects.toBeInstanceOf(ClaudeExecutableNotFoundError);
+    },
+  );
+
   it("타임아웃을 초과하면 프로세스를 죽이고 SealTimeoutError로 거부한다", async () => {
     writeFakeClaude("sleep 5");
     await expect(
       spawnClaude({
         profile: "test-isolated",
-        subcommand: ["--version"],
+        subcommand: ["__noop__"],
         home,
         cwd: home.ctkHome,
         timeoutSec: 1,
@@ -127,7 +214,7 @@ describe("probe/harness/spawn-claude — §1.3 결정 6 봉인 래퍼 (가짜 cl
     writeFakeClaude('echo "out line" && echo "err line" >&2 && exit 3');
     const result = await spawnClaude({
       profile: "test-isolated",
-      subcommand: ["--version"],
+      subcommand: ["__noop__"],
       home,
       cwd: home.ctkHome,
       timeoutSec: 5,

@@ -45,6 +45,11 @@
 - `--safe-mode`는 커스터마이즈를 전면 차단하면서 **인증은 정상 동작한다**("Auth ... work
   normally"). 실측으로 훅 미발화·user CLAUDE.md 미로드·설치 플러그인 미로드를 확인했다.
   단 **admin/managed 정책은 여전히 적용된다.**
+- `--safe-mode`는 `plugin enable <id> -s <scope>` / `plugin disable <id> -s <scope>`도 깨지
+  않는다(Step 5 M6 수정 검증, 실제 `claude` 2.1.238 바이너리로 `ctk move`의 플러그인 왕복 e2e를
+  `sealed-live` 프로파일로 실행해 확인 — exit 0, enablement가 정확히 전이됨). `plugin list --json`
+  실측(위)과 같은 부류(구조적 서브커맨드)라 예상된 결과지만, 사용자 환경을 실제로 바꾸는 유일한
+  특권 쓰기 경로이므로 별도로 실측했다.
 - `--settings`는 "load **additional** settings" — **병합이지 대체가 아니다.** 빈 설정을 줘도
   user `settings.json`의 훅은 살아 있다. `--plugin-dir`도 **추가지 제한이 아니다.**
 - `--strict-mcp-config`는 `plugin list` 같은 서브커맨드를 깨뜨린다(`unknown option`).
@@ -65,3 +70,20 @@
   `name`+`description`은 2배 이상 차이가 난다. `input_tokens`는 유저 턴 토큰일 뿐이라
   점유 비용의 대리값이 될 수 없다(`cache_creation_input_tokens`를 본다).
 - 자동 스캐너는 **부정문을 오독한다.** 판정을 결론으로 쓰지 말고 원문을 확인한다.
+- **`CLAUDE_CONFIG_DIR`을 명시하면 `.claude.json`이 `$HOME` 루트가 아니라 그 디렉터리
+  안(`$CLAUDE_CONFIG_DIR/.claude.json`)에 생기고, `$HOME` 루트에 이미 있는 `.claude.json`은
+  완전히 무시된다.** (Step 5 실측, claude 2.1.238: `CLAUDE_CONFIG_DIR`를 빈 디렉터리로 설정해
+  `claude plugin list --json`을 돌리면 `.claude.json`이 그 디렉터리 안에 생성됨을 확인했고,
+  `$HOME`에 마커 값을 심은 `.claude.json`을 미리 둔 채 같은 명령을 돌려도 그 파일은 손대지
+  않고 `$CLAUDE_CONFIG_DIR` 안에 별도의 새 `.claude.json`을 만드는 것으로 재확인했다.)
+  `test-isolated` 프로파일은 `HOME`·`CLAUDE_CONFIG_DIR` 둘 다 항상 명시적으로 주입하므로
+  (probe/harness/seal-profiles.ts), 이 프로파일로 뜬 `claude` 서브프로세스가 다루는
+  `.claude.json`은 **항상 `CLAUDE_CONFIG_DIR` 안의 것**이다 — AC-0.8의 Tier-2 허용목록
+  `.claude.json` 항목이 실은 이 위치를 잰 것과 일치한다(따로 정정할 필요 없음). 다만
+  `probe/src/home.ts`의 `claudeJsonPath()`는 `$HOME` 루트를 가정하며 이는 **합성 픽스처를
+  손으로 만들 때**(둘 다 테스트가 직접 배치하므로 자기 일관적)만 맞고, **실제 `claude`
+  바이너리를 격리 홈에 대해 스폰해 결과를 그 경로로 읽으려 하면 항상 빈 값을 얻는다** —
+  `probe/src/sources/known-projects.ts`(→ plugins/skills/mcp 세 소스가 공유하는 프로젝트
+  레지스트리)가 이 경로에 의존한다. actuator의 격리 홈 e2e 테스트(cli/test/move-rollback.test.ts)는
+  이 함정을 알고 `~/.claude.json`의 `projects` 키를 테스트가 직접 시딩해 우회한다. Step 2 범위
+  밖이라 `home.ts` 자체는 고치지 않았다 — Step 2/AC-1 재검토 시 반영 대상으로 남긴다.

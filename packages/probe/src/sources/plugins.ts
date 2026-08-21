@@ -11,6 +11,7 @@ import {
 import type { HomeContext } from "../home.js";
 import { spawnClaude, type SpawnClaudeResult } from "../harness/spawn-claude.js";
 import { CommandFailedError, ParseSchemaMismatchError } from "./errors.js";
+import { listKnownProjectPaths } from "./known-projects.js";
 
 /**
  * probe/src/sources/plugins.ts — plan §4.1 Step 2.
@@ -166,6 +167,37 @@ export async function collectPlugins(options: CollectPluginsOptions): Promise<Pl
       mcp_state_source: null,
     };
   });
+
+  // ⚠️ Step 5 실측 수정(회귀 방지) — `claude plugin enable <id> -s project`는 "user" 스코프로
+  // 설치된 플러그인도 특정 프로젝트에서 독립적으로 켤 수 있다(installed_plugins.json은 건드리지
+  // 않는다 — 결정 6C의 "install scope 무변경" 보장, AC-0.8/AC-2.1ⓒ가 실측으로 확인). 위
+  // `dimensions` 루프는 installed_plugins.json의 스코프 엔트리만 순회하므로 이 케이스를 아예
+  // 놓친다 — user 스코프 설치가 project에서 켜져도 `enabled_at`이 계속 null로 보이고,
+  // actuator의 `move`(user→project 전이)를 재스캔으로 검증할 방법이 없었다(AC-2.1 차단).
+  // installed_plugins.json에 "project별 user-scope 활성" 레지스트리가 따로 없으므로(위 실측),
+  // 알려진 프로젝트 전체를 순회해 이 케이스를 찾는 것 외에 다른 권위 출처가 없다.
+  // "project"/"local" 스코프는 같은 파일(<project>/.claude/settings.json)을 쓰므로(위 "문서화된
+  // 단순화" 주석과 동일 근거) 이 신규 레코드의 enabled_at은 "project"로 통일한다.
+  const userScopeAssetIds = new Set(dimensions.filter((d) => d.installScope === "user").map((d) => d.assetId));
+  if (userScopeAssetIds.size > 0) {
+    for (const projectPath of listKnownProjectPaths(home)) {
+      const enabled = projectEnabledPlugins(projectPath);
+      for (const assetId of userScopeAssetIds) {
+        if (enabled[assetId] !== true) continue;
+        installations.push({
+          schema_version: 1,
+          _scope: "machine_dependent",
+          asset_id: assetId,
+          machine_id: machineId,
+          install_scope: "user",
+          enabled_at: "project",
+          project_path_hash: normalizePath(projectPath, home.ctkHome).path_hash,
+          mcp_enabled_state: null,
+          mcp_state_source: null,
+        });
+      }
+    }
+  }
 
   // 문서화된 단순화(Step 2 범위) — installed_plugins.json에 프로젝트별 설치 기록이 없는데
   // project-committed settings.json만으로 활성화된 케이스는 다루지 않는다. install_scope의

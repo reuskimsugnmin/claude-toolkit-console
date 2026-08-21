@@ -22,7 +22,7 @@ describe("probe/sources/known-projects — ENOENT(정상) vs 파싱 실패(R13, 
 
   function setup(): void {
     ctkHome = mkdtempSync(path.join(tmpdir(), "ctk-known-projects-"));
-    home = { ctkHome, ctkConfigDir: path.join(ctkHome, ".claude") };
+    home = { ctkHome, ctkConfigDir: path.join(ctkHome, ".claude"), configDirExplicit: false };
   }
 
   it("~/.claude.json이 아예 없으면 빈 배열/null을 정상 반환한다(파일 부재는 합법적 상태)", () => {

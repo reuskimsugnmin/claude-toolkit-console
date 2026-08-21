@@ -64,8 +64,8 @@ describe("probe/harness/seal-profiles — §1.3 결정 6 프로파일 조합 (�
     expect(assertForbiddenArgv(withStrayPositional).status).toBe("violation");
   });
 
-  it("buildChildEnv는 HOME/CLAUDE_CONFIG_DIR을 항상 인자값으로 덮어쓴다(부모 env 무관)", () => {
-    const env = buildChildEnv("test-isolated", "/isolated/home", "/isolated/home/.claude", {
+  it("buildChildEnv는 HOME을 항상 인자값으로 덮어쓴다(부모 env 무관)", () => {
+    const env = buildChildEnv("test-isolated", "/isolated/home", "/isolated/home/.claude", true, {
       HOME: "/real/home",
       CLAUDE_CONFIG_DIR: "/real/home/.claude",
       PATH: "/usr/bin",
@@ -75,8 +75,24 @@ describe("probe/harness/seal-profiles — §1.3 결정 6 프로파일 조합 (�
     expect(env.PATH).toBe("/usr/bin");
   });
 
+  it(
+    "✅ H5 수정 — configDirExplicit=false(프로덕션 기본 경로)면 CLAUDE_CONFIG_DIR을 자식 env에 " +
+      "아예 넣지 않는다(부모에 있어도 마찬가지) — 재현: 수정 전에는 이 값이 항상 주입돼 자식과 " +
+      "probe가 서로 다른 .claude.json을 보는 사고(H5)로 이어졌다",
+    () => {
+      const env = buildChildEnv("test-isolated", "/real/home", "/real/home/.claude", false, {
+        HOME: "/real/home",
+        CLAUDE_CONFIG_DIR: "/real/home/.claude",
+        PATH: "/usr/bin",
+      });
+      expect(env.HOME).toBe("/real/home");
+      expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+      expect("CLAUDE_CONFIG_DIR" in env).toBe(false);
+    },
+  );
+
   it("buildChildEnv는 허용 목록 밖 변수를 전혀 담지 않는다(env -i 규약)", () => {
-    const env = buildChildEnv("test-isolated", "/h", "/h/.claude", {
+    const env = buildChildEnv("test-isolated", "/h", "/h/.claude", true, {
       HOME: "/real",
       ANTHROPIC_API_KEY: "secret",
       NODE_OPTIONS: "--require evil.js",
@@ -90,14 +106,14 @@ describe("probe/harness/seal-profiles — §1.3 결정 6 프로파일 조합 (�
   });
 
   it("sealed-live만 CLAUDE_CODE_SAFE_MODE=1을 자기 선언으로 심는다", () => {
-    const isolated = buildChildEnv("test-isolated", "/h", "/h/.claude", {});
-    const sealed = buildChildEnv("sealed-live", "/h", "/h/.claude", {});
+    const isolated = buildChildEnv("test-isolated", "/h", "/h/.claude", true, {});
+    const sealed = buildChildEnv("sealed-live", "/h", "/h/.claude", true, {});
     expect(isolated.CLAUDE_CODE_SAFE_MODE).toBeUndefined();
     expect(sealed.CLAUDE_CODE_SAFE_MODE).toBe("1");
   });
 
   it("TERM/SHELL/TMPDIR이 부모 env에 없으면 안전한 기본값으로 보강되고, 그래도 화이트리스트 안에 머문다", () => {
-    const env = buildChildEnv("test-isolated", "/h", "/h/.claude", {});
+    const env = buildChildEnv("test-isolated", "/h", "/h/.claude", true, {});
     expect(env.TERM).toBe("xterm");
     expect(env.SHELL).toBe("/bin/bash");
     expect(env.TMPDIR).toBe("/tmp");

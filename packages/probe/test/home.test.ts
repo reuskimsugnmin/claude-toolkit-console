@@ -20,8 +20,24 @@ describe("probe/home — 모든 경로 접근의 단일 관문 (P0-2)", () => {
     expect(ctx.ctkConfigDir).toBe("/tmp/other-config");
   });
 
-  it("claudeJsonPath는 CTK_CONFIG_DIR이 아니라 CTK_HOME 바로 아래를 가리킨다(실측 경로)", () => {
-    const ctx = resolveHomeContext({ CTK_HOME: "/tmp/fake-home", CTK_CONFIG_DIR: "/tmp/other-config" });
-    expect(claudeJsonPath(ctx)).toBe("/tmp/fake-home/.claude.json");
-  });
+  it(
+    "✅ H5 수정 — CTK_CONFIG_DIR이 명시되지 않으면(프로덕션 기본 경로) claudeJsonPath는 " +
+      "CTK_HOME 바로 아래를 가리킨다(실측: 자식 claude 서브프로세스도 CLAUDE_CONFIG_DIR 없이 " +
+      "떠서 같은 위치를 본다)",
+    () => {
+      const ctx = resolveHomeContext({ CTK_HOME: "/tmp/fake-home" });
+      expect(ctx.configDirExplicit).toBe(false);
+      expect(claudeJsonPath(ctx)).toBe("/tmp/fake-home/.claude.json");
+    },
+  );
+
+  it(
+    "✅ H5 수정 — CTK_CONFIG_DIR이 명시되면(격리 테스트 전용) claudeJsonPath는 그 안을 " +
+      "가리킨다(실측: CLAUDE_CONFIG_DIR을 명시한 claude는 .claude.json을 그 디렉터리 안에 만든다)",
+    () => {
+      const ctx = resolveHomeContext({ CTK_HOME: "/tmp/fake-home", CTK_CONFIG_DIR: "/tmp/other-config" });
+      expect(ctx.configDirExplicit).toBe(true);
+      expect(claudeJsonPath(ctx)).toBe("/tmp/other-config/.claude.json");
+    },
+  );
 });

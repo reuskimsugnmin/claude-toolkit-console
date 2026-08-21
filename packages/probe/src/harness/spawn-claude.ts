@@ -1,5 +1,7 @@
-import { spawn } from "node:child_process";
-import { assertEnvWhitelist, assertForbiddenArgv } from "@ctk/core";
+import { spawn, spawnSync } from "node:child_process";
+import { accessSync, constants as fsConstants } from "node:fs";
+import path from "node:path";
+import { assertEnvWhitelist, assertForbiddenArgv, ENV_WHITELIST_COMMON, ENV_WHITELIST_SEALED_LIVE_EXTRA } from "@ctk/core";
 import type { HomeContext } from "../home.js";
 import { buildChildEnv, buildFullArgv, isModelSessionSubcommand, isSealProfile, type SealProfile } from "./seal-profiles.js";
 
@@ -52,6 +54,56 @@ export class SealTimeoutError extends Error {
   }
 }
 
+/**
+ * L6 — `spawn("claude", ...)`는 자식 프로세스에 넘기는 `PATH`를 그대로 신뢰해 셸/OS의 PATH
+ * 탐색에 맡겼다. `PATH`는 env 화이트리스트(공통 강제 사항 8번)를 통과하는 값이라 봉인 자체는
+ * 깨지지 않지만, PATH 순서에 다른 위치의 동명 실행 파일이 먼저 걸리면 의도한 바이너리가 아닌
+ * 것이 실행될 수 있다. 자식에게 넘길 그 PATH로 직접 탐색해 **절대경로**를 확정하고, 그 경로로
+ * spawn한다 — PATH 문자열이 같아도 "무엇이 실행될지"가 셸의 암묵적 탐색이 아니라 이 코드가
+ * 명시한 값이 되게 한다.
+ */
+export class ClaudeExecutableNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ClaudeExecutableNotFoundError";
+  }
+}
+
+function resolveClaudeExecutable(pathEnv: string): string {
+  for (const dir of pathEnv.split(path.delimiter)) {
+    if (dir.length === 0) continue;
+    const candidate = path.join(dir, "claude");
+    try {
+      accessSync(candidate, fsConstants.X_OK);
+      return candidate;
+    } catch {
+      // 이 디렉터리엔 없다 — 다음 PATH 세그먼트로 계속.
+    }
+  }
+  throw new ClaudeExecutableNotFoundError(`PATH에서 실행 가능한 'claude' 바이너리를 찾지 못했다(PATH=${pathEnv})`);
+}
+
+/**
+ * 절대경로로 resolve된 바이너리가 실제로 `claude` CLI인지 최소한의 sanity check(`--version`
+ * 출력이 버전 형식과 대략 맞는가)를 한다 — 완전한 무결성 검증은 아니지만(체크섬 비교 등은
+ * 범위 밖), PATH가 완전히 엉뚱한 동명 바이너리를 가리키는 조합의 오설정을 조용히 통과시키지
+ * 않는다. 프로세스당 1회만 실행한다(버전 확인 자체가 매 호출마다 서브프로세스를 추가로 띄우는
+ * 비용을 정당화할 만큼 자주 바뀔 정보가 아니다).
+ */
+const versionCheckedExecutables = new Set<string>();
+
+function assertLooksLikeClaudeBinary(execPath: string): void {
+  if (versionCheckedExecutables.has(execPath)) return;
+  const result = spawnSync(execPath, ["--version"], { encoding: "utf8", timeout: 10_000 });
+  if (result.status === 0 && /\d+\.\d+\.\d+/.test(result.stdout)) {
+    versionCheckedExecutables.add(execPath);
+    return;
+  }
+  throw new ClaudeExecutableNotFoundError(
+    `${execPath} --version이 예상된 버전 형식을 반환하지 않았다(PATH 오설정 또는 동명의 다른 바이너리 의심)`,
+  );
+}
+
 export interface SpawnClaudeOptions {
   /** 허용값은 정확히 둘 — 기본값 없음(§1.3 결정 6). */
   profile: SealProfile;
@@ -84,6 +136,7 @@ function runSerialized<T>(task: () => Promise<T>): Promise<T> {
 }
 
 async function spawnOnce(
+  execPath: string,
   argv: string[],
   env: Record<string, string>,
   cwd: string,
@@ -91,7 +144,7 @@ async function spawnOnce(
   stdinPrompt: string | undefined,
 ): Promise<SpawnClaudeResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn("claude", argv, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(execPath, argv, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -150,11 +203,29 @@ export async function spawnClaude(options: SpawnClaudeOptions): Promise<SpawnCla
     throw new ForbiddenArgvViolationError(argvVerdict.violations);
   }
 
-  const env = buildChildEnv(options.profile, options.home.ctkHome, options.home.ctkConfigDir);
-  const envVerdict = assertEnvWhitelist(env);
+  const env = buildChildEnv(
+    options.profile,
+    options.home.ctkHome,
+    options.home.ctkConfigDir,
+    options.home.configDirExplicit,
+  );
+  // 실측(M6 검증 중 발견) — 이 마지막 방어선이 프로파일과 무관하게 항상 ENV_WHITELIST_COMMON만
+  // 봤다. sealed-live가 실제로 spawn되는 경로가 이전에 없었기 때문에(actuator/apply/
+  // plugin-enablement.ts가 test-isolated를 하드코딩했다, M6) 드러나지 않았을 뿐 — sealed-live의
+  // 정당한 CLAUDE_CODE_SAFE_MODE=1 자기 선언(buildChildEnv, seal-profiles.ts)조차 "허용 목록 밖
+  // 유출"로 오판해 SealEnvLeakError를 던지는 잠재 버그였다. buildChildEnv와 동일한 allowlist
+  // 선택 로직을 그대로 재사용한다(재구현 금지).
+  const allowlist =
+    options.profile === "sealed-live" ? [...ENV_WHITELIST_COMMON, ...ENV_WHITELIST_SEALED_LIVE_EXTRA] : ENV_WHITELIST_COMMON;
+  const envVerdict = assertEnvWhitelist(env, allowlist);
   if (envVerdict.status === "violation") {
     throw new SealEnvLeakError(envVerdict.leakedKeys);
   }
 
-  return runSerialized(() => spawnOnce(argv, env, options.cwd, options.timeoutSec, options.stdinPrompt));
+  // L6 — 자식에게 실제로 넘길 PATH로 절대경로를 확정하고, 처음 보는 경로면 --version으로
+  // sanity check한다(PATH 오설정·동명 바이너리 방어).
+  const execPath = resolveClaudeExecutable(env.PATH ?? "");
+  assertLooksLikeClaudeBinary(execPath);
+
+  return runSerialized(() => spawnOnce(execPath, argv, env, options.cwd, options.timeoutSec, options.stdinPrompt));
 }

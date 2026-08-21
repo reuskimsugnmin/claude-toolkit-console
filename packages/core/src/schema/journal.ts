@@ -3,8 +3,10 @@ import { machineDependentTag, schemaVersion } from "./common.js";
 
 /** v1 이관 범위 — 플러그인 enablement 수정과 스킬 디렉터리 이동만 (스펙 Constraints). */
 export const JournalActionSchema = z.enum(["move_plugin_enablement", "move_skill_dir", "rollback"]);
+export type JournalAction = z.infer<typeof JournalActionSchema>;
 
 export const JournalResultSchema = z.enum(["success", "failure", "rolled_back"]);
+export type JournalResult = z.infer<typeof JournalResultSchema>;
 
 /**
  * Journal — 머신 종속. actuator의 before/after 감사 레코드 (`journal/<iso8601>.jsonl`, 카탈로그 결정 2).
@@ -20,6 +22,12 @@ export const JournalEntrySchema = z
     before: z.record(z.string(), z.unknown()),
     after: z.record(z.string(), z.unknown()),
     backup_ref: z.string().min(1),
+    /** 백업 manifest.json 바이트의 sha256(H2/AC-2.13) — 롤백 시 실측 재계산값과 대조해
+     * 카탈로그 밖(감사 트리 밖) 백업 저장소가 변조되지 않았음을 확인한다. journal은 git으로
+     * append-only 커밋되므로 이 값 자체의 변조는 git diff로 드러난다. */
+    backup_manifest_sha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/),
     result: JournalResultSchema,
     timestamp: z.string().datetime(),
   })
