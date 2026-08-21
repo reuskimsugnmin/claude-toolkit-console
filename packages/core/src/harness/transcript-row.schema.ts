@@ -60,26 +60,55 @@ export const MessageContentBlockSchema = z.union([
 ]);
 
 /**
+ * `message.usage` — assistant 행에만 실린다. **AC-0.7 실측 정정: `input_tokens`는 유저 턴 토큰일
+ * 뿐 세션 초기 컨텍스트의 대리값이 아니다**(실측 `input_tokens = 2`). 점유 근사에는
+ * `cache_creation_input_tokens`(콜드) / `cache_read_input_tokens`(재사용)를 쓴다 — **캐시 재사용
+ * 시 서로 다른 구성이 같은 수치로 보이므로 구성 간 비교는 콜드 캐시에서만 유효하다**(§4 Step 3
+ * 지시사항 그대로). 실측 원문(`docs/harness-facts.md` 갱신, 2026-08-21)에는 `cache_creation`
+ * (ephemeral_5m/1h 세부값)·`service_tier`·`inference_geo` 등도 실리지만 우리가 쓰는 4키만
+ * 구조를 강제하고 나머지는 `.passthrough()`로 흘린다(R13).
+ */
+export const MessageUsageSchema = z
+  .object({
+    input_tokens: z.number().int().nonnegative(),
+    output_tokens: z.number().int().nonnegative(),
+    cache_creation_input_tokens: z.number().int().nonnegative().optional(),
+    cache_read_input_tokens: z.number().int().nonnegative().optional(),
+  })
+  .passthrough();
+
+/**
  * 행 envelope. `toolUseResult`(레거시/보조 표현)와 `message.content[]`의 tool_result 블록(표준
  * 표현)이 **공존**한다(AC-0.6b ⓐ, 각 1,742건 실측) — 파서는 양쪽을 다 봐야 계수 누락이 없다.
+ *
+ * **Step 3 실측 정정(harness-facts.md 갱신, 2026-08-21) — `attributionAgent`/`agentId`.**
+ * 서브에이전트 트랜스크립트(`<session-dir>/subagents/agent-<hash>.jsonl`)의 assistant 행에
+ * `attributionAgent`(스폰된 에이전트 자산 id, 예: `"general-purpose"`·`"oh-my-claudecode:critic"`)와
+ * `agentId`(같은 실행을 묶는 불투명 식별자)가 실린다 — 넷째 귀속 필드다.
  */
 export const TranscriptRowSchema = z
   .object({
     type: TranscriptRowTypeSchema,
-    /** user/assistant/system/attachment 행에만 존재 (AC-0.6b ⓑ). 실측 표본에서 true 0건 — 서브에이전트
-     * 귀속 경로가 이 필드만으로는 해소되지 않을 수 있다 (R17, usage/tool-names.ts 참조) */
+    /** user/assistant/system/attachment 행에만 존재 (AC-0.6b ⓑ). 메인 세션 파일에서는 true가
+     * 관측되지 않는다(R17 — 서브에이전트 대화는 별도 파일에 있다, subagents 디렉터리 실측 참조).
+     * 서브에이전트 파일 자체의 행에는 true로 실린다. */
     isSidechain: z.boolean().optional(),
     toolUseResult: z.unknown().optional(),
     message: z
       .object({
         content: z.array(MessageContentBlockSchema).optional(),
+        usage: MessageUsageSchema.optional(),
       })
       .passthrough()
       .optional(),
+    sessionId: z.string().optional(),
+    timestamp: z.string().optional(),
     attributionSkill: z.string().optional(),
     attributionPlugin: z.string().optional(),
     attributionMcpServer: z.string().optional(),
     attributionMcpTool: z.string().optional(),
+    attributionAgent: z.string().optional(),
+    agentId: z.string().optional(),
   })
   .passthrough();
 

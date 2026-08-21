@@ -10,6 +10,7 @@ import {
   RunLogEntrySchema,
   AnnotationSchema,
   DocPageSchema,
+  SessionUsageSchema,
 } from "../src/index.js";
 import { readFixtureJson, readFixtureJsonl } from "./support/fixtures.js";
 
@@ -25,15 +26,16 @@ describe("스키마 라운드트립 — 합성 카탈로그 픽스처 (fixtures/
     expect(() => MachineSchema.parse(raw)).not.toThrow();
   });
 
-  it("snapshots/*.jsonl — 레코드별로 올바른 스키마에 매칭된다 (Installation·Project·UsageMetric·Toggle)", () => {
+  it("snapshots/*.jsonl — 레코드별로 올바른 스키마에 매칭된다 (Installation·Project·UsageMetric·Toggle·SessionUsage)", () => {
     const rows = readFixtureJsonl("catalog/machines/machine-alpha/snapshots/2026-08-01T00-00-00Z.jsonl");
-    expect(rows).toHaveLength(4);
+    expect(rows).toHaveLength(5);
 
-    const [installationRaw, projectRaw, usageRaw, toggleRaw] = rows;
+    const [installationRaw, projectRaw, usageRaw, toggleRaw, sessionUsageRaw] = rows;
     expect(() => InstallationSchema.parse(installationRaw)).not.toThrow();
     expect(() => ProjectSchema.parse(projectRaw)).not.toThrow();
     expect(() => UsageMetricSchema.parse(usageRaw)).not.toThrow();
     expect(() => ToggleSchema.parse(toggleRaw)).not.toThrow();
+    expect(() => SessionUsageSchema.parse(sessionUsageRaw)).not.toThrow();
   });
 
   it("journal/*.jsonl — JournalEntry 스키마를 통과한다", () => {

@@ -10,7 +10,18 @@ import { z } from "zod";
  * - `projects.<path>.{enabledMcpServers,disabledMcpServers}` — 프로젝트별 토글 이력(AC-0.4ⓑ①②)
  * - `projects.<path>.{enabledMcpjsonServers,disabledMcpjsonServers}` — AC-0.4ⓑ③ 판정불가
  *   (16개 프로젝트 전부 빈 배열, `mcp_state_unverified`로 남긴다). 구조만 파싱하고 값 해석은 하지 않는다.
+ * - 루트 `skillUsage`/`pluginUsage` — Step 3(AC-4.9) 교차검증 소스. 실측(2026-08-21, 실제
+ *   `~/.claude.json`): `{ "<name>": { "usageCount": number, "lastUsedAt": <epoch ms> } }`.
+ *   `pluginUsage`의 키는 `name@marketplace`(Asset.id와 동형), `skillUsage`의 키는 스킬 이름
+ *   베어 형태(예: `"statusline"`). `lastUsedNumStartups` 등 우리가 안 쓰는 추가 키는 `.passthrough()`로
+ *   흘려보낸다(R13 — 값 해석은 우리가 쓰는 두 키만).
  */
+const HarnessUsageEntrySchema = z
+  .object({
+    usageCount: z.number().int().nonnegative(),
+    lastUsedAt: z.number().nonnegative(),
+  })
+  .passthrough();
 export const ClaudeJsonProjectEntrySchema = z
   .object({
     mcpServers: z.record(z.string(), z.unknown()).optional(),
@@ -27,6 +38,8 @@ export const ClaudeJsonSchema = z
   .object({
     mcpServers: z.record(z.string(), z.unknown()).optional(),
     projects: z.record(z.string(), ClaudeJsonProjectEntrySchema).optional(),
+    skillUsage: z.record(z.string(), HarnessUsageEntrySchema).optional(),
+    pluginUsage: z.record(z.string(), HarnessUsageEntrySchema).optional(),
   })
   .passthrough();
 
