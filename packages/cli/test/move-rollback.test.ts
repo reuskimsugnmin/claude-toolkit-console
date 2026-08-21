@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -186,6 +186,63 @@ describe("cli — ctk move / ctk rollback 왕복 e2e (Step 5, AC-2.1/2.2/2.3/2.4
       "---\nname: demo-skill\ndescription: 왕복 e2e 픽스처\n---\n\n# demo-skill\n",
     );
   });
+
+  it(
+    "✅ 신설 AC-5.1 재현 — apply가 실패해 self-rollback하면(스킬 이동 목적지 충돌) journal에 " +
+      "result:\"rolled_back\" 레코드가 실제로 남고 run-log에도 실패가 기록된다(수정 전에는 " +
+      "JournalResult의 \"failure\"/\"rolled_back\"이 스키마에만 있고 코드가 한 번도 안 썼다 — " +
+      "이 시도 자체가 journal에서 통째로 사라졌었다)",
+    async () => {
+      const initResult = await runInit({});
+
+      mkdirSync(path.join(ctkConfigDir, "skills", "conflict-skill"), { recursive: true });
+      writeFileSync(path.join(ctkConfigDir, "skills", "conflict-skill", "SKILL.md"), "---\nname: conflict-skill\n---\n", "utf8");
+      // 목적지 자리에 이미 무관한 콘텐츠가 있다 — moveSkillDir이 조용한 덮어쓰기를 거부하고
+      // SkillDirMoveError를 던진다(apply 단계 실패, 3단계).
+      mkdirSync(path.join(projectDir, ".claude", "skills", "conflict-skill"), { recursive: true });
+      writeFileSync(
+        path.join(projectDir, ".claude", "skills", "conflict-skill", "SKILL.md"),
+        "---\nname: pre-existing\n---\n",
+        "utf8",
+      );
+
+      await runScan({ spawnFn: async () => ({ exitCode: 0, stdout: "[]", stderr: "", timedOut: false }) });
+
+      await expect(runMove({ assetId: "conflict-skill", to: "project", toProjectIndex: 0 })).rejects.toThrow();
+
+      // journal에 이 시도의 기록이 남아 있고, result가 "rolled_back"이다(apply 실패 후 백업에서
+      // 되돌리는 데는 성공했다 — 애초에 아무 것도 바뀌지 않았으므로).
+      const journalDir = path.join(initResult.catalogPath, "journal");
+      const journalFiles = readdirSync(journalDir).filter((f) => f.endsWith(".jsonl")).sort();
+      const lastEntry = JSON.parse(readFileSync(path.join(journalDir, journalFiles[journalFiles.length - 1]!), "utf8")) as {
+        action: string;
+        asset_id: string;
+        result: string;
+      };
+      expect(lastEntry.asset_id).toBe("conflict-skill");
+      expect(lastEntry.action).toBe("move_skill_dir");
+      expect(lastEntry.result).toBe("rolled_back");
+
+      // run-log에도 이 실패한 move 시도가 exit_code!=0으로 남는다(AC-5.1 — move 자체가 이전엔
+      // run-log를 전혀 안 썼다).
+      const machinesDir = path.join(initResult.catalogPath, "machines");
+      const machineDirName = readdirSync(machinesDir)[0]!;
+      const runFiles = readdirSync(path.join(machinesDir, machineDirName, "runs")).sort();
+      const lastRun = JSON.parse(
+        readFileSync(path.join(machinesDir, machineDirName, "runs", runFiles[runFiles.length - 1]!), "utf8"),
+      ) as { command: string; exit_code: number; failure_class: string | null };
+      expect(lastRun.command).toBe("move");
+      expect(lastRun.exit_code).not.toBe(0);
+      expect(lastRun.failure_class).not.toBeNull();
+
+      // 목적지 원래 내용은 훼손되지 않았다(조용한 덮어쓰기가 없었다).
+      expect(readFileSync(path.join(projectDir, ".claude", "skills", "conflict-skill", "SKILL.md"), "utf8")).toBe(
+        "---\nname: pre-existing\n---\n",
+      );
+      // 소스도 원래 위치에 그대로 남아있다(self-rollback이 정상 작동).
+      expect(existsSync(path.join(ctkConfigDir, "skills", "conflict-skill"))).toBe(true);
+    },
+  );
 
   it("MCP 자산 이관은 거부되고 어떤 파일도 변경되지 않는다(AC-2.9)", async () => {
     await runInit({});

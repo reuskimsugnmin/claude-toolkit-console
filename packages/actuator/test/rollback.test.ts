@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { HomeContext } from "@ctk/probe";
-import { backupDirectory, backupFile, beginBackupRun, writeManifest } from "../src/backup.js";
+import { backupDirectory, backupFile, beginBackupRun, writeBeforeSnapshot, writeManifest } from "../src/backup.js";
+import { captureRootSnapshot } from "../src/audit.js";
 import {
   BackupManifestTamperedError,
   ConfigClobberedError,
@@ -192,6 +193,64 @@ describe("actuator/rollback — 백업에서 직접 파일 복원(AC-2.5: 롤백
 
       restoreFromBackup(backupRoot, homeCtx, undefined, { config_settings: expectedCurrentSha });
       expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ enabledPlugins: { "a@b": true } });
+    },
+  );
+
+  it(
+    "✅ AC-2.5 재현 — 백업 범위가 실제 조치 범위보다 좁으면(수정 대상이 아닌 파일이 그 사이 " +
+      "바뀜) 복원 후 잔존 diff 확인이 이를 잡아 RollbackFailedError로 상신한다(수정 전에는 " +
+      "configBefore가 지역 변수로만 존재해 이 판정 자체가 불가능했다 — '롤백 후 조치 이전과 " +
+      "완전히 동일'을 아무도 확인하지 않았다)",
+    () => {
+      // 감사 대상 루트(configRoot)를 백업 저장소(home/.ctk-backups)와 분리한다 — 실제 제품
+      // 구조와 동형(backup.ts 상단 문서: 백업은 감사 트리 밖에 의도적으로 둔다). 같은 디렉터리를
+      // 쓰면 백업 산출물 자체가 "감사 대상 안에 새로 생긴 파일"로 잡혀 이 테스트의 의도(대상
+      // 밖 파일 변경 탐지)와 무관한 잡음이 섞인다.
+      const configRoot = path.join(home, ".claude");
+      mkdirSync(configRoot, { recursive: true });
+      const configHomeCtx: HomeContext = { ctkHome: home, ctkConfigDir: configRoot, configDirExplicit: false };
+
+      writeFileSync(path.join(configRoot, "settings.json"), "{}", "utf8");
+      writeFileSync(path.join(configRoot, "CLAUDE.md"), "original", "utf8"); // 백업 대상이 아닌 파일.
+
+      const configBefore = captureRootSnapshot(configRoot);
+      const { backupRoot } = beginBackupRun(home, "run-ac25");
+      const entry = backupFile(backupRoot, "config_settings", path.join(configRoot, "settings.json"));
+      writeManifest(backupRoot, "run-ac25", { config_settings: entry });
+      writeBeforeSnapshot(backupRoot, { roots: [{ rootAbs: configRoot, entries: configBefore.entries }] });
+
+      // "조치"가 백업 대상(settings.json)뿐 아니라 백업 범위 밖의 CLAUDE.md도 건드렸다고
+      // 가정한다 — 이런 경우가 실제로 벌어지면(백업 범위 설계 실수 또는 동시성 개입) 롤백은
+      // settings.json은 되돌려도 CLAUDE.md는 손댈 방법이 없다.
+      writeFileSync(path.join(configRoot, "settings.json"), '{"changed":true}', "utf8");
+      writeFileSync(path.join(configRoot, "CLAUDE.md"), "tampered", "utf8");
+
+      expect(() => restoreFromBackup(backupRoot, configHomeCtx)).toThrow(RollbackFailedError);
+      // settings.json은 정확히 복원됐다(백업 대상 자체는 성공) — 그런데도 전체 판정은
+      // 실패다(잔존 diff가 있으므로 "완전히 동일"이 아니다).
+      expect(readFileSync(path.join(configRoot, "settings.json"), "utf8")).toBe("{}");
+      expect(readFileSync(path.join(configRoot, "CLAUDE.md"), "utf8")).toBe("tampered");
+    },
+  );
+
+  it(
+    "AC-2.5 — before 스냅샷과 재수집 트리가 정확히 일치하면(완전한 롤백) 조용히 통과한다",
+    () => {
+      const configRoot = path.join(home, ".claude");
+      mkdirSync(configRoot, { recursive: true });
+      const configHomeCtx: HomeContext = { ctkHome: home, ctkConfigDir: configRoot, configDirExplicit: false };
+
+      writeFileSync(path.join(configRoot, "settings.json"), "{}", "utf8");
+      const configBefore = captureRootSnapshot(configRoot);
+      const { backupRoot } = beginBackupRun(home, "run-ac25b");
+      const entry = backupFile(backupRoot, "config_settings", path.join(configRoot, "settings.json"));
+      writeManifest(backupRoot, "run-ac25b", { config_settings: entry });
+      writeBeforeSnapshot(backupRoot, { roots: [{ rootAbs: configRoot, entries: configBefore.entries }] });
+
+      writeFileSync(path.join(configRoot, "settings.json"), '{"changed":true}', "utf8");
+
+      expect(() => restoreFromBackup(backupRoot, configHomeCtx)).not.toThrow();
+      expect(readFileSync(path.join(configRoot, "settings.json"), "utf8")).toBe("{}");
     },
   );
 
