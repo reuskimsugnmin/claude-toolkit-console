@@ -208,6 +208,23 @@ export async function collectPlugins(options: CollectPluginsOptions): Promise<Pl
 }
 
 /**
+ * Step 4(`gen`) 전용 — 플러그인 자산의 실제 설치 경로(절대경로)를 되찾는다. `installed_plugins.json`
+ * 의 `installPath`가 유일한 권위 출처다(P0-3과 동일 논리 — `plugin list --json`의 정규화된
+ * `source_ref`는 이미 홈 상대화·해시화됐으므로 실제 파일을 읽을 절대경로로 되돌릴 수 없다).
+ * 같은 id가 여러 스코프(project별 local 등)에 설치돼 있으면 첫 항목을 대표값으로 쓴다 —
+ * `gen`은 원문 텍스트를 읽는 용도일 뿐 어느 설치를 "정답"으로 볼지가 카탈로그 정합성에 영향을
+ * 주지 않는다(플러그인 코드 자체는 스코프와 무관하게 동일하다).
+ */
+export function findPluginInstallPath(home: HomeContext, assetId: string): string | null {
+  const installedPluginsAbsPath = path.join(home.ctkConfigDir, "plugins", "installed_plugins.json");
+  const raw = readJsonOrNull(installedPluginsAbsPath);
+  if (raw === null) return null;
+  const parsed = parseInstalledPluginsFile(raw);
+  const entries = parsed.plugins[assetId];
+  return entries?.[0]?.installPath ?? null;
+}
+
+/**
  * `claude plugin details <id>` 파싱 — Step 3 확장(AC-4.8 5D 교차검증, harness_alwayson_tokens).
  * `--json` 옵션이 없어(AC-0.5 실측) 텍스트를 정규식으로 파싱한다. `ctk scan`이 아니라 `ctk measure`
  * 전용 경로다 — 플러그인 자산마다 서브프로세스를 1회씩 추가로 띄우므로 매 스캔에 끼워 넣지 않는다.

@@ -12,7 +12,7 @@ describe("probe/harness/cwd-guard — iter 8 · B3(고정 cwd)·M2(상위 경로
   });
 
   it("resolveFixedCwd는 homeDir 기준 상대 경로를 조인만 한다(I/O 없음)", () => {
-    expect(resolveFixedCwd(".cache/ctk/sealed-cwd", "/home/x")).toBe("/home/x/.cache/ctk/sealed-cwd");
+    expect(resolveFixedCwd(".cache/ctk/sealed-cwd", "/synthetic/home")).toBe("/synthetic/home/.cache/ctk/sealed-cwd");
   });
 
   it("상위 경로에 CLAUDE.md/.claude가 없으면 통과한다", () => {

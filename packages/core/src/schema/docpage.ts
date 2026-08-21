@@ -11,6 +11,8 @@ export const CitationSchema = z
   })
   .strict();
 
+export type Citation = z.infer<typeof CitationSchema>;
+
 /**
  * DocPage — 머신 독립. 자동 생성된 사용법 문서(`usage.md`에 대응, 카탈로그 결정 2).
  * 카탈로그 상대 경로만 담고 절대경로는 금지한다.
