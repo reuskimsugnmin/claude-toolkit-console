@@ -33,6 +33,11 @@ import path from "node:path";
  * 담을 수 있는 파일이면, 원래 0o600이었던 권한이 원자적 쓰기 한 번으로 0o644(그룹/타인 읽기 가능)로
  * 완화되는 실측 회귀가 있었다. 대상이 이미 존재하면 그 모드를 승계하고(umask 영향을 받지 않도록
  * `openSync` 후 `chmodSync`로 명시 고정한다), 신규 파일은 0o600을 기본값으로 삼는다.
+ *
+ * ⚠️ **M4 수정(AC-2.8)** — `rename()` 자체는 원자적이지만, 그 사실이 디스크에 내구성 있게
+ * 반영됐다는 보장은 파일 fsync만으로는 부족하다 — 많은 파일시스템(ext4 등)에서 디렉터리 엔트리
+ * 갱신은 **부모 디렉터리의 fsync**로 별도 강제해야 한다(그렇지 않으면 rename 직후 정전/강제
+ * 종료 시 디렉터리 엔트리가 유실될 수 있다). rename 후 부모 디렉터리 fd를 열어 fsync한다.
  */
 
 export class AtomicWriteVerifyError extends Error {
@@ -97,6 +102,21 @@ export function atomicWriteFile(absPath: string, content: string, options: Atomi
       }
     }
     throw err;
+  }
+
+  // M4/AC-2.8 — 부모 디렉터리 fsync. rename 자체의 원자성과 별개로, 디렉터리 엔트리 갱신이
+  // 디스크에 내구성 있게 반영됐음을 강제한다(그렇지 않으면 이론상 rename 직후 강제 종료 시
+  // 디렉터리 엔트리가 유실될 수 있다). 디렉터리 fd를 열 수 없는 플랫폼/권한이면 best-effort로
+  // 넘어간다(파일 자체의 fsync는 이미 완료됐으므로 완전한 무보장은 아니다).
+  try {
+    const dirFd = openSync(dir, "r");
+    try {
+      fsyncSync(dirFd);
+    } finally {
+      closeSync(dirFd);
+    }
+  } catch {
+    // best-effort — 일부 플랫폼(Windows 등)은 디렉터리를 fd로 열 수 없다.
   }
 
   const reparse = options.reparse ?? ((raw: string) => JSON.parse(raw) as unknown);
