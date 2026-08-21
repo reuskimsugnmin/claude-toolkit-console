@@ -17,6 +17,8 @@ import {
 import { runVerifyAc1, NotYetScannedError } from "../src/commands/verify-ac1.js";
 import { runMove, AssetNotFoundError, NoOpMoveError, ProjectIndexOutOfRangeError } from "../src/commands/move.js";
 import { runRollback, NoRollbackTargetError } from "../src/commands/rollback.js";
+import { runMeasure } from "../src/commands/measure.js";
+import { runUsage, NoMeasurementError } from "../src/commands/usage.js";
 import { LockContendedError } from "@ctk/sync";
 import { DuplicateKeyDiffError } from "@ctk/core";
 import { McpMoveRejectedError, CliToolMoveUnsupportedError, RollbackFailedError } from "@ctk/actuator";
@@ -125,9 +127,54 @@ async function main(): Promise<void> {
         console.log(`  journal: ${summary.journalPath}`);
         return;
       }
+      case "measure": {
+        const transcriptsDir = readFlagValue(rest, "--transcripts");
+        const noCredentialsOk = rest.includes("--no-credentials-ok");
+        const summary = await runMeasure({ transcriptsDir, noCredentialsOk });
+        console.log(`ctk measure 완료 (${summary.durationMs}ms)`);
+        console.log(`  스냅샷: ${summary.snapshotPath}`);
+        console.log(`  실행 로그: ${summary.runLogPath}`);
+        console.log(
+          `  트랜스크립트: ${summary.transcriptFilesParsed}개 파일 (파싱 실패 ${summary.parseFailureCount}건)`,
+        );
+        console.log(
+          `  UsageMetric: ${summary.usageMetricCount}건 · SessionUsage: ${summary.sessionUsageCount}건 · Occupancy: ${summary.occupancyCount}건`,
+        );
+        console.log(
+          `  미귀속 호출: ${summary.unattributedCallCount}건 · occupancy_divergence: ${summary.occupancyDivergenceCount}건 · usage_divergence: ${summary.usageDivergenceCount}건`,
+        );
+        console.log(
+          `  R17 대조(이번 실행 범위) — Agent tool_use: ${summary.agentToolUseCountThisRun}건 vs 신규 subagent 파일: ${summary.newSubagentFilesThisRun}건` +
+            (summary.subagentAttributionGap ? " ⚠️ 괴리" : " 일치"),
+        );
+        console.log(`  크레덴셜(ANTHROPIC_API_KEY): ${summary.credentialsAvailable ? "있음" : "없음(unmeasured로 열화)"}`);
+        return;
+      }
+      case "usage": {
+        const nRaw = readFlagValue(rest, "--unused-expensive");
+        const n = nRaw !== undefined ? Number(nRaw) : 5;
+        const report = runUsage({ unusedExpensive: n });
+        const asJson = rest.includes("--json");
+        if (asJson) {
+          console.log(JSON.stringify(report, null, 2));
+          return;
+        }
+        console.log(`ctk usage --unused-expensive ${n} — 스냅샷 ${report.snapshotId}`);
+        for (const row of report.rows) {
+          console.log(
+            `  ${row.asset_id}: idle=${row.idle_tokens}tok call_count=${row.call_count} last_used_at=${row.last_used_at ?? "(없음)"} ` +
+              `token_sum=${row.token_sum} attribution=${row.attribution_source ?? "(없음)"}/${row.attribution_rule ?? "(없음)"} ` +
+              `(스냅샷:${row.snapshot_id}, 파싱한 트랜스크립트:${row.transcript_files_parsed}개)`,
+          );
+        }
+        if (report.excludedUnmeasuredAssetIds.length > 0) {
+          console.log(`  순위 제외(occupancy 미측정): ${report.excludedUnmeasuredAssetIds.join(", ")}`);
+        }
+        return;
+      }
       default: {
         console.error(`알 수 없는 명령: ${command ?? "(없음)"}`);
-        console.error("사용법: ctk <init|scan|doctor|verify|move|rollback> [...args]");
+        console.error("사용법: ctk <init|scan|measure|usage|doctor|verify|move|rollback> [...args]");
         process.exitCode = 1;
         return;
       }
@@ -145,7 +192,8 @@ async function main(): Promise<void> {
       err instanceof AssetNotFoundError ||
       err instanceof NoOpMoveError ||
       err instanceof ProjectIndexOutOfRangeError ||
-      err instanceof NoRollbackTargetError
+      err instanceof NoRollbackTargetError ||
+      err instanceof NoMeasurementError
     ) {
       console.error(`FAIL: ${err.message}`);
       process.exitCode = 1;

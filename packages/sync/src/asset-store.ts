@@ -48,6 +48,15 @@ function listAssetJsonFiles(assetsRoot: string): string[] {
   return results;
 }
 
+/** occupancy 계산(Step 3)이 각 자산의 name+description 등 전체 필드를 필요로 하므로, index보다
+ * 풍부한 전수 조회를 제공한다. */
+export function listAllAssets(catalogRoot: string): Asset[] {
+  const assetsRoot = path.join(catalogRoot, "catalog", "assets");
+  return listAssetJsonFiles(assetsRoot)
+    .map((file) => JSON.parse(readFileSync(file, "utf8")) as Asset)
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
 export interface CatalogIndexEntry {
   id: string;
   kind: Asset["kind"];

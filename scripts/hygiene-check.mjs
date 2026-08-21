@@ -56,6 +56,7 @@ export const EXEMPT_PATH_PREFIXES = [
   "scripts/test/hygiene-check.test.ts", // 탐지기 자체를 테스트하려고 위반형 문자열을 의도적으로 담는다
   "packages/core/test/path-normalize-hygiene.test.ts", // 위생 검사 유틸리티(findRawPathLeaks)의 단위 테스트
   "packages/sync/test/stores.test.ts", // assertNoRawPathLeaks가 실제로 거부하는지 확인하려고 위반형 문자열을 의도적으로 담는다
+  "packages/sync/test/usage-stores.test.ts", // 위와 동일 사유 — offset-cache-store의 위생 검사(AC-1.7)를 테스트
   ".omc/",
 ];
 
