@@ -71,6 +71,16 @@ export const DEFAULT_SINGLE_VALUE_ARGV_FLAGS: readonly string[] = [
   "--add-dir",
 ];
 
+/**
+ * `agent-probe`(AC-3.3) 예외 조합 전용 규칙 — `--plugin-dir`만 제외한 나머지 15종은 그대로
+ * 금지한다. `agent-probe`는 `--safe-mode` 대신 `--setting-sources project` + `--plugin-dir
+ * <합성 카탈로그 플러그인 디렉터리>`를 쓰므로(§1.3 결정 6) `--plugin-dir` 하나만 예외가
+ * 필요하다 — 이 상수를 통하지 않는 일반 `spawnClaude()` 호출에는 여전히 전체 16종이 적용된다.
+ */
+export const AGENT_PROBE_FORBIDDEN_ARGV_RULES: readonly ForbiddenArgvRule[] = FORBIDDEN_ARGV_RULES.filter(
+  (rule) => rule.flag !== "--plugin-dir",
+);
+
 export type ArgvViolationReason = "forbidden_flag" | "forbidden_value" | "positional_argument";
 
 export interface ArgvViolation {

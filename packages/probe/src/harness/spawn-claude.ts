@@ -1,9 +1,19 @@
 import { spawn, spawnSync } from "node:child_process";
 import { accessSync, constants as fsConstants } from "node:fs";
 import path from "node:path";
-import { assertEnvWhitelist, assertForbiddenArgv, ENV_WHITELIST_COMMON, ENV_WHITELIST_SEALED_LIVE_EXTRA } from "@ctk/core";
+import {
+  AGENT_PROBE_FORBIDDEN_ARGV_RULES,
+  DEFAULT_SINGLE_VALUE_ARGV_FLAGS,
+  assertEnvWhitelist,
+  assertForbiddenArgv,
+  ENV_WHITELIST_COMMON,
+  ENV_WHITELIST_SEALED_LIVE_EXTRA,
+  verdictPreflightVersion,
+  type PreflightVersionMatch,
+} from "@ctk/core";
 import type { HomeContext } from "../home.js";
-import { buildChildEnv, buildFullArgv, isModelSessionSubcommand, isSealProfile, type SealProfile } from "./seal-profiles.js";
+import { assertNoAncestorConfig } from "./cwd-guard.js";
+import { buildAgentProbeArgv, buildChildEnv, buildFullArgv, isModelSessionSubcommand, isSealProfile, type SealProfile } from "./seal-profiles.js";
 
 /**
  * probe/src/harness/spawn-claude.ts — §1.3 결정 6의 봉인 래퍼. `claude`를 띄우는 모든 코드는
@@ -51,6 +61,41 @@ export class SealTimeoutError extends Error {
   constructor(timeoutSec: number) {
     super(`claude 서브프로세스가 벽시계 타임아웃(${timeoutSec}s)을 초과해 강제 종료됐다`);
     this.name = "SealTimeoutError";
+  }
+}
+
+/**
+ * iter 8 · B4 — ADR-004의 수용 논거 전체가 "도구 0개"에 걸려 있다. `sealed-live` 모델 세션은
+ * `seal-profiles.ts`가 `--tools ""`를 항상 주입하지만, 이 클래스는 그 구성이 실제로 최종 argv에
+ * 도달했는지 spawn 직전에 재확인하는 **마지막 방어선**이다(env-whitelist와 동형 설계).
+ */
+export class SealToolsNotEmptyError extends Error {
+  readonly failureClass = "seal_tools_not_empty" as const;
+  constructor() {
+    super(
+      "sealed-live 모델 세션의 argv에 --tools \"\"가 없거나 도구가 활성이다 — " +
+        "이 설계는 '파일시스템 경계 상실을 도구 능력 제거로 상쇄한다'는 논증에 기대므로 필수다",
+    );
+    this.name = "SealToolsNotEmptyError";
+  }
+}
+
+/**
+ * iter 8 · B5 — spawn 직전 `claude --version`이 검증된 버전과 다르고, 0원 라우팅 신호
+ * 재현에도 실패했다. 경고가 아니라 거부다.
+ */
+export class SealUnverifiedCliError extends Error {
+  readonly failureClass = "seal_unverified_cli" as const;
+  readonly verifiedVersion: string;
+  readonly actualVersion: string;
+  constructor(verifiedVersion: string, actualVersion: string) {
+    super(
+      `claude 버전이 검증된 버전과 다르고(검증: ${verifiedVersion}, 실제: ${actualVersion}) ` +
+        "0원 라우팅 신호 재현도 실패했다 — sealed-live 실행을 거부한다",
+    );
+    this.name = "SealUnverifiedCliError";
+    this.verifiedVersion = verifiedVersion;
+    this.actualVersion = actualVersion;
   }
 }
 
@@ -104,6 +149,65 @@ function assertLooksLikeClaudeBinary(execPath: string): void {
   );
 }
 
+function extractVersionString(stdout: string): string | null {
+  const match = /\d+\.\d+\.\d+/.exec(stdout);
+  return match?.[0] ?? null;
+}
+
+/**
+ * iter 8 · B5 — 0원 라우팅 신호 재현. `routingProbeCommand`(실제 설치된 플러그인 슬래시 커맨드)를
+ * `--safe-mode`로 호출해 "인식되지 않음"류 응답이 나오는지 본다(harness-facts.md: "슬래시 커맨드
+ * 라우팅은 인증 이전에 결정된다 — 커맨드 존재 여부 판정은 모델 호출 없이 $0에 가능하다"). 이
+ * 판정은 라우팅 계층이 안전 모드에서도 기존과 동일하게 동작한다는 최소 증거일 뿐, 3신호
+ * 전체(ⓓ-2)를 대신하지 않는다 — `--max-budget-usd`를 극소값으로 고정해 판정 전제가 깨져도
+ * 과금이 새지 않게 한다(방어적 상한, 이 신호 자체가 $0이어야 한다는 전제가 틀렸을 경우의 안전망).
+ */
+function reproduceRoutingSignal(
+  execPath: string,
+  env: Record<string, string>,
+  cwd: string,
+  routingProbeCommand: string,
+): boolean {
+  const result = spawnSync(
+    execPath,
+    ["--safe-mode", "--tools", "", "--max-budget-usd", "0.01", "-p", routingProbeCommand],
+    { cwd, env, encoding: "utf8", timeout: 20_000 },
+  );
+  const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  return /unknown\s+command|not\s+(a\s+)?recognized|no\s+such\s+command/i.test(combined);
+}
+
+/**
+ * iter 8 · B5 — `sealed-live` 모델 세션 전용 프리플라이트 게이트. `claude --version`을
+ * `verifiedCliVersion`과 대조하고, 다르면 라우팅 신호 재현을 시도한다. 일치하지 않는데
+ * `routingProbeCommand`가 없거나 재현이 실패하면 `SealUnverifiedCliError`를 던진다(거부,
+ * 경고 아님) — `verdictPreflightVersion()`(core, 순수 함수)이 최종 판정을 내린다.
+ */
+function runPreflightVersionGate(
+  execPath: string,
+  env: Record<string, string>,
+  cwd: string,
+  verifiedCliVersion: string | undefined,
+  routingProbeCommand: string | undefined,
+): PreflightVersionMatch {
+  const versionResult = spawnSync(execPath, ["--version"], { encoding: "utf8", timeout: 10_000 });
+  const actualVersion = extractVersionString(versionResult.stdout ?? "") ?? "(판독 불가)";
+
+  // verifiedCliVersion이 아예 없으면 "검증 대상 없음"이지 "검증 통과"가 아니다 — 항상 불일치로
+  // 취급해 fail-closed를 유지한다.
+  const verified = verifiedCliVersion ?? `(미지정, 실제: ${actualVersion} 아님으로 간주)`;
+  const routingReproduced =
+    verified !== actualVersion && routingProbeCommand !== undefined
+      ? reproduceRoutingSignal(execPath, env, cwd, routingProbeCommand)
+      : false;
+
+  const verdict = verdictPreflightVersion(verified, actualVersion, routingReproduced);
+  if (!verdict.allowed) {
+    throw new SealUnverifiedCliError(verified, actualVersion);
+  }
+  return verdict.match;
+}
+
 export interface SpawnClaudeOptions {
   /** 허용값은 정확히 둘 — 기본값 없음(§1.3 결정 6). */
   profile: SealProfile;
@@ -116,6 +220,18 @@ export interface SpawnClaudeOptions {
   timeoutSec: number;
   /** `-p` 세션의 프롬프트 — argv가 아니라 stdin으로 전달한다(공통 강제 사항 3번). Step 2는 사용하지 않는다. */
   stdinPrompt?: string;
+  /**
+   * iter 8 · B5 — `sealed-live` 모델 세션 필수. 미지정이면 프리플라이트 게이트를 건너뛰지
+   * 않고 곧바로 불일치로 취급한다(fail-closed) — "검증 대상을 안 줬다"를 "검증 통과"로
+   * 착각하지 않는다.
+   */
+  verifiedCliVersion?: string;
+  /**
+   * iter 8 · B5 — 버전 불일치 시 재현을 시도할 0원 라우팅 신호. 실제 설치된 플러그인 슬래시
+   * 커맨드(예: `/oh-my-claudecode:help`)를 안전 모드에서 호출했을 때 `Unknown command`류
+   * 응답이 나오는지로 판정한다. 미지정이면 재현을 시도하지 않고 곧바로 거부한다.
+   */
+  routingProbeCommand?: string;
 }
 
 export interface SpawnClaudeResult {
@@ -123,6 +239,34 @@ export interface SpawnClaudeResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  /** iter 8 · B5 — sealed-live 모델 세션에서만 채워진다. run-log의 preflight_version_match로 옮긴다. */
+  preflightVersionMatch?: PreflightVersionMatch;
+}
+
+/** spawn-claude.ts 자신의 wrapper argv 전량 — H1 위치인자 판정기에 넘길 단일값 플래그 목록. */
+const WRAPPER_SINGLE_VALUE_ARGV_FLAGS: readonly string[] = [
+  ...DEFAULT_SINGLE_VALUE_ARGV_FLAGS,
+  "--setting-sources",
+  "--disallowedTools",
+  "--json-schema",
+  "--output-format",
+  "--max-budget-usd",
+];
+
+/** `spawnClaudeAgentProbe()` 전용 — 위 목록 + `--plugin-dir`(agent-probe 예외 조합에서만 등장). */
+const AGENT_PROBE_SINGLE_VALUE_ARGV_FLAGS: readonly string[] = [...WRAPPER_SINGLE_VALUE_ARGV_FLAGS, "--plugin-dir"];
+
+/**
+ * iter 8 · B4 — 최종 argv에 `--tools`와 그 바로 다음 토큰 `""`가 존재하는지 확인한다.
+ * `--tools`는 가변인자(`<tools...>`)이므로 우리 wrapper는 항상 `--tools ""` 뒤에 다른 플래그를
+ * 바로 이어붙여 빈 문자열 하나만 소비되게 구성한다(seal-profiles.ts) — 이 함수는 그 불변식이
+ * 실제로 지켜졌는지 재확인하는 마지막 방어선이다.
+ */
+function assertToolsEmpty(argv: readonly string[]): void {
+  const index = argv.indexOf("--tools");
+  if (index === -1 || argv[index + 1] !== "") {
+    throw new SealToolsNotEmptyError();
+  }
 }
 
 /** 공통 강제 사항 10번(iter 8 · H3) — `claude` 서브프로세스는 직렬화한다(동시성 1). */
@@ -196,11 +340,17 @@ export async function spawnClaude(options: SpawnClaudeOptions): Promise<SpawnCla
   // 호출(`plugin list --json` 등)은 서브커맨드 단어 자체가 정당한 위치인자이므로 그 검사만 끈다.
   // 금지 플래그/금지값 검사(1번)는 두 경우 모두 그대로 적용된다.
   const isModelSession = isModelSessionSubcommand(options.subcommand);
-  const argvVerdict = assertForbiddenArgv(argv, undefined, undefined, {
+  const argvVerdict = assertForbiddenArgv(argv, undefined, WRAPPER_SINGLE_VALUE_ARGV_FLAGS, {
     checkPositionalArguments: isModelSession,
   });
   if (argvVerdict.status === "violation") {
     throw new ForbiddenArgvViolationError(argvVerdict.violations);
+  }
+
+  // iter 8 · B4 — sealed-live 모델 세션은 도구 0개가 논증의 축이다(ADR-004). seal-profiles.ts가
+  // 이미 주입하지만, 여기서 최종 argv를 마지막으로 재확인한다(env-whitelist와 동형 설계).
+  if (options.profile === "sealed-live" && isModelSession) {
+    assertToolsEmpty(argv);
   }
 
   const env = buildChildEnv(
@@ -224,6 +374,72 @@ export async function spawnClaude(options: SpawnClaudeOptions): Promise<SpawnCla
 
   // L6 — 자식에게 실제로 넘길 PATH로 절대경로를 확정하고, 처음 보는 경로면 --version으로
   // sanity check한다(PATH 오설정·동명 바이너리 방어).
+  const execPath = resolveClaudeExecutable(env.PATH ?? "");
+  assertLooksLikeClaudeBinary(execPath);
+
+  // iter 8 · B5 — sealed-live 모델 세션마다 spawn 직전 버전 게이트. 실패하면 SealUnverifiedCliError를
+  // 던진다(runSerialized 이전 — 직렬화 체인에 자리를 차지하지 않는다).
+  let preflightVersionMatch: PreflightVersionMatch | undefined;
+  if (options.profile === "sealed-live" && isModelSession) {
+    preflightVersionMatch = runPreflightVersionGate(
+      execPath,
+      env,
+      options.cwd,
+      options.verifiedCliVersion,
+      options.routingProbeCommand,
+    );
+  }
+
+  const result = await runSerialized(() =>
+    spawnOnce(execPath, argv, env, options.cwd, options.timeoutSec, options.stdinPrompt),
+  );
+  return preflightVersionMatch !== undefined ? { ...result, preflightVersionMatch } : result;
+}
+
+export interface SpawnClaudeAgentProbeOptions {
+  /** `claude` 바이너리 이름은 제외한 서브커맨드+플래그(`-p <query>` 등). */
+  subcommand: string[];
+  home: HomeContext;
+  /** M2 — 이 cwd의 **상위** 경로에 CLAUDE.md/.claude/가 있으면 spawn 전에 거부한다. */
+  cwd: string;
+  timeoutSec: number;
+  stdinPrompt?: string;
+  /** 마켓플레이스 루트가 아니라 플러그인 디렉터리 자체(Architect 실측 정정, §1.3). */
+  pluginDir: string;
+}
+
+/**
+ * `agent-probe`(AC-3.3) 예외 조합 전용 spawn. `spawnClaude()`(정확히 두 프로파일)와 별도
+ * 함수로 둔다 — `--safe-mode` 대신 `--setting-sources project` + `--plugin-dir`를 쓰는 이
+ * 조합은 `SealProfile` 타입(§1.3 결정 6 "허용값은 정확히 둘")에 억지로 끼워 넣지 않는다.
+ * 이 함수도 `probe/src/harness/spawn-claude.ts` 안에 있으므로 `ctk/single-spawn-wrapper`
+ * lint 예외를 그대로 쓴다("claude 서브프로세스는 이 래퍼를 통해서만" — 함수가 둘이어도 파일은
+ * 하나다).
+ */
+export async function spawnClaudeAgentProbe(options: SpawnClaudeAgentProbeOptions): Promise<SpawnClaudeResult> {
+  // M2 — --setting-sources project가 cwd의 프로젝트 설정을 의도적으로 로드하므로, 상위 경로에
+  // 심어진 CLAUDE.md/.claude/가 유입될 수 있다. spawn 이전에 거부한다.
+  assertNoAncestorConfig(options.cwd);
+
+  const argv = buildAgentProbeArgv(options.subcommand, options.pluginDir);
+  const isModelSession = isModelSessionSubcommand(options.subcommand);
+  const argvVerdict = assertForbiddenArgv(argv, AGENT_PROBE_FORBIDDEN_ARGV_RULES, AGENT_PROBE_SINGLE_VALUE_ARGV_FLAGS, {
+    checkPositionalArguments: isModelSession,
+  });
+  if (argvVerdict.status === "violation") {
+    throw new ForbiddenArgvViolationError(argvVerdict.violations);
+  }
+
+  // agent-probe는 --safe-mode를 쓰지 않으므로 CLAUDE_CODE_SAFE_MODE 자기 선언 대상이 아니다 —
+  // buildChildEnv("test-isolated", ...)를 재사용한다(HOME 덮어쓰기 + CLAUDE_CONFIG_DIR 조건부
+  // 주입 로직은 프로파일과 무관하게 동일하고, "test-isolated"를 넘기면 그 부가 로직만 빠진다).
+  // agent-probe는 실제 CLAUDE_CONFIG_DIR을 유지해 인증을 확보한다(sealed-live와 동일 이유).
+  const env = buildChildEnv("test-isolated", options.home.ctkHome, options.home.ctkConfigDir, options.home.configDirExplicit);
+  const envVerdict = assertEnvWhitelist(env, ENV_WHITELIST_COMMON);
+  if (envVerdict.status === "violation") {
+    throw new SealEnvLeakError(envVerdict.leakedKeys);
+  }
+
   const execPath = resolveClaudeExecutable(env.PATH ?? "");
   assertLooksLikeClaudeBinary(execPath);
 

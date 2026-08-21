@@ -8,6 +8,8 @@ export * from "./frontmatter.js";
 export * from "./tree-collect.js";
 export * from "./harness/seal-profiles.js";
 export * from "./harness/spawn-claude.js";
+export * from "./harness/cwd-guard.js";
+export * from "./managed-policy.js";
 export * from "./sources/errors.js";
 export * from "./sources/known-projects.js";
 export * from "./sources/plugins.js";
