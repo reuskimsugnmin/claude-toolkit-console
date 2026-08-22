@@ -3,8 +3,15 @@ import { toPerCallBudgetUsd } from "@ctk/core";
 import { ActionError, type ActionHandlers } from "@ctk/web";
 import { LockContendedError } from "@ctk/sync";
 import { runScan } from "./scan.js";
-import { runMove, ProjectIndexOutOfRangeError } from "./move.js";
-import { runRollback } from "./rollback.js";
+import {
+  runMove,
+  AssetNotFoundError,
+  NoOpMoveError,
+  ProjectIndexOutOfRangeError,
+  ProjectListChangedError,
+  SkillLocationAmbiguousError,
+} from "./move.js";
+import { runRollback, InvalidBackupRefError, NoRollbackTargetError } from "./rollback.js";
 import { runGenCli, runGenDryRun } from "./gen.js";
 
 /**
@@ -141,10 +148,26 @@ function genView(s: Awaited<ReturnType<typeof runGenCli>>) {
 /**
  * CLI가 던지는 실패를 웹 상태 코드로 분류한다. **분류되지 않은 예외는 500으로 남긴다** —
  * 여기서 넓게 잡아 400으로 바꾸면 서버 결함이 사용자 입력 오류로 보고된다.
+ *
+ * ⚠️ **반대 방향도 결함이다.** 처음에는 세 개만 분류해, `AssetNotFoundError` 같은 **명백한
+ * 사용자 입력 오류가 500 `action_failed`로** 나갔다(실측 발견) — 화면은 "서버가 고장났다"고
+ * 말하고 사용자는 자기 입력을 고칠 생각을 못 한다. `move`/`rollback`이 던지는 클라이언트
+ * 입력 계열을 **전부** 등재한다. 새 에러 클래스를 만들면 여기도 함께 고친다.
  */
 function toActionError(err: unknown): unknown {
   if (err instanceof LockContendedError) return new ActionError("lock_contended", err.message);
   if (err instanceof ProjectIndexOutOfRangeError) return new ActionError("project_index_out_of_range", err.message);
+  // 아래는 전부 "사용자가 무엇을 고쳐야 하는지" 아는 실패다 — 서버 결함으로 보고하지 않는다.
+  if (
+    err instanceof ProjectListChangedError ||
+    err instanceof AssetNotFoundError ||
+    err instanceof NoOpMoveError ||
+    err instanceof SkillLocationAmbiguousError ||
+    err instanceof NoRollbackTargetError ||
+    err instanceof InvalidBackupRefError
+  ) {
+    return new ActionError("bad_request", err.message);
+  }
   return err;
 }
 
@@ -187,6 +210,9 @@ export function createActionHandlers(options: CreateActionHandlersOptions = {}):
           assetId: request.asset_id,
           to: request.to,
           ...(request.to_project_index === undefined ? {} : { toProjectIndex: request.to_project_index }),
+          ...(request.to_project_hash_prefix === undefined
+            ? {}
+            : { toProjectHashPrefix: request.to_project_hash_prefix }),
           ...(request.from === undefined ? {} : { from: request.from }),
           ...(request.from_project_index === undefined ? {} : { fromProjectIndex: request.from_project_index }),
         })),

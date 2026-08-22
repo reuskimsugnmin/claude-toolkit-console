@@ -171,6 +171,7 @@ const SESSION_TOKEN = (() => {
 })();
 
 let actionBusy = false;
+let CURRENT_ASSET = null;
 
 /** 액션 버튼 전체를 잠근다 — 연타로 겹치면 서버가 409를 내지만 화면도 막아야 한다. */
 function setActionsBusy(busy, note) {
@@ -189,7 +190,7 @@ const FAILURE_TEXT = {
   estimate_token_invalid: "승인이 만료됐거나 이미 쓰였다 — 비용을 다시 확인하고 승인한다",
   project_index_out_of_range: "선택한 프로젝트가 목록 범위 밖이다 — 다시 스캔한 뒤 시도한다",
   payload_too_large: "요청이 너무 크다",
-  bad_request: "요청이 화이트리스트 스키마와 맞지 않는다",
+  bad_request: "요청이 화이트리스트 스키마와 맞지 않거나, 고른 뒤 프로젝트 목록이 바뀌었다",
 };
 
 /**
@@ -339,6 +340,9 @@ async function refreshViewModel() {
   renderHeader();
   renderAssets();
   renderUsage();
+  // 상세가 열려 있으면 선택지도 다시 만든다. 안 그리면 드롭다운만 옛 목록을 가리켜
+  // **드롭다운·확인문구·실행 대상 셋이 서로 다른 목록을 본다**(재심 M1 갈래 2).
+  if (!$("view-detail").classList.contains("hidden") && CURRENT_ASSET !== null) renderDetailActions(CURRENT_ASSET);
 }
 
 function cell(row, text, className) {
@@ -433,6 +437,7 @@ function renderAssets() {
 }
 
 async function showDetail(asset) {
+  CURRENT_ASSET = asset;
   $("view-assets").classList.add("hidden");
   $("view-usage").classList.add("hidden");
   $("view-detail").classList.remove("hidden");
@@ -461,35 +466,112 @@ async function showDetail(asset) {
 }
 
 /**
+ * 프로젝트 선택 드롭다운. **값은 인덱스이고 라벨은 경로의 마지막 세그먼트뿐이다** —
+ * 서버가 이미 잘라서 보냈고 여기서는 경로를 볼 수도 없다.
+ *
+ * 같은 라벨이 둘 이상이면(실측 16건 중 2종 충돌) 인덱스와 해시 접두를 함께 붙인다.
+ * 잘못 고르면 엉뚱한 프로젝트의 설정이 바뀌므로 구분 수단이 없으면 안 된다.
+ */
+function buildProjectSelect() {
+  const select = document.createElement("select");
+  for (const p of VM.projects) {
+    const opt = document.createElement("option");
+    opt.value = String(p.index);
+    // 충돌한 항목에만 구별자를 붙인다. parentHint가 있으면 그것을 먼저 쓴다 — 인덱스·해시는
+    // "다르다"만 알려주고 "어느 쪽이 내가 원하는 것인가"는 못 알려준다(재심 M4).
+    opt.textContent = p.ambiguous
+      ? p.label + "  (" + (p.parentHint ? "…/" + p.parentHint + " · " : "#" + p.index + " · ") + p.hashPrefix + ")"
+      : p.label;
+    select.appendChild(opt);
+  }
+  return select;
+}
+
+function selectedProjectText(select) {
+  const choice = VM.projects.find((p) => String(p.index) === select.value);
+  if (choice === undefined) return "(선택 없음)";
+  if (!choice.ambiguous) return choice.label;
+  return choice.label + " (" + (choice.parentHint ? "…/" + choice.parentHint + " · " : "#" + choice.index + " · ") + choice.hashPrefix + ")";
+}
+
+/**
  * 상세 화면의 이관 버튼.
  *
- * **v1 UI는 user 스코프로 되돌리는 것만 연다.** 프로젝트를 대상으로 하려면 사전 스캔된
- * 프로젝트 목록의 **인덱스**가 필요한데(자유 문자열 경로는 API가 받지 않는다), 그 목록을
- * 화면에 띄우려면 프로젝트를 사람이 알아볼 이름으로 보여줘야 하고 그것은 경로 노출 범위를
- * 새로 정하는 결정이다. 그 결정 전까지 절반을 임의로 만들지 않는다 — CLI의
- * ctk move --to project --project-index N은 그대로 쓸 수 있다.
+ * 대상 프로젝트는 **인덱스로만** 지정한다 — 자유 문자열 경로는 API가 받지 않는다(웹에서 온
+ * 문자열이 파일시스템에 닿으면 경로 순회가 재현된다).
  */
 function renderDetailActions(asset) {
   const host = $("detail-actions");
   host.textContent = "";
   if (SESSION_TOKEN === null) return;
 
-  const movable = asset.installations.some((i) => i.enabled_at !== null && i.enabled_at !== "user");
-  if (!movable) return;
+  const scopes = asset.installations.map((i) => i.enabled_at).filter((x) => x !== null);
+  const row = document.createElement("div");
+  row.className = "actions";
+  row.style.padding = "10px 0";
+  row.style.borderBottom = "none";
 
-  const btn = document.createElement("button");
-  btn.setAttribute("data-action-btn", "");
-  btn.textContent = "전역(user)으로 되돌리기";
-  btn.disabled = actionBusy;
-  btn.addEventListener("click", () =>
-    runSimpleAction("이관", { action: "move", asset_id: asset.id, to: "user" }, [
-      ["대상", asset.name + " (" + asset.kind + ")"],
-      ["바뀌는 것", "활성 스코프(enabled_at)를 user로 옮긴다. 설치 스코프는 바뀌지 않는다."],
-      ["백업", "실행 전 자동 백업된다 — 실패하면 즉시 롤백된다."],
-      ["되돌리는 법", "위의 '마지막 조치 되돌리기' 버튼 또는 ctk rollback --last"],
-    ]),
-  );
-  host.appendChild(btn);
+  if (scopes.some((sc) => sc !== "user")) {
+    const toUser = document.createElement("button");
+    toUser.setAttribute("data-action-btn", "");
+    toUser.textContent = "전역(user)으로 되돌리기";
+    toUser.disabled = actionBusy;
+    toUser.addEventListener("click", () =>
+      runSimpleAction("이관", { action: "move", asset_id: asset.id, to: "user" }, [
+        ["대상", asset.name + " (" + asset.kind + ")"],
+        ["바뀌는 것", "활성 스코프(enabled_at)를 user로 옮긴다. 설치 스코프는 바뀌지 않는다."],
+        ["백업", "실행 전 자동 백업된다 — 실패하면 즉시 롤백된다."],
+        ["되돌리는 법", "위의 마지막 조치 되돌리기 버튼 또는 ctk rollback --last"],
+      ]),
+    );
+    row.appendChild(toUser);
+  }
+
+  if (VM.projects_unavailable !== null) {
+    const note = document.createElement("span");
+    note.className = "sep";
+    note.textContent =
+      VM.projects_unavailable === "claude_json_unreadable"
+        ? "프로젝트 목록을 읽지 못했다 — ctk doctor로 ~/.claude.json을 확인한다"
+        : "프로젝트 목록이 규약을 어겨 표시하지 않는다 (" + VM.projects_unavailable + ")";
+    row.appendChild(note);
+  } else if (VM.projects.length > 0 && scopes.some((sc) => sc !== "project")) {
+    const label = document.createElement("span");
+    label.className = "sep";
+    label.textContent = "프로젝트로 이관:";
+    const select = buildProjectSelect();
+    select.setAttribute("data-action-btn", "");
+    select.disabled = actionBusy;
+    const toProject = document.createElement("button");
+    toProject.setAttribute("data-action-btn", "");
+    toProject.textContent = "이관";
+    toProject.disabled = actionBusy;
+    toProject.addEventListener("click", () =>
+      runSimpleAction(
+        "이관",
+        {
+          action: "move",
+          asset_id: asset.id,
+          to: "project",
+          to_project_index: Number(select.value),
+          // 화면이 그 인덱스에서 **실제로 본** 프로젝트임을 서버가 대조할 수 있게 함께 보낸다.
+          to_project_hash_prefix: (VM.projects.find((p) => String(p.index) === select.value) || {}).hashPrefix,
+        },
+        [
+          ["대상", asset.name + " (" + asset.kind + ")"],
+          ["옮길 프로젝트", selectedProjectText(select)],
+          ["바뀌는 것", "그 프로젝트에서만 켜지도록 활성 스코프를 옮긴다. 설치 스코프는 그대로다."],
+          ["백업", "실행 전 자동 백업된다 — 실패하면 즉시 롤백된다."],
+          ["되돌리는 법", "위의 마지막 조치 되돌리기 버튼 또는 ctk rollback --last"],
+        ],
+      ),
+    );
+    row.appendChild(label);
+    row.appendChild(select);
+    row.appendChild(toProject);
+  }
+
+  if (row.childNodes.length > 0) host.appendChild(row);
 }
 
 const QUALITY_TEXT = {
@@ -537,6 +619,7 @@ function renderUsage() {
 }
 
 function showTab(which) {
+  CURRENT_ASSET = null;
   $("view-detail").classList.add("hidden");
   $("view-assets").classList.toggle("hidden", which !== "assets");
   $("view-usage").classList.toggle("hidden", which !== "usage");

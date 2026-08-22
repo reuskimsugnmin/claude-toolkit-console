@@ -3,6 +3,10 @@ import path from "node:path";
 import {
   annotationMdPath,
   buildConsoleViewModel,
+  buildProjectChoices,
+  containsPathSeparator,
+  hashPath,
+  type ProjectChoice,
   machineDir,
   parseInstallation,
   parseUsageMetric,
@@ -12,7 +16,7 @@ import {
   type Installation,
   type UsageMetric,
 } from "@ctk/core";
-import { resolveHomeContext, type HomeContext } from "@ctk/probe";
+import { listKnownProjectPaths, resolveHomeContext, type HomeContext } from "@ctk/probe";
 import { listAllAssets, listAllOccupancy } from "@ctk/sync";
 import { startReadonlyServer, type AssetDocKind, type ListeningServer } from "@ctk/web";
 import { createActionHandlers, createSessionToken } from "./web-actions.js";
@@ -102,6 +106,40 @@ function findLatestUsageMetrics(catalogPath: string, machineId: string): UsageMe
   return [];
 }
 
+/**
+ * 이관 대상 선택지를 만든다.
+ *
+ * ⚠️ **절대경로는 여기서 라벨로 바꾸고 버린다.** 경로를 뷰모델에 실어 보내고 화면에서 자르면
+ * 그 순간 응답 본문에 디렉터리 구조가 들어가 있다 — 보안 심사 M1이 지적한 형태다.
+ *
+ * ⚠️ **`~/.claude.json`을 못 읽는 것이 콘솔 전체를 죽이면 안 된다**(재심 M5). 이 함수가
+ * 던지면 `getViewModel()`이 500을 내고 `boot()`가 한 줄만 남긴 채 끝나 **롤백 버튼조차 뜨지
+ * 않는다** — 빠져나갈 길이 없는 거부다(안전 원칙 6). 그렇다고 실패를 "프로젝트 0건"으로
+ * 위장하지도 않는다(원칙 7) — 이유를 실어 화면이 말하게 한다.
+ */
+function collectProjectChoices(home: HomeContext): {
+  projects: ProjectChoice[];
+  projectsUnavailable: string | null;
+} {
+  let projects: ProjectChoice[];
+  try {
+    projects = buildProjectChoices({
+      absolutePaths: listKnownProjectPaths(home),
+      hashPrefixOf: (p) => hashPath(p),
+    });
+  } catch {
+    return { projects: [], projectsUnavailable: "claude_json_unreadable" };
+  }
+
+  // 계약을 주석이 아니라 코드로 막는다(재심 M2). `containsPathSeparator`는 이 모듈이 선언한
+  // 계약인데 프로덕션에서 한 번도 호출되지 않았다 — "규칙 존재 ≠ 규칙이 막음"의 그 자리다.
+  // 라벨에 구분자가 있으면 그건 세그먼트가 아니라 경로 조각이고, 그 응답은 나가면 안 된다.
+  if (containsPathSeparator(projects)) {
+    return { projects: [], projectsUnavailable: "label_contains_path_separator" };
+  }
+  return { projects, projectsUnavailable: null };
+}
+
 export interface BuildViewModelOptions {
   home?: HomeContext | undefined;
   unusedExpensive?: number | undefined;
@@ -128,8 +166,12 @@ export function buildViewModelFromCatalog(options: BuildViewModelOptions = {}): 
     ]),
   );
 
+  const { projects, projectsUnavailable } = collectProjectChoices(home);
+
   return buildConsoleViewModel({
     machineId: machine.machine_id,
+    projects,
+    projectsUnavailable,
     assets,
     installations,
     occupancy: listAllOccupancy(catalogPath),

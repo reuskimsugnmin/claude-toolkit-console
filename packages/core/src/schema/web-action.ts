@@ -43,6 +43,12 @@ const MoveActionSchema = z
     asset_id: z.string().min(1),
     to: InstallScopeSchema.exclude(["local"]),
     to_project_index: z.number().int().nonnegative().optional(),
+    /**
+     * 화면이 그 인덱스에서 **실제로 본** 프로젝트의 `hashPrefix`. 서버가 실행 직전 실측과
+     * 대조한다 — 그 사이 목록이 바뀌었으면 조용히 다른 곳을 고치지 않고 거부한다(재심 M1).
+     * 요청 본문이 인덱스 정수 하나뿐이면 서버는 "사용자가 무엇을 보고 골랐는지" 알 방법이 없다.
+     */
+    to_project_hash_prefix: z.string().min(6).max(16).optional(),
     from: InstallScopeSchema.exclude(["local"]).optional(),
     from_project_index: z.number().int().nonnegative().optional(),
   })
@@ -75,13 +81,39 @@ const GenExecuteActionSchema = z
   .object({ action: z.literal("gen_execute"), estimate_token: z.string().min(1), ...GenParamsShape })
   .strict();
 
-export const WebActionRequestSchema = z.discriminatedUnion("action", [
-  ScanActionSchema,
-  RollbackActionSchema,
-  MoveActionSchema,
-  GenEstimateActionSchema,
-  GenExecuteActionSchema,
-]);
+/**
+ * ⚠️ `discriminatedUnion`의 멤버는 `ZodObject`여야 하므로 `MoveActionSchema`에 `.refine()`을
+ * 걸 수 없다(걸면 `ZodEffects`가 되어 union이 깨진다 — tsc가 `never`로 잡는다). 조건부 필수는
+ * **union 위에서** 판정한다.
+ */
+export const WebActionRequestSchema = z
+  .discriminatedUnion("action", [
+    ScanActionSchema,
+    RollbackActionSchema,
+    MoveActionSchema,
+    GenEstimateActionSchema,
+    GenExecuteActionSchema,
+  ])
+  .superRefine((request, ctx) => {
+    // 조건부 필수는 스키마가 판정한다 — 핸들러까지 내려가면 클라이언트 계약 위반이
+    // 500(서버 결함)으로 보고된다(재심 L2).
+    if (request.action === "move" && request.to === "project") {
+      if (request.to_project_index === undefined) {
+        ctx.addIssue({ code: "custom", message: "to=project이면 to_project_index가 필요하다", path: ["to_project_index"] });
+      }
+      // ⚠️ **대조값을 빼면 대조가 사라진다.** `resolveProjectPath`는 `expectedHashPrefix`가
+      // `undefined`면 검사를 건너뛰므로, optional로 두면 클라이언트가 그냥 안 보내는 것만으로
+      // M1 방어가 무력화된다. 이 스키마는 **웹 전용**이고(CLI는 `MoveOptions`를 직접 쓴다)
+      // UI는 항상 보내므로, 필수로 올려도 잃는 호환이 없다.
+      if (request.to_project_hash_prefix === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          message: "to=project이면 선택 시점의 to_project_hash_prefix가 필요하다",
+          path: ["to_project_hash_prefix"],
+        });
+      }
+    }
+  });
 
 export type WebActionRequest = z.infer<typeof WebActionRequestSchema>;
 export type MoveActionRequest = z.infer<typeof MoveActionSchema>;

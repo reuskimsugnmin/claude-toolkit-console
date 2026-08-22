@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildProjectChoices, containsPathSeparator, parseWebActionRequest } from "@ctk/core";
 import { EstimateTokenStore, createSessionToken } from "../src/commands/web-actions.js";
 
 /**
@@ -103,5 +104,71 @@ describe("createSessionToken", () => {
 
   it("URL에 그대로 넣을 수 있는 문자만 쓴다 — 프래그먼트로 전달되기 때문이다", () => {
     expect(createSessionToken()).toMatch(/^[A-Za-z0-9_-]+$/);
+  });
+});
+
+describe("M1 회귀 — 인덱스 정합성 대조", () => {
+  /**
+   * 뷰모델을 만들 때와 `move`를 실행할 때 `listKnownProjectPaths`를 **각각 따로** 읽는다.
+   * 그 사이 목록이 바뀌면 인덱스가 밀려 **다른 프로젝트의 설정이 바뀐다.** 백업·감사·롤백은
+   * "우리가 쓴 곳이 맞는가"를 보지 "사용자가 고른 곳이 맞는가"는 못 보므로, 이 대조가 없으면
+   * 그 실패는 어떤 게이트에도 걸리지 않고 **성공으로 끝난다**(재심 M1).
+   */
+  it("스키마가 to_project_hash_prefix를 받는다", () => {
+    const parsed = parseWebActionRequest({
+      action: "move",
+      asset_id: "a",
+      to: "project",
+      to_project_index: 2,
+      to_project_hash_prefix: "abc123",
+    });
+    expect(parsed).toMatchObject({ to_project_hash_prefix: "abc123" });
+  });
+
+  it("to=project인데 인덱스가 없으면 파싱이 실패한다 — 500이 아니라 400이 된다", () => {
+    expect(() => parseWebActionRequest({ action: "move", asset_id: "a", to: "project" })).toThrow();
+  });
+
+  it("대조값을 빼면 파싱이 실패한다 — optional로 두면 안 보내는 것만으로 M1 방어가 무력화된다", () => {
+    expect(() =>
+      parseWebActionRequest({ action: "move", asset_id: "a", to: "project", to_project_index: 0 }),
+    ).toThrow();
+  });
+
+  it("to=user는 인덱스 없이도 통과한다 — 위 규칙이 과잉이 아님을 보인다", () => {
+    expect(() => parseWebActionRequest({ action: "move", asset_id: "a", to: "user" })).not.toThrow();
+  });
+
+  it("해시 접두가 너무 짧으면 거부된다 — 우연 일치로 대조가 무력해지지 않게", () => {
+    expect(() =>
+      parseWebActionRequest({
+        action: "move",
+        asset_id: "a",
+        to: "project",
+        to_project_index: 0,
+        to_project_hash_prefix: "ab",
+      }),
+    ).toThrow();
+  });
+});
+
+describe("M2 회귀 — 계약이 실제로 막는가", () => {
+  /**
+   * `containsPathSeparator`는 **프로덕션에서 한 번도 호출되지 않았다**(재심 M2). 계약을
+   * 선언해 놓고 단위 테스트로만 검증하면, 라벨 산출이 회귀했을 때 응답이 그대로 나간다.
+   * 여기서는 그 관문이 실제로 fail-closed인지 **판정 함수 수준에서** 못 박는다.
+   */
+  it("라벨에 구분자가 섞이면 containsPathSeparator가 true다", () => {
+    const regressed = buildProjectChoices({
+      // toProjectLabel이 회귀해 경로 전체를 반환하는 상황을 그대로 흉내낸다.
+      absolutePaths: ["/synthetic/a/proj"],
+      hashPrefixOf: () => "aaaaaa",
+    }).map((c) => ({ ...c, label: "/synthetic/a/proj" }));
+    expect(containsPathSeparator(regressed)).toBe(true);
+  });
+
+  it("정상 라벨은 false — 위 케이스가 '항상 true'와 구분됨을 보인다", () => {
+    const ok = buildProjectChoices({ absolutePaths: ["/synthetic/a/proj"], hashPrefixOf: () => "aaaaaa" });
+    expect(containsPathSeparator(ok)).toBe(false);
   });
 });

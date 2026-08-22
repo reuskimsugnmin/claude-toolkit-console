@@ -44,6 +44,8 @@ const VIEW_MODEL: ConsoleViewModel = {
       has_usage_doc: false,
     },
   ],
+  projects: [{ index: 0, label: "synth-proj", ambiguous: false, hashPrefix: "abc123" }],
+  projects_unavailable: null,
   usage: {
     ranked: [],
     unrankable: [],
@@ -418,5 +420,53 @@ describe("액션 버튼은 준비되기 전에 눌리지 않는다", () => {
 
   it("boot가 리스너를 붙인 뒤 잠금을 푼다", () => {
     expect(UI_HTML).toContain('setActionsBusy(false, "");');
+  });
+});
+
+describe("프로젝트 선택 UI — 경로가 화면에 닿지 않는다 (안 B)", () => {
+  it("뷰모델의 projects가 그대로 전달되고 경로 조각이 없다", async () => {
+    const server = await start();
+    const body = (await (await fetch(`${server.url}/api/view-model`)).json()) as ConsoleViewModel;
+    expect(body.projects).toEqual(VIEW_MODEL.projects);
+    expect(JSON.stringify(body.projects)).not.toMatch(/[/\\]/);
+  });
+
+  it("UI가 option 값으로 **인덱스**를 쓴다 — 경로를 보내지 않는다", () => {
+    expect(UI_HTML).toContain("opt.value = String(p.index)");
+    expect(UI_HTML).toContain("to_project_index: Number(select.value)");
+  });
+
+  it("UI가 경로 문자열을 조립하지 않는다 — 라벨은 서버가 이미 자른 값이다", () => {
+    expect(UI_HTML).not.toMatch(/p\.(path|absolutePath|project_path)\b/);
+    expect(UI_HTML).not.toContain("to_project_path");
+  });
+
+  it("동명 충돌이면 구별자를 함께 붙인다 — 잘못 고르면 엉뚱한 프로젝트가 바뀐다", () => {
+    expect(UI_HTML).toContain("p.ambiguous");
+    expect(UI_HTML).toContain("p.hashPrefix");
+    // 인덱스·해시는 "다르다"만 알려준다 — 사람이 읽을 구별자(상위 한 칸)를 우선한다(재심 M4).
+    expect(UI_HTML).toContain("p.parentHint");
+  });
+
+  it("요청에 선택 시점의 해시 접두를 실어 보낸다 — 서버가 대조할 수 있어야 한다 (재심 M1)", () => {
+    expect(UI_HTML).toContain("to_project_hash_prefix");
+  });
+
+  it("뷰모델이 갱신되면 상세의 선택지도 다시 그린다 — 드롭다운만 옛 목록을 가리키지 않게", () => {
+    expect(UI_HTML).toContain("renderDetailActions(CURRENT_ASSET)");
+  });
+
+  it("프로젝트 목록을 못 읽은 것을 '0건'으로 위장하지 않는다 (재심 M5)", () => {
+    expect(UI_HTML).toContain("projects_unavailable");
+    expect(UI_HTML).toContain("프로젝트 목록을 읽지 못했다");
+  });
+
+  it("이관 확인 화면이 어느 프로젝트인지 보여준다", () => {
+    expect(UI_HTML).toContain("옮길 프로젝트");
+    expect(UI_HTML).toContain("selectedProjectText(select)");
+  });
+
+  it("프로젝트가 없으면 선택 UI를 만들지 않는다 — 빈 드롭다운을 띄우지 않는다", () => {
+    expect(UI_HTML).toContain("VM.projects.length > 0");
   });
 });

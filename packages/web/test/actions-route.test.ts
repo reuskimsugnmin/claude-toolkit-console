@@ -16,6 +16,8 @@ const VIEW_MODEL: ConsoleViewModel = {
   machine_id: "m1",
   freshness: { last_scan_at: "2026-08-22T00:00:00.000Z", days_since_last_scan: 0, is_stale: false, never_scanned: false },
   assets: [],
+  projects: [],
+  projects_unavailable: null,
   usage: {
     ranked: [],
     unrankable: [],
@@ -285,7 +287,13 @@ describe("실패를 성공으로 삼키지 않는다", () => {
     const res = await fetch(`${server.url}/api/actions`, {
       method: "POST",
       headers: actionHeaders(server),
-      body: JSON.stringify({ action: "move", asset_id: "a", to: "project", to_project_index: 999 }),
+      body: JSON.stringify({
+        action: "move",
+        asset_id: "a",
+        to: "project",
+        to_project_index: 999,
+        to_project_hash_prefix: "abc123",
+      }),
     });
     expect(res.status).toBe(400);
     expect((await res.json()) as { code: string }).toMatchObject({ code: "project_index_out_of_range" });
