@@ -101,7 +101,20 @@ export interface ProbeSkillDocument {
  * 힌트를 넣으면 그 순간 "에이전트가 스스로 찾았다"가 아니라 "우리가 알려줬다"가 된다 —
  * AC-3.3이 재려는 것이 사라진다.
  */
-export function buildProbeSkillDocument(originalDocument: string, catalogRoot: string): ProbeSkillDocument {
+export interface ProbeSkillTarget {
+  /** 합성 카탈로그 루트(절대경로). */
+  catalogRoot: string;
+  /**
+   * "이 로컬"로 삼을 머신 id. 프로덕션은 `~/.config/ctk/machine.json`에서 읽지만 진단은
+   * `HOME`이 실제 홈이라 그 파일을 쓸 수 없다 — 카탈로그 루트와 **같은 절**에서 함께 준다.
+   *
+   * 3회차 실측에서 에이전트가 정확히 지적한 공백이다: 머신을 특정하지 못하면 "이 로컬에
+   * 있다"가 아니라 "어떤 머신엔가 있었다"밖에 말할 수 없다.
+   */
+  machineId: string;
+}
+
+export function buildProbeSkillDocument(originalDocument: string, target: ProbeSkillTarget): ProbeSkillDocument {
   const sections = splitMarkdownSections(originalDocument);
   const matches = sections.filter((section) => section.heading === PROBE_SKILL_REPLACED_HEADING);
   if (matches.length !== 1) throw new ProbeSkillSectionError(PROBE_SKILL_REPLACED_HEADING, matches.length);
@@ -113,12 +126,12 @@ export function buildProbeSkillDocument(originalDocument: string, catalogRoot: s
 
   const replacement =
     `${PROBE_SKILL_REPLACED_HEADING}\n\n` +
-    `⚠️ 이 스킬은 **AC-3.3 진단용 사본**이다. 프로덕션 원문은 카탈로그 루트를\n` +
-    `\`~/.config/ctk/config.json\`에서 읽지만, 이 진단은 합성 카탈로그를 대상으로 하므로 루트가\n` +
-    `아래에 고정돼 있다. **이 절 외의 본문은 프로덕션 원문과 바이트 동일하다.**\n\n` +
-    `카탈로그 루트:\n\n` +
+    `⚠️ 이 스킬은 **AC-3.3 진단용 사본**이다. 프로덕션 원문은 카탈로그 루트와 이 로컬의 머신\n` +
+    `id를 \`~/.config/ctk/\`의 두 파일에서 읽지만, 이 진단은 합성 카탈로그를 대상으로 하므로 두\n` +
+    `값이 아래에 고정돼 있다. **이 절 외의 본문은 프로덕션 원문과 바이트 동일하다.**\n\n` +
     "```\n" +
-    `${catalogRoot}\n` +
+    `catalog_path  =  ${target.catalogRoot}\n` +
+    `machine_id    =  ${target.machineId}\n` +
     "```" +
     trailingBlankLines;
 

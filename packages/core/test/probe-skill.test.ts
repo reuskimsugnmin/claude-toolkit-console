@@ -26,6 +26,8 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const SKILL_PATH = path.join(repoRoot, "skills", "toolkit-search", "SKILL.md");
 const ORIGINAL = readFileSync(SKILL_PATH, "utf8");
 const CATALOG_ROOT = "/synthetic/probe-catalog";
+const MACHINE_ID = "machine-synth";
+const TARGET = { catalogRoot: CATALOG_ROOT, machineId: MACHINE_ID };
 
 describe("splitMarkdownSections — 이어 붙이면 원문이 복원된다", () => {
   it("실제 스킬 원문을 왕복해도 바이트가 같다 — 뒤의 모든 대조가 이 성질에 얹혀 있다", () => {
@@ -44,7 +46,7 @@ describe("splitMarkdownSections — 이어 붙이면 원문이 복원된다", ()
 });
 
 describe("buildProbeSkillDocument — 정확히 한 절만 바뀐다", () => {
-  const built = buildProbeSkillDocument(ORIGINAL, CATALOG_ROOT);
+  const built = buildProbeSkillDocument(ORIGINAL, TARGET);
 
   it("치환한 절을 뺀 나머지가 **바이트 동일**하다 — 안 B가 성립하는 근거다", () => {
     expect(withoutSection(built.document, PROBE_SKILL_REPLACED_HEADING)).toBe(built.untouchedSource);
@@ -74,11 +76,17 @@ describe("buildProbeSkillDocument — 정확히 한 절만 바뀐다", () => {
 });
 
 describe("buildProbeSkillDocument — 바뀐 절이 실제로 합성 루트를 가리킨다", () => {
-  const built = buildProbeSkillDocument(ORIGINAL, CATALOG_ROOT);
+  const built = buildProbeSkillDocument(ORIGINAL, TARGET);
   const replaced = splitMarkdownSections(built.document).find((s) => s.heading === PROBE_SKILL_REPLACED_HEADING)?.text ?? "";
 
   it("합성 루트가 들어 있다", () => {
     expect(replaced).toContain(CATALOG_ROOT);
+  });
+
+  it("머신 id도 같은 절에서 준다 — 3회차 실측이 드러낸 공백이다", () => {
+    // 머신을 특정하지 못하면 "이 로컬에 있다"가 "어떤 머신엔가 있었다"가 된다.
+    // 두 값을 **같은 절**에 두는 것이 안 B의 "한 절만 다르다"를 지키는 방법이기도 하다.
+    expect(replaced).toContain(MACHINE_ID);
   });
 
   it("원문의 절과 다르다 — 치환이 실제로 일어났음을 보인다(공허하지 않음)", () => {
@@ -100,17 +108,17 @@ describe("buildProbeSkillDocument — 바뀐 절이 실제로 합성 루트를 �
 
 describe("판정할 수 없으면 던진다 (안전 원칙 7)", () => {
   it("절이 없으면 조용히 원문을 돌려주지 않는다", () => {
-    expect(() => buildProbeSkillDocument("# 제목\n\n본문뿐", CATALOG_ROOT)).toThrow(ProbeSkillSectionError);
+    expect(() => buildProbeSkillDocument("# 제목\n\n본문뿐", TARGET)).toThrow(ProbeSkillSectionError);
   });
 
   it("절이 둘이면 어느 것인지 판정할 수 없으므로 던진다", () => {
     const doubled = `${ORIGINAL}\n${PROBE_SKILL_REPLACED_HEADING}\n\n중복`;
-    expect(() => buildProbeSkillDocument(doubled, CATALOG_ROOT)).toThrow(/2개/);
+    expect(() => buildProbeSkillDocument(doubled, TARGET)).toThrow(/2개/);
   });
 
   it("오류 메시지가 고치는 법을 알려준다 — 거부에는 빠져나갈 길이 필요하다(안전 원칙 6)", () => {
     try {
-      buildProbeSkillDocument("# 없음", CATALOG_ROOT);
+      buildProbeSkillDocument("# 없음", TARGET);
       expect.unreachable();
     } catch (err) {
       expect((err as Error).message).toContain("이 상수를 함께 고친다");

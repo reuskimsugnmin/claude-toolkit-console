@@ -26,6 +26,11 @@ import { MissingRequiredFlagError } from "./gen.js";
 export interface RunAgentProbeCliOptions {
   /** 합성 카탈로그 루트(`catalog/index.json`을 담은 디렉터리의 부모). */
   catalog: string;
+  /**
+   * "이 로컬"로 삼을 머신 id. 프로덕션 스킬은 `~/.config/ctk/machine.json`에서 읽지만 진단은
+   * `HOME`이 실제 홈이라 그 파일을 쓸 수 없어 사본에 박아 넣는다(3회차 실측).
+   */
+  machineId: string;
   query: string;
   maxBudgetUsd?: number;
   timeoutSec?: number;
@@ -37,6 +42,7 @@ export interface AgentProbeCliResult extends RunAgentProbeResult {
   /** 사본이 원문과 다른 지점 — 무엇을 시험했는지 사용자가 알 수 있어야 한다. */
   replacedHeading: string;
   catalogRoot: string;
+  machineId: string;
 }
 
 export async function runAgentProbeCli(options: RunAgentProbeCliOptions): Promise<AgentProbeCliResult> {
@@ -53,7 +59,11 @@ export async function runAgentProbeCli(options: RunAgentProbeCliOptions): Promis
 
   let probePlugin: ProbePluginDir | null = null;
   try {
-    probePlugin = createProbePluginDir({ skillSourcePath, catalogRoot: stagedCatalog });
+    probePlugin = createProbePluginDir({
+      skillSourcePath,
+      catalogRoot: stagedCatalog,
+      machineId: options.machineId,
+    });
     const result = await runAgentProbe({
       home: resolveHomeContext(),
       cwd,
@@ -66,6 +76,7 @@ export async function runAgentProbeCli(options: RunAgentProbeCliOptions): Promis
       ...result,
       replacedHeading: probePlugin.skill.replacedHeading,
       catalogRoot: probePlugin.catalogRoot,
+      machineId: options.machineId,
     };
   } finally {
     // 유료 세션이 실패해도 임시 디렉터리는 남기지 않는다.

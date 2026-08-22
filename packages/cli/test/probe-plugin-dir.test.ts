@@ -8,6 +8,7 @@ import {
   PROBE_CATALOG_DIR_NAME,
   PROBE_PLUGIN_NAME,
   ProbeCatalogInvalidError,
+  ProbeMachineNotFoundError,
   createProbePluginDir,
   stageProbeCatalog,
   type ProbePluginDir,
@@ -23,6 +24,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const SKILL_PATH = path.join(repoRoot, "skills", "toolkit-search", "SKILL.md");
 const ORIGINAL = readFileSync(SKILL_PATH, "utf8");
 const CATALOG = path.join(repoRoot, "fixtures", "agent-probe-catalog");
+const MACHINE_ID = "machine-synth";
 
 const created: ProbePluginDir[] = [];
 afterEach(() => {
@@ -30,7 +32,7 @@ afterEach(() => {
 });
 
 function make(catalogRoot = CATALOG, skillSourcePath = SKILL_PATH): ProbePluginDir {
-  const p = createProbePluginDir({ skillSourcePath, catalogRoot });
+  const p = createProbePluginDir({ skillSourcePath, catalogRoot, machineId: MACHINE_ID });
   created.push(p);
   return p;
 }
@@ -102,14 +104,14 @@ describe("쓰인 파일이 프로덕션 원문과 정확히 한 절만 다르다
 
 describe("cleanup — 유료 세션이 실패해도 남기지 않는다", () => {
   it("호출하면 디렉터리가 사라진다", () => {
-    const p = createProbePluginDir({ skillSourcePath: SKILL_PATH, catalogRoot: CATALOG });
+    const p = createProbePluginDir({ skillSourcePath: SKILL_PATH, catalogRoot: CATALOG, machineId: MACHINE_ID });
     expect(existsSync(p.pluginDir)).toBe(true);
     p.cleanup();
     expect(existsSync(p.pluginDir)).toBe(false);
   });
 
   it("두 번 호출해도 던지지 않는다 — 정리 실패가 진단 결과를 덮지 않는다", () => {
-    const p = createProbePluginDir({ skillSourcePath: SKILL_PATH, catalogRoot: CATALOG });
+    const p = createProbePluginDir({ skillSourcePath: SKILL_PATH, catalogRoot: CATALOG, machineId: MACHINE_ID });
     p.cleanup();
     expect(() => p.cleanup()).not.toThrow();
   });
@@ -120,7 +122,7 @@ describe("판정할 수 없는 원본은 거부한다", () => {
     const dir = mkdtempSync(path.join(tmpdir(), "ctk-probe-badskill-"));
     const bad = path.join(dir, "SKILL.md");
     writeFileSync(bad, "---\nname: x\n---\n\n# 제목\n\n본문뿐\n", "utf8");
-    expect(() => createProbePluginDir({ skillSourcePath: bad, catalogRoot: CATALOG })).toThrow(/카탈로그 위치/);
+    expect(() => createProbePluginDir({ skillSourcePath: bad, catalogRoot: CATALOG, machineId: MACHINE_ID })).toThrow(/카탈로그 위치/);
   });
 });
 
@@ -160,5 +162,38 @@ describe("stageProbeCatalog — cwd 안으로 옮긴다 (1회차 실측 반영)"
     const empty = mkdtempSync(path.join(tmpdir(), "ctk-probe-empty-"));
     expect(() => stageProbeCatalog(empty, cwd())).toThrow(ProbeCatalogInvalidError);
     expect(() => stageProbeCatalog(empty, cwd())).toThrow(/부모/);
+  });
+});
+
+describe("머신 id — 실재하지 않으면 진단을 시작하지 않는다 (3회차 실측)", () => {
+  /**
+   * 없는 머신을 "이 로컬"로 삼으면 진단은 **설치 여부 미확인**만 관측하게 된다 — 그건 스킬의
+   * 결함이 아니라 우리가 만든 조건이다. 그 상태의 결과를 AC-3.3 근거로 쓰면 안 된다.
+   */
+  it("카탈로그에 없는 머신 id는 거부하고 고치는 법을 알려준다", () => {
+    expect(() =>
+      createProbePluginDir({ skillSourcePath: SKILL_PATH, catalogRoot: CATALOG, machineId: "machine-nonexistent" }),
+    ).toThrow(ProbeMachineNotFoundError);
+    expect(() =>
+      createProbePluginDir({ skillSourcePath: SKILL_PATH, catalogRoot: CATALOG, machineId: "machine-nonexistent" }),
+    ).toThrow(/--machine-id/);
+  });
+
+  it("실재하는 머신 id는 통과한다 — 위 케이스가 '항상 거부'와 구분됨을 보인다", () => {
+    expect(() => make()).not.toThrow();
+  });
+
+  it("사본이 지정한 머신 id를 담는다 — 다른 머신 디렉터리를 집지 않게 하는 유일한 단서다", () => {
+    const written = readFileSync(skillFile(make()), "utf8");
+    const replaced = splitMarkdownSections(written).find((s) => s.heading === PROBE_SKILL_REPLACED_HEADING)?.text ?? "";
+    expect(replaced).toContain(MACHINE_ID);
+    // 픽스처에는 머신이 둘이다 — 다른 쪽 id가 사본에 들어가면 진단이 무엇을 쟀는지 모호해진다.
+    expect(replaced).not.toContain("machine-other");
+  });
+
+  it("스테이징이 머신 디렉터리를 **둘 다** 옮긴다 — 하나만 옮기면 '고를 것'이 없어진다", () => {
+    const staged = stageProbeCatalog(CATALOG, mkdtempSync(path.join(tmpdir(), "ctk-probe-cwd-")));
+    expect(existsSync(path.join(staged, "machines", "machine-synth"))).toBe(true);
+    expect(existsSync(path.join(staged, "machines", "machine-other"))).toBe(true);
   });
 });

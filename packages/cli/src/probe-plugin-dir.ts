@@ -81,6 +81,20 @@ export class ProbeSkillWriteMismatchError extends Error {
   }
 }
 
+/**
+ * 존재하지 않는 머신을 "이 로컬"로 삼으면 진단은 **설치 여부 미확인**만 관측하게 된다 —
+ * 그건 스킬의 결함이 아니라 우리가 만든 조건이다. 시작 전에 거부한다(안전 원칙 7).
+ */
+export class ProbeMachineNotFoundError extends Error {
+  constructor(readonly machineId: string, readonly catalogRoot: string) {
+    super(
+      `합성 카탈로그에 machines/${machineId} 가 없다 — ${catalogRoot}. ` +
+        `--machine-id 로 카탈로그에 실재하는 머신을 지정한다.`,
+    );
+    this.name = "ProbeMachineNotFoundError";
+  }
+}
+
 export interface ProbePluginDir {
   /** `--plugin-dir`에 넘길 경로. */
   pluginDir: string;
@@ -103,10 +117,18 @@ export interface ProbePluginDir {
  * 스킬 디렉터리 이름을 **`toolkit-search` 그대로** 쓴다 — 이름이 바뀌면 그것도 프로덕션과의
  * 차이가 되고, 안 B가 "한 절만 다르다"로 묶어 둔 값이 새어 나간다.
  */
-export function createProbePluginDir(options: { skillSourcePath: string; catalogRoot: string }): ProbePluginDir {
+export function createProbePluginDir(options: {
+  skillSourcePath: string;
+  catalogRoot: string;
+  /** "이 로컬"로 삼을 머신 id. 카탈로그의 `machines/` 아래에 실제로 있어야 한다. */
+  machineId: string;
+}): ProbePluginDir {
   const original = readFileSync(options.skillSourcePath, "utf8");
   const catalogRoot = path.resolve(options.catalogRoot);
-  const skill = buildProbeSkillDocument(original, catalogRoot);
+  if (!existsSync(path.join(catalogRoot, "machines", options.machineId))) {
+    throw new ProbeMachineNotFoundError(options.machineId, catalogRoot);
+  }
+  const skill = buildProbeSkillDocument(original, { catalogRoot, machineId: options.machineId });
 
   const pluginDir = mkdtempSync(path.join(tmpdir(), PROBE_PLUGIN_PREFIX));
   chmodSync(pluginDir, 0o700);
