@@ -71,6 +71,22 @@ function renderUiHtml(nonce: string): string {
   .row-link { background: none; border: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer;
     text-align: left; }
   .hidden { display: none; }
+  .actions { display: flex; gap: 8px; align-items: center; padding: 10px 24px; border-bottom: 1px solid var(--line);
+    flex-wrap: wrap; background: var(--panel); }
+  .actions button { padding: 5px 12px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg);
+    color: var(--ink); font: inherit; font-size: 13.5px; cursor: pointer; }
+  .actions button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .actions button:disabled { opacity: .45; cursor: default; }
+  .actions .sep { color: var(--muted); font-size: 12px; }
+  .confirm { border: 1px solid var(--warn-line); background: var(--warn-bg); color: var(--warn-ink);
+    border-radius: 6px; padding: 14px 16px; margin: 14px 0; font-size: 14px; }
+  .confirm h3 { margin: 0 0 8px; font-size: 14px; }
+  .confirm dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; margin: 8px 0 12px; }
+  .confirm dt { color: inherit; opacity: .75; }
+  .confirm .row { display: flex; gap: 8px; }
+  .result { border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px; margin: 12px 0;
+    font-size: 13.5px; white-space: pre-wrap; background: var(--panel); }
+  .result.fail { border-color: var(--warn-line); background: var(--warn-bg); color: var(--warn-ink); }
 </style>
 </head>
 <body>
@@ -83,7 +99,15 @@ function renderUiHtml(nonce: string): string {
   <button id="tab-assets" aria-selected="true">자산</button>
   <button id="tab-usage" aria-selected="false">사용량</button>
 </nav>
+<div class="actions hidden" id="action-bar">
+  <strong style="font-size:13px">액션</strong>
+  <button id="btn-scan" disabled>스캔</button>
+  <button id="btn-gen" disabled>문서 생성…</button>
+  <button id="btn-rollback" disabled>마지막 조치 되돌리기</button>
+  <span class="sep" id="action-note"></span>
+</div>
 <main>
+  <div id="action-area"></div>
   <section id="view-assets">
     <div class="filters">
       <input id="q" type="search" placeholder="이름·id로 거르기" autocomplete="off">
@@ -108,6 +132,7 @@ function renderUiHtml(nonce: string): string {
     <p><button class="row-link" id="back">← 목록으로</button></p>
     <h2 id="detail-name" style="font-size:16px;margin:.2em 0"></h2>
     <p class="meta" id="detail-meta"></p>
+    <div id="detail-actions"></div>
     <div id="detail-docs"></div>
   </section>
 
@@ -130,6 +155,191 @@ function renderUiHtml(nonce: string): string {
 <script nonce="${nonce}">
 const $ = (id) => document.getElementById(id);
 let VM = null;
+
+/**
+ * 세션 토큰. **프래그먼트에서 한 번 읽고 즉시 주소창·히스토리에서 지운다**(보안 심사 L6) —
+ * Chrome은 프래그먼트 포함 URL을 History DB에 저장하므로, 남겨두면 같은 사용자 권한의 다른
+ * 로컬 프로세스가 서버 수명 동안 토큰을 회수할 수 있다.
+ *
+ * 이 값은 **클로저에만** 둔다. window·전역·DOM 어디에도 넣지 않는다 — 그 순간 XSS 하나가
+ * 액션 API 전권이 된다.
+ */
+const SESSION_TOKEN = (() => {
+  const raw = new URLSearchParams(location.hash.slice(1)).get("token");
+  if (raw !== null) history.replaceState(null, "", location.pathname);
+  return raw;
+})();
+
+let actionBusy = false;
+
+/** 액션 버튼 전체를 잠근다 — 연타로 겹치면 서버가 409를 내지만 화면도 막아야 한다. */
+function setActionsBusy(busy, note) {
+  actionBusy = busy;
+  for (const id of ["btn-scan", "btn-gen", "btn-rollback"]) {
+    const el = $(id);
+    if (el) el.disabled = busy;
+  }
+  for (const el of document.querySelectorAll("[data-action-btn]")) el.disabled = busy;
+  $("action-note").textContent = note || "";
+}
+
+const FAILURE_TEXT = {
+  unauthorized: "세션 토큰이 유효하지 않다 — ctk를 다시 띄워 새 URL을 열어야 한다",
+  lock_contended: "다른 ctk 실행이 카탈로그를 점유 중이다 — 끝난 뒤 다시 시도한다",
+  estimate_token_invalid: "승인이 만료됐거나 이미 쓰였다 — 비용을 다시 확인하고 승인한다",
+  project_index_out_of_range: "선택한 프로젝트가 목록 범위 밖이다 — 다시 스캔한 뒤 시도한다",
+  payload_too_large: "요청이 너무 크다",
+  bad_request: "요청이 화이트리스트 스키마와 맞지 않는다",
+};
+
+/**
+ * 액션 1건을 보낸다. **실패를 성공처럼 표시하지 않는다** — 화면이 "됐다"고 하면 사용자는
+ * 확인하지 않는다. 서버가 준 분류 코드를 사람이 읽을 문장으로 바꾸되, 원문 메시지도 함께 남긴다.
+ */
+async function postAction(body) {
+  if (SESSION_TOKEN === null) return { ok: false, code: "unauthorized", message: "액션 모드가 아니다" };
+  const res = await fetch("/api/actions", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-ctk-session": SESSION_TOKEN },
+    body: JSON.stringify(body),
+  });
+  let parsed;
+  try {
+    parsed = await res.json();
+  } catch (e) {
+    // 파싱 실패를 빈 성공으로 삼키지 않는다.
+    return { ok: false, code: "action_failed", message: "응답을 해석하지 못했다 (HTTP " + res.status + ")" };
+  }
+  return parsed;
+}
+
+function showResult(text, failed) {
+  const area = $("action-area");
+  area.textContent = "";
+  const div = document.createElement("div");
+  div.className = failed ? "result fail" : "result";
+  div.textContent = text;
+  area.appendChild(div);
+}
+
+function showOutcome(label, outcome) {
+  if (outcome.ok) {
+    showResult(label + " 완료\\n" + JSON.stringify(outcome.data, null, 2), false);
+    return true;
+  }
+  const why = FAILURE_TEXT[outcome.code] || outcome.code || "알 수 없는 실패";
+  showResult(label + " 실패 — " + why + "\\n" + (outcome.message || ""), true);
+  return false;
+}
+
+/** 확인 패널을 띄우고 사용자가 누른 버튼을 기다린다. 취소가 기본이다. */
+function askConfirm(title, rows, confirmLabel) {
+  return new Promise((resolve) => {
+    const area = $("action-area");
+    area.textContent = "";
+    const box = document.createElement("div");
+    box.className = "confirm";
+    const h = document.createElement("h3");
+    h.textContent = title;
+    box.appendChild(h);
+
+    const dl = document.createElement("dl");
+    for (const [k, v] of rows) {
+      const dt = document.createElement("dt");
+      dt.textContent = k;
+      const dd = document.createElement("dd");
+      dd.textContent = v;
+      dl.appendChild(dt);
+      dl.appendChild(dd);
+    }
+    box.appendChild(dl);
+
+    const row = document.createElement("div");
+    row.className = "row";
+    const yes = document.createElement("button");
+    yes.textContent = confirmLabel;
+    const no = document.createElement("button");
+    no.textContent = "취소";
+    row.appendChild(yes);
+    row.appendChild(no);
+    box.appendChild(row);
+    area.appendChild(box);
+
+    yes.addEventListener("click", () => { area.textContent = ""; resolve(true); });
+    no.addEventListener("click", () => { area.textContent = ""; resolve(false); });
+  });
+}
+
+async function runSimpleAction(label, body, confirmRows) {
+  if (actionBusy) return;
+  if (confirmRows && !(await askConfirm(label, confirmRows, "실행"))) return;
+  setActionsBusy(true, label + " 실행 중…");
+  try {
+    showOutcome(label, await postAction(body));
+  } finally {
+    setActionsBusy(false, "");
+  }
+  await refreshViewModel();
+}
+
+/**
+ * gen은 2단계다(F6). 견적은 **API 호출도 서브프로세스도 띄우지 않고** 비용만 계산하고,
+ * 사용자가 그 화면에서 명시 승인해야 실행된다. 승인 없이는 어떤 유료 호출도 일어나지 않는다.
+ */
+async function runGenTwoPhase() {
+  if (actionBusy) return;
+  setActionsBusy(true, "견적 계산 중…");
+  let est;
+  try {
+    est = await postAction({ action: "gen_estimate", max_total_usd: 2 });
+  } finally {
+    setActionsBusy(false, "");
+  }
+  if (!est.ok) { showOutcome("문서 생성 견적", est); return; }
+
+  const d = est.data;
+  const rows = [
+    ["생성 대상", d.assetCount + "건"],
+    ["claude -p 호출", d.call_count + "회"],
+    ["총 지출 상한", "$" + d.max_total_usd],
+    ["호출당 상한", "$" + Number(d.per_call_budget_usd).toFixed(4)],
+    ["이 세션 잔여 한도", "$" + d.session_remaining_usd],
+  ];
+  if (d.clamped) rows.push(["참고", "서버 상한에 걸려 요청보다 줄었다"]);
+  if (d.skipped && d.skipped.length > 0) rows.push(["건너뜀", d.skipped.length + "건 (위생 검사 거부)"]);
+  if (d.emptyAssetIds && d.emptyAssetIds.length > 0) rows.push(["원본 없음", d.emptyAssetIds.length + "건"]);
+
+  if (d.assetCount === 0) {
+    showResult("생성할 대상이 없다 — 모든 자산이 최신이거나 원본을 읽을 수 없다.", false);
+    return;
+  }
+  if (!(await askConfirm("문서 생성을 승인하시겠습니까? (유료 세션이 실행됩니다)", rows, "승인하고 실행"))) {
+    showResult("승인하지 않아 실행하지 않았다. 유료 호출은 일어나지 않았다.", false);
+    return;
+  }
+
+  setActionsBusy(true, "문서 생성 중… (수 분 걸릴 수 있다)");
+  try {
+    showOutcome("문서 생성", await postAction({
+      action: "gen_execute",
+      max_total_usd: d.max_total_usd,
+      max_assets: d.max_assets,
+      estimate_token: d.estimate_token,
+    }));
+  } finally {
+    setActionsBusy(false, "");
+  }
+  await refreshViewModel();
+}
+
+async function refreshViewModel() {
+  const res = await fetch("/api/view-model");
+  if (!res.ok) return;
+  VM = await res.json();
+  renderHeader();
+  renderAssets();
+  renderUsage();
+}
 
 function cell(row, text, className) {
   const td = document.createElement("td");
@@ -231,6 +441,8 @@ async function showDetail(asset) {
   if (asset.marketplace) bits.push("marketplace: " + asset.marketplace);
   $("detail-meta").textContent = bits.join(" · ");
 
+  renderDetailActions(asset);
+
   const host = $("detail-docs");
   host.textContent = "";
   for (const which of ["annotation", "usage"]) {
@@ -246,6 +458,38 @@ async function showDetail(asset) {
     if (!res.ok) pre.className = "doc muted";
     host.appendChild(pre);
   }
+}
+
+/**
+ * 상세 화면의 이관 버튼.
+ *
+ * **v1 UI는 user 스코프로 되돌리는 것만 연다.** 프로젝트를 대상으로 하려면 사전 스캔된
+ * 프로젝트 목록의 **인덱스**가 필요한데(자유 문자열 경로는 API가 받지 않는다), 그 목록을
+ * 화면에 띄우려면 프로젝트를 사람이 알아볼 이름으로 보여줘야 하고 그것은 경로 노출 범위를
+ * 새로 정하는 결정이다. 그 결정 전까지 절반을 임의로 만들지 않는다 — CLI의
+ * ctk move --to project --project-index N은 그대로 쓸 수 있다.
+ */
+function renderDetailActions(asset) {
+  const host = $("detail-actions");
+  host.textContent = "";
+  if (SESSION_TOKEN === null) return;
+
+  const movable = asset.installations.some((i) => i.enabled_at !== null && i.enabled_at !== "user");
+  if (!movable) return;
+
+  const btn = document.createElement("button");
+  btn.setAttribute("data-action-btn", "");
+  btn.textContent = "전역(user)으로 되돌리기";
+  btn.disabled = actionBusy;
+  btn.addEventListener("click", () =>
+    runSimpleAction("이관", { action: "move", asset_id: asset.id, to: "user" }, [
+      ["대상", asset.name + " (" + asset.kind + ")"],
+      ["바뀌는 것", "활성 스코프(enabled_at)를 user로 옮긴다. 설치 스코프는 바뀌지 않는다."],
+      ["백업", "실행 전 자동 백업된다 — 실패하면 즉시 롤백된다."],
+      ["되돌리는 법", "위의 '마지막 조치 되돌리기' 버튼 또는 ctk rollback --last"],
+    ]),
+  );
+  host.appendChild(btn);
 }
 
 const QUALITY_TEXT = {
@@ -300,6 +544,15 @@ function showTab(which) {
   $("tab-usage").setAttribute("aria-selected", String(which === "usage"));
 }
 
+function renderHeader() {
+  const f = VM.freshness;
+  $("freshness").textContent = f.never_scanned
+    ? "스캔 기록 없음 — ctk scan 필요"
+    : "마지막 스캔 " + (f.days_since_last_scan === null ? "시각 불명" : f.days_since_last_scan + "일 전") +
+      (f.is_stale ? " (오래됨)" : "");
+  $("counts").textContent = VM.assets.length + "개 자산";
+}
+
 async function boot() {
   const res = await fetch("/api/view-model");
   if (!res.ok) {
@@ -308,15 +561,26 @@ async function boot() {
   }
   VM = await res.json();
 
-  const f = VM.freshness;
-  $("freshness").textContent = f.never_scanned
-    ? "스캔 기록 없음 — ctk scan 필요"
-    : "마지막 스캔 " + (f.days_since_last_scan === null ? "시각 불명" : f.days_since_last_scan + "일 전") +
-      (f.is_stale ? " (오래됨)" : "");
-  $("counts").textContent = VM.assets.length + "개 자산";
-
+  renderHeader();
   renderAssets();
   renderUsage();
+
+  if (SESSION_TOKEN !== null) {
+    // 버튼은 HTML에서 disabled로 시작해 여기서 푼다 — boot()가 끝나기 전에 누르면 리스너가
+    // 아직 없어 아무 일도 일어나지 않는데, 사용자에게는 "눌렀는데 반응이 없다"로 보인다.
+    $("action-bar").classList.remove("hidden");
+    $("btn-scan").addEventListener("click", () => runSimpleAction("스캔", { action: "scan" }));
+    $("btn-gen").addEventListener("click", runGenTwoPhase);
+    $("btn-rollback").addEventListener("click", () =>
+      runSimpleAction("롤백", { action: "rollback" }, [
+        ["대상", "가장 최근에 기록된 조치 1건"],
+        ["바뀌는 것", "그 조치 이전 상태로 파일을 되돌린다."],
+        ["주의", "되돌린 뒤에는 같은 버튼으로 다시 앞으로 갈 수 없다."],
+      ]),
+    );
+    setActionsBusy(false, "");
+  }
+
   $("q").addEventListener("input", renderAssets);
   $("kind").addEventListener("change", renderAssets);
   $("tab-assets").addEventListener("click", () => showTab("assets"));

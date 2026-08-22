@@ -332,3 +332,56 @@ describe("총액 하한 — 지수 표기가 argv로 흘러들지 않는다 (심
     expect(res.status).toBe(200);
   });
 });
+
+describe("응답에 절대경로가 실리지 않는다 (심사 M1의 나머지 범위)", () => {
+  it("핸들러가 경로를 돌려줘도 관문이 가린다 — 새 핸들러가 투영을 빠뜨려도 새지 않게", async () => {
+    const handlers = makeHandlers({
+      scan: vi.fn(async () => ({
+        snapshotPath: "/synthetic/home/.local/share/ctk/catalog/machines/m/snapshots/x.jsonl",
+        counts: { plugin: 1 },
+      })),
+    });
+    const server = await startBoundActions(handlers);
+    const res = await fetch(`${server.url}/api/actions`, {
+      method: "POST",
+      headers: actionHeaders(server),
+      body: JSON.stringify({ action: "scan" }),
+    });
+    const body = await res.text();
+    expect(res.status).toBe(200);
+    expect(body).not.toContain("/synthetic/home");
+    expect(body).not.toContain(".local/share");
+    // 액션이 성공했다는 사실 자체는 유지된다 — 가릴 뿐 실패로 뒤집지 않는다.
+    expect(body).toContain('"ok":true');
+    expect(body).toContain("plugin");
+  });
+
+  it("중첩된 배열·객체 안의 경로도 가린다", async () => {
+    const handlers = makeHandlers({
+      rollback: vi.fn(async () => ({ files: [{ path: "/etc/passwd" }, { path: "/synthetic/home/.claude/settings.json" }] })),
+    });
+    const server = await startBoundActions(handlers);
+    const body = await (
+      await fetch(`${server.url}/api/actions`, {
+        method: "POST",
+        headers: actionHeaders(server),
+        body: JSON.stringify({ action: "rollback" }),
+      })
+    ).text();
+    expect(body).not.toContain("/etc/passwd");
+    expect(body).not.toContain("/synthetic/home");
+  });
+
+  it("경로가 아닌 값은 건드리지 않는다 — 가리기가 정보를 통째로 지우지 않는다", async () => {
+    const handlers = makeHandlers({ scan: vi.fn(async () => ({ count: 42, name: "synth-a", ratio: 0.5 })) });
+    const server = await startBoundActions(handlers);
+    const body = (await (
+      await fetch(`${server.url}/api/actions`, {
+        method: "POST",
+        headers: actionHeaders(server),
+        body: JSON.stringify({ action: "scan" }),
+      })
+    ).json()) as { data: { count: number; name: string; ratio: number } };
+    expect(body.data).toEqual({ count: 42, name: "synth-a", ratio: 0.5 });
+  });
+});

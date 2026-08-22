@@ -99,6 +99,46 @@ export class EstimateTokenStore {
 }
 
 /**
+ * 액션 응답에 실을 값을 **명시적으로 고른다.**
+ *
+ * ⚠️ **CLI summary를 그대로 통과시키면 절대경로가 브라우저로 나간다.** 네 액션의 summary가
+ * 전부 경로 필드를 갖고 있다 — `ScanSummary`(catalogPath·snapshotPath·runLogPath) ·
+ * `RollbackSummary`(journalPath) · `MoveSummary`(journalPath) · `RunGenSummary`(indexPath).
+ * 심사 M1을 위생 에러 메시지에서 고치면서 **액션 응답 전체를 감사하지 않아** 같은 유출이
+ * 성공 응답에 남아 있었다(브라우저 실측으로 발견).
+ *
+ * 화이트리스트로 고르는 이유: 제외 목록으로 두면 새 필드가 추가될 때 조용히 새어 나간다.
+ * 여기 적히지 않은 값은 나가지 않는다.
+ */
+function scanView(s: Awaited<ReturnType<typeof runScan>>) {
+  return {
+    asset_counts: s.assetCounts,
+    installation_count: s.installationCount,
+    toggle_count: s.toggleCount,
+    scope_distribution: s.scopeDistribution,
+    duration_ms: s.durationMs,
+  };
+}
+
+function rollbackView(s: Awaited<ReturnType<typeof runRollback>>) {
+  return { asset_id: s.assetId, action: s.action };
+}
+
+function moveView(s: Awaited<ReturnType<typeof runMove>>) {
+  return { asset_id: s.assetId, kind: s.kind, from: s.from, to: s.to };
+}
+
+function genView(s: Awaited<ReturnType<typeof runGenCli>>) {
+  return {
+    generated: s.results.length,
+    stopped_early: s.stoppedEarly,
+    injection_findings: s.injectionFindingsTotal,
+    skipped: s.plan.skipped,
+    empty_asset_ids: s.plan.emptyAssetIds,
+  };
+}
+
+/**
  * CLI가 던지는 실패를 웹 상태 코드로 분류한다. **분류되지 않은 예외는 500으로 남긴다** —
  * 여기서 넓게 잡아 400으로 바꾸면 서버 결함이 사용자 입력 오류로 보고된다.
  */
@@ -137,19 +177,19 @@ export function createActionHandlers(options: CreateActionHandlersOptions = {}):
   let cumulativeApprovedUsd = 0;
 
   return {
-    scan: () => rethrowClassified(() => runScan()),
+    scan: () => rethrowClassified(async () => scanView(await runScan())),
 
-    rollback: () => rethrowClassified(() => runRollback({ last: true })),
+    rollback: () => rethrowClassified(async () => rollbackView(await runRollback({ last: true }))),
 
     move: (request) =>
-      rethrowClassified(() =>
-        runMove({
+      rethrowClassified(async () =>
+        moveView(await runMove({
           assetId: request.asset_id,
           to: request.to,
           ...(request.to_project_index === undefined ? {} : { toProjectIndex: request.to_project_index }),
           ...(request.from === undefined ? {} : { from: request.from }),
           ...(request.from_project_index === undefined ? {} : { fromProjectIndex: request.from_project_index }),
-        }),
+        })),
       ),
 
     // ⓐ dry-run 경로를 그대로 쓴다 — 동기 함수이며 API 호출도 서브프로세스 spawn도 하지 않는다(AC-3.8).
@@ -192,8 +232,8 @@ export function createActionHandlers(options: CreateActionHandlersOptions = {}):
       }
       cumulativeApprovedUsd += approved.maxTotalUsd;
 
-      return rethrowClassified(() =>
-        runGenCli({
+      return rethrowClassified(async () =>
+        genView(await runGenCli({
           // 승인 시점에 센 호출 수를 상한으로 되꽂는다 — 그 사이 대상이 늘어도 총액은 유지된다.
           maxAssets: Math.min(approved.maxAssets, approved.callCount),
           // `runGen`이 받는 값은 **호출당** 상한이다. 총액을 호출 수로 나눈 값을 넘겨야
@@ -205,7 +245,7 @@ export function createActionHandlers(options: CreateActionHandlersOptions = {}):
           // 소비한 estimate 토큰이다. 토큰 검사 **뒤에만** 이 플래그가 붙는다는 순서가
           // 이 값의 정당성 전부다.
           yes: true,
-        }),
+        })),
       );
     },
   };
