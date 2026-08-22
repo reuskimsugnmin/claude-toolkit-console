@@ -231,3 +231,12 @@ dir별로 분리된다")의 강한 형태다.
 
 cwd를 임시 루트 아래(`<tmpdir>/ctk-agent-probe-cwd-<uid>`)로 옮겨 해소했다. B3(고정 경로
 재사용으로 `.claude.json`의 `projects.*` 누적 방지)은 경로 문자열이 실행마다 같으므로 유지된다.
+
+## 자산 유형별 스코프·토글 (CLAUDE.md에서 이관)
+
+| 자산 유형 | 스코프가 사는 곳 | 끄는 방법 |
+|---|---|---|
+| 플러그인 | **설치 스코프**는 `~/.claude/plugins/installed_plugins.json` · **활성 여부**는 `settings.json`의 `enabledPlugins`(값은 boolean뿐) | `claude plugin disable -s user\|project\|local` |
+| MCP 서버 | `~/.claude.json` 루트 `mcpServers`(user) · 프로젝트 엔트리 `mcpServers`(local) · `.mcp.json`(project) · 플러그인 번들 | **CLI 명령 없음.** 단 상태는 프로젝트별 `enabledMcpServers`/`disabledMcpServers`에 기록됨 — `/mcp` UI로 토글 |
+| 전역 스킬 | `~/.claude/skills/<name>/` 존재 여부 | **명령 없음** — 디렉터리 이동 |
+| CLI 도구 | PATH | 해당 없음 (상시 토큰 0) |
