@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -63,16 +63,27 @@ describe("probe/harness/cwd-guard — iter 8 · B3(고정 cwd)·M2(상위 경로
     expect(cwd.startsWith(homedir() + path.sep)).toBe(false);
   });
 
-  it("기본 agent-probe cwd는 이 환경에서 실제로 가드를 통과한다", () => {
-    // $HOME/.claude가 존재하는 상태(모든 Claude Code 사용자의 상태)에서 도는 것이 핵심이다.
-    expect(existsSync(path.join(homedir(), ".claude"))).toBe(true);
+  it("기본 agent-probe cwd는 실제 반환값 그대로 가드를 통과한다", () => {
+    // 합성 경로가 아니라 프로덕션이 실제로 쓰는 값을 넣는다. 어떤 머신에서도 통과해야 한다 —
+    // 통과하지 못하면 그 머신에서는 `ctk agent-probe`를 실행할 수 없다는 뜻이다.
     expect(() => assertNoAncestorConfig(resolveAgentProbeCwd())).not.toThrow();
   });
 
-  it("홈 아래 경로를 주면 여전히 거부된다 — 위 두 케이스가 가드를 약화시켜 통과한 것이 아님을 보인다", () => {
-    expect(() => assertNoAncestorConfig(path.join(homedir(), ".cache", "ctk", "probe-cwd"))).toThrow(
-      SealCwdAncestorConfigError,
-    );
+  it("홈 아래 고정 cwd(이전 설계)는 홈에 .claude/가 있으면 거부된다 — 위 케이스가 가드를 약화시켜 통과한 것이 아님을 보인다", () => {
+    // `$HOME/.claude` 존재 여부는 머신마다 다르므로(CI 러너에는 없다) 그 조건을 합성해서 만든다.
+    // 이 대조가 없으면 위 케이스는 "가드가 아무것도 안 한다"와 구분되지 않는다.
+    root = mkdtempSync(path.join(tmpdir(), "ctk-cwd-guard-oldshape-"));
+    const fakeHome = path.join(root, "home");
+    mkdirSync(path.join(fakeHome, ".claude"), { recursive: true });
+    const oldStyleCwd = path.join(fakeHome, ".cache", "ctk", "probe-cwd");
+    mkdirSync(oldStyleCwd, { recursive: true });
+    expect(() => assertNoAncestorConfig(oldStyleCwd)).toThrow(SealCwdAncestorConfigError);
+
+    // 같은 트리에서 홈 **밖**(임시 루트 아래)의 새 설계 경로는 통과한다 — 차이를 만드는 것이
+    // 가드의 완화가 아니라 cwd 위치임을 보인다.
+    const newStyleCwd = resolveAgentProbeCwd(root, 1);
+    mkdirSync(newStyleCwd, { recursive: true });
+    expect(() => assertNoAncestorConfig(newStyleCwd)).not.toThrow();
   });
 
   it("cwd 경로는 실행마다 같다 — B3(고정 경로)의 목적은 그대로 지켜진다", () => {
