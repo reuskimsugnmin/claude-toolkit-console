@@ -1,7 +1,9 @@
+import { randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ConsoleViewModel } from "@ctk/core";
-import { UI_HTML } from "./ui-page.js";
+import { buildUiPage } from "./ui-page.js";
 import { handleActionRequest, type ActionRouteDeps } from "./routes/actions.js";
+import { checkLoopbackHost } from "./origin-guard.js";
 
 /**
  * web/server/readonly-routes.ts — Step 6a. **GET/HEAD만 등록한다.**
@@ -32,6 +34,11 @@ export interface ReadonlyRouteDeps {
    * (쓰기 경로가 하나도 없다 ⇒ 토큰·CSRF 불요)가 구조적으로 유지된다.
    */
   actions?: ActionRouteDeps | undefined;
+  /**
+   * 이 서버가 듣고 있는 포트. **조회 경로의 Host 검사에 필요하다**(H1) — DNS rebinding은
+   * 조회도 표적이므로 액션 모드가 아니어도 이 값이 있어야 한다.
+   */
+  port: number;
 }
 
 /** 이 서버가 응답하는 유일한 메서드 집합. `Allow` 헤더와 같은 출처를 쓴다. */
@@ -93,7 +100,7 @@ function sendJson(res: ServerResponse, status: number, body: unknown, isHead: bo
   res.end(isHead ? undefined : payload);
 }
 
-function sendHtml(res: ServerResponse, status: number, body: string, isHead: boolean): void {
+function sendHtml(res: ServerResponse, status: number, body: string, isHead: boolean, nonce: string): void {
   res.writeHead(status, {
     "content-type": "text/html; charset=utf-8",
     "content-length": String(Buffer.byteLength(body)),
@@ -102,7 +109,12 @@ function sendHtml(res: ServerResponse, status: number, body: string, isHead: boo
     // UI는 인라인 스타일·스크립트 한 장이고 외부에서 아무것도 불러오지 않는다.
     // 카탈로그 문서에 심긴 문자열이 어떤 원격 호출도 만들 수 없게 못 박는다(인젝션 방어).
     "content-security-policy":
-      "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'none'; base-uri 'none'",
+      // `frame-ancestors`는 `default-src`가 커버하지 않는다(CSP 명세상 fallback 대상이 아님) —
+      // 액션 버튼이 붙는 화면이므로 클릭재킹을 명시적으로 막는다(심사 M4).
+      // `script-src`에 `'unsafe-inline'`을 쓰지 않는다 — 그것이 있으면 `javascript:` URI가
+      // CSP 층에서 허용되어 악성 `repo_url`이 클릭 한 번에 실행된다(심사 H3).
+      `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self'; ` +
+      "form-action 'none'; base-uri 'none'; frame-ancestors 'none'",
     "referrer-policy": "no-referrer",
   });
   res.end(isHead ? undefined : body);
@@ -119,6 +131,15 @@ function sendText(res: ServerResponse, status: number, body: string, isHead: boo
 }
 
 export function handleReadonlyRequest(req: IncomingMessage, res: ServerResponse, deps: ReadonlyRouteDeps): void {
+  // ⓪ Host 검사가 **모든 경로보다 먼저**다(H1). 조회도 DNS rebinding의 표적이다 —
+  //    공격자 도메인을 127.0.0.1로 되돌린 페이지가 GET /api/view-model로 이 머신의
+  //    전 툴 목록을 읽어갈 수 있었다. 토큰은 요구하지 않는다(조회는 무인증 유지).
+  const hostVerdict = checkLoopbackHost(req.headers, { port: deps.port });
+  if (!hostVerdict.ok) {
+    sendJson(res, 403, { error: "forbidden", reason: hostVerdict.reason }, false);
+    return;
+  }
+
   const pathname = (req.url ?? "/").split("?")[0] ?? "/";
   const route = matchRoute(pathname);
 
@@ -130,7 +151,13 @@ export function handleReadonlyRequest(req: IncomingMessage, res: ServerResponse,
       sendJson(res, 405, { error: "method_not_allowed", allowed: ["POST"] }, false);
       return;
     }
-    void handleActionRequest(req, res, deps.actions);
+    // 클라이언트가 조기 절단하면 `send()`가 던질 수 있다 — unhandled rejection은 Node 15+에서
+    // 프로세스를 죽인다. 관문 통과 전에도 발생 가능하므로 토큰 없이도 시도할 수 있다(심사 L3).
+    void handleActionRequest(req, res, deps.actions).catch((err: unknown) => {
+      console.error("[action_route_failed]", err);
+      if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
+      res.end(`${JSON.stringify({ ok: false, code: "action_failed" })}\n`);
+    });
     return;
   }
 
@@ -143,9 +170,12 @@ export function handleReadonlyRequest(req: IncomingMessage, res: ServerResponse,
   const isHead = req.method === "HEAD";
 
   switch (route.kind) {
-    case "ui":
-      sendHtml(res, 200, UI_HTML, isHead);
+    case "ui": {
+      // nonce는 응답마다 새로 만든다 — 고정하면 공격자가 그 값을 알고 스크립트를 심을 수 있다.
+      const nonce = randomBytes(16).toString("base64");
+      sendHtml(res, 200, buildUiPage(nonce), isHead, nonce);
       return;
+    }
     case "health":
       sendJson(res, 200, { ok: true }, isHead);
       return;

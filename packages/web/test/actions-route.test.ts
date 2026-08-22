@@ -44,17 +44,6 @@ async function startReadonly(): Promise<ListeningServer> {
   return running;
 }
 
-async function startWithActions(handlers: ActionHandlers = makeHandlers()): Promise<ListeningServer> {
-  const server = await startReadonlyServer({
-    getViewModel: () => VIEW_MODEL,
-    getAssetDoc: () => null,
-    actions: { guard: { sessionToken: TOKEN, port: 0 }, handlers },
-  });
-  // 관문은 실제 포트를 기준으로 대조해야 하므로, 기동 후 알아낸 포트를 되꽂는다.
-  running = server;
-  return server;
-}
-
 /** 액션 모드 서버는 포트를 알아야 관문을 만들 수 있다 — 포트를 먼저 잡고 다시 만든다. */
 async function startBoundActions(handlers: ActionHandlers = makeHandlers()): Promise<ListeningServer> {
   const probe = await startReadonlyServer({ getViewModel: () => VIEW_MODEL, getAssetDoc: () => null, port: 0 });
@@ -173,7 +162,7 @@ describe("화이트리스트 — 자유 문자열이 들어갈 자리가 없다"
     const res = await fetch(`${server.url}/api/actions`, {
       method: "POST",
       headers: actionHeaders(server),
-      body: JSON.stringify({ action: "gen_estimate", max_budget_usd: 1, catalog: "/tmp/evil" }),
+      body: JSON.stringify({ action: "gen_estimate", max_total_usd: 1, catalog: "/tmp/evil" }),
     });
     expect(res.status).toBe(400);
   });
@@ -218,7 +207,7 @@ describe("gen 2-phase — 승인 없이는 어떤 API 호출도 없다 (F6)", ()
     const res = await fetch(`${server.url}/api/actions`, {
       method: "POST",
       headers: actionHeaders(server),
-      body: JSON.stringify({ action: "gen_estimate", max_budget_usd: 1 }),
+      body: JSON.stringify({ action: "gen_estimate", max_total_usd: 1 }),
     });
     expect(res.status).toBe(200);
     expect(handlers.genEstimate).toHaveBeenCalledOnce();
@@ -234,7 +223,7 @@ describe("gen 2-phase — 승인 없이는 어떤 API 호출도 없다 (F6)", ()
     const res = await fetch(`${server.url}/api/actions`, {
       method: "POST",
       headers: actionHeaders(server),
-      body: JSON.stringify({ action: "gen_execute", max_budget_usd: 1 }),
+      body: JSON.stringify({ action: "gen_execute", max_total_usd: 1 }),
     });
     expect(res.status).toBe(400);
     expect(handlers.genExecute).not.toHaveBeenCalled();
@@ -250,7 +239,7 @@ describe("gen 2-phase — 승인 없이는 어떤 API 호출도 없다 (F6)", ()
     const res = await fetch(`${server.url}/api/actions`, {
       method: "POST",
       headers: actionHeaders(server),
-      body: JSON.stringify({ action: "gen_execute", max_budget_usd: 1, estimate_token: "forged" }),
+      body: JSON.stringify({ action: "gen_execute", max_total_usd: 1, estimate_token: "forged" }),
     });
     expect(res.status).toBe(400);
     expect((await res.json()) as { code: string }).toMatchObject({ code: "estimate_token_invalid" });
@@ -262,9 +251,9 @@ describe("gen 2-phase — 승인 없이는 어떤 API 호출도 없다 (F6)", ()
     const res = await fetch(`${server.url}/api/actions`, {
       method: "POST",
       headers: actionHeaders(server),
-      body: JSON.stringify({ action: "gen_estimate", max_budget_usd: 999, max_assets: 9999 }),
+      body: JSON.stringify({ action: "gen_estimate", max_total_usd: 999, max_assets: 9999 }),
     });
-    expect(handlers.genEstimate).toHaveBeenCalledWith({ maxAssets: 25, maxBudgetUsd: 2 });
+    expect(handlers.genEstimate).toHaveBeenCalledWith({ maxAssets: 25, maxTotalUsd: 2 });
     expect((await res.json()) as { data: { clamped: boolean } }).toMatchObject({ data: { clamped: true } });
   });
 });

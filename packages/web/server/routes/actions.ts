@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { clampGenParams, parseWebActionRequest, type WebActionRequest } from "@ctk/core";
 import { checkActionRequest, type ActionGuardExpectation } from "../origin-guard.js";
@@ -40,11 +41,11 @@ export interface ActionHandlers {
   rollback: () => Promise<unknown>;
   move: (request: Extract<WebActionRequest, { action: "move" }>) => Promise<unknown>;
   /** **API 호출·서브프로세스 spawn 없이** 비용만 계산하고 실행 토큰을 발급한다(F6 ⓐ). */
-  genEstimate: (params: { maxAssets: number; maxBudgetUsd: number }) => Promise<{ estimateToken: string; data: unknown }>;
+  genEstimate: (params: { maxAssets: number; maxTotalUsd: number }) => Promise<{ estimateToken: string; data: unknown }>;
   /** ⓐ가 발급한 토큰이 유효할 때만 실제 실행한다(F6 ⓑ). */
   genExecute: (params: {
     maxAssets: number;
-    maxBudgetUsd: number;
+    maxTotalUsd: number;
     estimateToken: string;
   }) => Promise<unknown>;
 }
@@ -129,7 +130,7 @@ export async function dispatchAction(request: WebActionRequest, handlers: Action
       return handlers.move(request);
     case "gen_estimate": {
       const clamped = clampGenParams(request);
-      const result = await handlers.genEstimate({ maxAssets: clamped.maxAssets, maxBudgetUsd: clamped.maxBudgetUsd });
+      const result = await handlers.genEstimate({ maxAssets: clamped.maxAssets, maxTotalUsd: clamped.maxTotalUsd });
       // 클램프 사실을 응답에 싣는다 — 화면이 "요청한 대로 돌았다"고 오해하지 않게.
       return { ...(result.data as object), estimate_token: result.estimateToken, clamped: clamped.clamped };
     }
@@ -137,7 +138,7 @@ export async function dispatchAction(request: WebActionRequest, handlers: Action
       const clamped = clampGenParams(request);
       return handlers.genExecute({
         maxAssets: clamped.maxAssets,
-        maxBudgetUsd: clamped.maxBudgetUsd,
+        maxTotalUsd: clamped.maxTotalUsd,
         estimateToken: request.estimate_token,
       });
     }
@@ -193,8 +194,21 @@ export async function handleActionRequest(
     const data = await dispatchAction(request, deps.handlers);
     send(200, { ok: true, data });
   } catch (err) {
-    const code = err instanceof ActionError ? err.code : "action_failed";
     // 실패를 200으로 삼키지 않는다 — 화면이 "됐다"고 표시하면 사용자는 확인하지 않는다.
-    send(STATUS_BY_CODE[code], { ok: false, code, message: err instanceof Error ? err.message : String(err) });
+    if (err instanceof ActionError) {
+      // 분류된 실패만 메시지를 그대로 낸다 — 우리가 쓴 문장이라 무엇이 실리는지 안다.
+      send(STATUS_BY_CODE[err.code], { ok: false, code: err.code, message: err.message });
+      return;
+    }
+    // 미분류 예외의 원문에는 절대경로·내부 상태가 섞일 수 있다(심사 M1). 전문은 서버
+    // 터미널에만 남기고, 응답에는 그 로그를 찾을 상관 id만 낸다 — 거부에 진단 경로를
+    // 함께 주되 내용을 밖으로 내보내지는 않는다(안전 원칙 6).
+    const ref = randomBytes(4).toString("hex");
+    console.error(`[action_failed ${ref}]`, err);
+    send(500, {
+      ok: false,
+      code: "action_failed",
+      message: `실행이 실패했다 — ctk를 띄운 터미널의 [action_failed ${ref}] 로그를 보라`,
+    });
   }
 }

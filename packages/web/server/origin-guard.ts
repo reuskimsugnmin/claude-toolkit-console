@@ -69,23 +69,50 @@ export function timingSafeEqualString(a: string, b: string): boolean {
   return diff === 0;
 }
 
+function readSingleHeader(
+  headers: Readonly<Record<string, string | string[] | undefined>>,
+  name: string,
+): string | undefined {
+  const raw = headers[name];
+  // 같은 헤더가 여러 번 오면 어느 것이 진짜인지 판정할 수 없다 — 통과시키지 않는다.
+  if (Array.isArray(raw)) return undefined;
+  return raw;
+}
+
+/**
+ * **Host 축만** 판정한다 — 조회 경로와 액션 경로가 함께 쓴다.
+ *
+ * ⚠️ **DNS rebinding은 조회도 표적이다.** 처음 구현은 이 검사를 액션 분기 안에만 두었는데,
+ * 그러면 공격자 도메인을 `127.0.0.1`로 되돌린 페이지가 `GET /api/view-model`로 **이 머신에
+ * 설치된 전 툴 목록**을 읽어갈 수 있었다(보안 심사 H1, 실측 확인됨). 루프백 바인딩이 그
+ * 방어라고 적어 두었지만, rebinding은 정확히 루프백 바인딩을 무력화하는 기법이다.
+ *
+ * 조회는 무인증으로 남긴다(토큰을 요구하지 않는다) — 막아야 할 것은 "다른 출처가 우리 포트로
+ * 말을 거는 것"이지 "사용자가 브라우저로 보는 것"이 아니다.
+ */
+export function checkLoopbackHost(
+  headers: Readonly<Record<string, string | string[] | undefined>>,
+  expected: { port: number },
+): ActionGuardVerdict {
+  const host = readSingleHeader(headers, "host");
+  if (host === undefined) return { ok: false, reason: "missing_host" };
+  const parsedHost = splitHostPort(host);
+  if (parsedHost === null || !ALLOWED_HOSTNAMES.has(parsedHost.hostname)) return { ok: false, reason: "bad_host" };
+  // 포트 부재도 거부한다 — 이 모듈은 "판정할 수 없으면 통과시키지 않는다"를 원칙으로 삼는데
+  // 포트만 예외로 두면 그 축이 반쯤 사라진다(심사 L2). 브라우저는 비표준 포트를 항상 붙인다.
+  if (parsedHost.port !== String(expected.port)) return { ok: false, reason: "bad_host" };
+  return { ok: true };
+}
+
 export function checkActionRequest(
   headers: Readonly<Record<string, string | string[] | undefined>>,
   expected: ActionGuardExpectation,
 ): ActionGuardVerdict {
-  const header = (name: string): string | undefined => {
-    const raw = headers[name];
-    // 같은 헤더가 여러 번 오면 어느 것이 진짜인지 판정할 수 없다 — 통과시키지 않는다.
-    if (Array.isArray(raw)) return undefined;
-    return raw;
-  };
+  const header = (name: string): string | undefined => readSingleHeader(headers, name);
 
-  // ① Host — DNS rebinding 방어의 핵심. 없으면 거부다.
-  const host = header("host");
-  if (host === undefined) return { ok: false, reason: "missing_host" };
-  const parsedHost = splitHostPort(host);
-  if (parsedHost === null || !ALLOWED_HOSTNAMES.has(parsedHost.hostname)) return { ok: false, reason: "bad_host" };
-  if (parsedHost.port !== null && parsedHost.port !== String(expected.port)) return { ok: false, reason: "bad_host" };
+  // ① Host — DNS rebinding 방어의 핵심. 조회 경로와 **같은 판정기**를 쓴다.
+  const hostVerdict = checkLoopbackHost(headers, expected);
+  if (!hostVerdict.ok) return hostVerdict;
 
   // ② Origin — 브라우저가 붙이는 교차 출처 표시. 우리 자신이 아니면 거부.
   //    브라우저가 아닌 클라이언트(curl 등)는 Origin을 붙이지 않는데, 그것을 통과시키면

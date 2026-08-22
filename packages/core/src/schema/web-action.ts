@@ -47,7 +47,15 @@ const MoveActionSchema = z
  */
 const GenParamsShape = {
   max_assets: z.number().int().positive().optional(),
-  max_budget_usd: z.number().positive(),
+  /**
+   * **이 승인 1회로 지출할 총액 상한.** 호출당 상한이 아니다.
+   *
+   * ⚠️ 처음에는 `max_budget_usd`라는 이름으로 받아 그대로 `runGen`에 넘겼는데, `runGen`의
+   * 그 인자는 **호출당** 상한이고 자산 1건마다 `claude -p`가 1회 돈다. 승인 화면에는 $2가
+   * 뜨는데 자산 25건이면 실제 상한은 $50이었다(보안 심사 H2). 이름을 총액으로 바꾸고
+   * 호출당 값은 여기서 나눠 계산한다 — 사용자가 승인하는 숫자와 실제 상한이 같아야 한다.
+   */
+  max_total_usd: z.number().positive(),
 } as const;
 
 const GenEstimateActionSchema = z.object({ action: z.literal("gen_estimate"), ...GenParamsShape }).strict();
@@ -81,19 +89,32 @@ export function parseWebActionRequest(data: unknown): WebActionRequest {
  * 서버가 강제하는 상한. 웹 버튼은 **사용자가 보지 않는 시점**에 유료 세션을 띄울 수 있는
  * 표면이므로(nightly·연타), 클라이언트가 보낸 값을 그대로 믿지 않고 여기서 자른다.
  */
-export const WEB_GEN_MAX_BUDGET_USD = 2 as const;
+/** 승인 1회로 지출할 수 있는 **총액** 상한. 호출당 상한이 아니다. */
+export const WEB_GEN_MAX_TOTAL_USD = 2 as const;
 export const WEB_GEN_MAX_ASSETS = 25 as const;
 
 export interface ClampedGenParams {
   maxAssets: number;
-  maxBudgetUsd: number;
+  /** 승인 1회의 총 지출 상한 — 사용자가 화면에서 승인하는 숫자다. */
+  maxTotalUsd: number;
   /** 요청값이 상한에 걸려 줄어들었는가 — 화면이 "요청한 대로 돌았다"고 오해하지 않게 알린다. */
   clamped: boolean;
 }
 
-export function clampGenParams(request: { max_assets?: number | undefined; max_budget_usd: number }): ClampedGenParams {
+export function clampGenParams(request: { max_assets?: number | undefined; max_total_usd: number }): ClampedGenParams {
   const requestedAssets = request.max_assets ?? WEB_GEN_MAX_ASSETS;
   const maxAssets = Math.min(requestedAssets, WEB_GEN_MAX_ASSETS);
-  const maxBudgetUsd = Math.min(request.max_budget_usd, WEB_GEN_MAX_BUDGET_USD);
-  return { maxAssets, maxBudgetUsd, clamped: maxAssets !== requestedAssets || maxBudgetUsd !== request.max_budget_usd };
+  const maxTotalUsd = Math.min(request.max_total_usd, WEB_GEN_MAX_TOTAL_USD);
+  return { maxAssets, maxTotalUsd, clamped: maxAssets !== requestedAssets || maxTotalUsd !== request.max_total_usd };
+}
+
+/**
+ * 총액 상한을 실제 호출 수로 나눠 **호출당** 상한을 만든다 — `runGen`이 받는 값이 이것이다.
+ *
+ * `callCount`는 dry-run이 센 실제 대상 자산 수다. 상한(`maxAssets`)이 아니라 실제 수로 나눠야
+ * 자산이 적을 때 불필요하게 작은 호출당 예산이 걸리지 않는다. 실행 시점에는 이 `callCount`를
+ * `maxAssets`로 되꽂아 총액이 그대로 유지된다.
+ */
+export function toPerCallBudgetUsd(maxTotalUsd: number, callCount: number): number {
+  return maxTotalUsd / Math.max(callCount, 1);
 }

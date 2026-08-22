@@ -64,10 +64,36 @@ export interface RepoLink {
 export function toRepoLink(source: MarketplaceSource): RepoLink {
   switch (source.source) {
     case "github":
-      return { kind: "github", url: `https://github.com/${source.repo}` };
+      // repo 슬러그에 `..`·`/`가 섞여도 결과는 https 출처를 벗어나지 못하므로 스킴 검증으로 충분하다.
+      return { kind: "github", url: safeHttpUrlOrNull(`https://github.com/${source.repo}`) };
     case "git":
-      return { kind: "git", url: source.url.replace(/\.git$/, "") };
+      return { kind: "git", url: safeHttpUrlOrNull(source.url.replace(/\.git$/, "")) };
     case "directory":
       return { kind: "directory", url: null };
+  }
+}
+
+/** 링크로 렌더해도 되는 스킴. `javascript:`·`data:`·`file:`은 여기 없다. */
+const SAFE_REPO_SCHEMES = new Set(["https:", "http:"]);
+
+/**
+ * 원문 URL이 **브라우저에서 링크로 만들어도 안전한 스킴**인지 확인한다. 아니면 `null`이다.
+ *
+ * ⚠️ **이 검사가 없으면 저장소 링크가 XSS가 된다**(보안 심사 H3). `known_marketplaces.json`은
+ * 같은 머신의 다른 프로세스가 쓸 수 있는 파일이고(위협 모델 ⓒ), 거기에
+ * `{"source":"git","url":"javascript:fetch(...)"}`를 넣으면 그 문자열이 `repo_url`로 카탈로그에
+ * 들어가 콘솔 페이지의 `a.href`가 된다. CSP `script-src 'unsafe-inline'`은 `javascript:` URI를
+ * 막지 못하므로 클릭 한 번에 페이지 출처에서 스크립트가 실행된다 — 액션 모드에서는 그것이
+ * 곧 세션 토큰 탈취다.
+ *
+ * `git@host:path` 같은 scp 형식은 URL로 파싱되지 않으므로 링크로 만들지 않는다(값 자체는
+ * `repo_source`로 남아 "링크 없음"과 "미수집"이 여전히 구분된다).
+ */
+function safeHttpUrlOrNull(raw: string): string | null {
+  try {
+    const url = new URL(raw);
+    return SAFE_REPO_SCHEMES.has(url.protocol) ? url.toString() : null;
+  } catch {
+    return null;
   }
 }

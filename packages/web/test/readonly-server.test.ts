@@ -1,12 +1,29 @@
+import { request as httpRequest } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ConsoleViewModel } from "@ctk/core";
 import { LOOPBACK_HOST, matchRoute, startReadonlyServer, type ListeningServer } from "../server/app.js";
-import { UI_HTML } from "../server/ui-page.js";
+import { UI_HTML, buildUiPage } from "../server/ui-page.js";
 
 /**
  * Step 6a 수용 기준의 실행형 검증. **"GET만 등록했다"를 코드로 확인하지 않고 실제 요청을
  * 보내 거부되는지 본다** — 규칙 존재 ≠ 규칙이 막음(CLAUDE.md 검증 절).
  */
+
+
+/**
+ * `fetch`는 `host`를 금지 헤더로 취급해 조용히 무시한다 — Host 검사를 시험하려면 raw HTTP로
+ * 직접 보내야 한다. (이걸 모르고 fetch로 쓰면 테스트가 통과해도 아무것도 검증하지 않는다.)
+ */
+function rawGet(port: number, urlPath: string, headers: Record<string, string>): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: "127.0.0.1", port, path: urlPath, method: "GET", headers }, (res) => {
+      res.resume();
+      res.on("end", () => resolve(res.statusCode ?? 0));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
 
 const VIEW_MODEL: ConsoleViewModel = {
   schema_version: 1,
@@ -214,5 +231,72 @@ describe("UI 한 장 — Step 6a 수용 기준의 회귀 테스트", () => {
 
   it("로컬 출처는 링크로 렌더하지 않는다", () => {
     expect(UI_HTML).toContain('td.textContent = "로컬("');
+  });
+});
+
+describe("H1 회귀 — DNS rebinding은 조회도 표적이다", () => {
+  it("Host가 공격자 도메인이면 조회 API도 403이다", async () => {
+    const server = await start();
+    expect(await rawGet(server.port, "/api/view-model", { host: `evil.example:${server.port}` })).toBe(403);
+  });
+
+  it("문서 조회 경로도 같은 관문을 거친다", async () => {
+    const server = await start();
+    expect(await rawGet(server.port, "/api/assets/synth-a/doc/annotation", { host: `evil.example:${server.port}` })).toBe(403);
+  });
+
+  it("UI 페이지도 막힌다", async () => {
+    const server = await start();
+    expect(await rawGet(server.port, "/", { host: `evil.example:${server.port}` })).toBe(403);
+  });
+
+  it("루프백이지만 포트가 다른 Host도 거부한다", async () => {
+    const server = await start();
+    expect(await rawGet(server.port, "/api/view-model", { host: `127.0.0.1:${server.port + 1}` })).toBe(403);
+  });
+
+  it("raw HTTP로 정상 Host를 주면 통과한다 — 위 케이스들이 raw 경로 자체의 실패가 아님을 보인다", async () => {
+    const server = await start();
+    expect(await rawGet(server.port, "/api/view-model", { host: `127.0.0.1:${server.port}` })).toBe(200);
+  });
+
+  it("정상 요청은 통과한다 — 위 케이스들이 '전부 403'과 구분됨을 보인다", async () => {
+    const server = await start();
+    expect((await fetch(`${server.url}/api/view-model`)).status).toBe(200);
+  });
+});
+
+describe("H3 회귀 — CSP nonce와 스킴 검증", () => {
+  it("script-src에 unsafe-inline이 없다 — 있으면 javascript: URI가 허용된다", async () => {
+    const server = await start();
+    const csp = (await fetch(`${server.url}/`)).headers.get("content-security-policy") ?? "";
+    expect(csp).toContain("script-src 'nonce-");
+    expect(csp).not.toMatch(/script-src[^;]*unsafe-inline/);
+  });
+
+  it("nonce는 응답마다 다르다 — 고정하면 공격자가 그 값을 알고 스크립트를 심는다", async () => {
+    const server = await start();
+    const a = (await fetch(`${server.url}/`)).headers.get("content-security-policy") ?? "";
+    const b = (await fetch(`${server.url}/`)).headers.get("content-security-policy") ?? "";
+    expect(a).not.toBe(b);
+  });
+
+  it("본문의 script 태그 nonce가 헤더의 nonce와 같다 — 다르면 UI가 아예 안 뜬다", async () => {
+    const server = await start();
+    const res = await fetch(`${server.url}/`);
+    const csp = res.headers.get("content-security-policy") ?? "";
+    const headerNonce = /script-src 'nonce-([^']+)'/.exec(csp)?.[1];
+    expect(headerNonce).toBeDefined();
+    expect(await res.text()).toContain(`<script nonce="${headerNonce}">`);
+  });
+
+  it("frame-ancestors none — default-src가 커버하지 않는 축이다", async () => {
+    const server = await start();
+    expect((await fetch(`${server.url}/`)).headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+  });
+
+  it("UI가 repo.url을 렌더 전에 스킴 검증한다", () => {
+    expect(buildUiPage("n")).toContain('u.protocol === "https:" || u.protocol === "http:"');
+    expect(UI_HTML).toContain("링크 형식 아님");
   });
 });

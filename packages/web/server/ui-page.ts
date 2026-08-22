@@ -18,7 +18,8 @@
  * 값은 전부 `textContent`로 넣는다(`innerHTML` 금지). 카탈로그 문서는 서드파티 원문 기반
  * 자동 생성물이므로(gen_source_trust) 그 안의 문자열을 마크업으로 해석하면 안 된다.
  */
-export const UI_HTML = `<!doctype html>
+function renderUiHtml(nonce: string): string {
+  return `<!doctype html>
 <html lang="ko">
 <head>
 <meta charset="utf-8">
@@ -126,7 +127,7 @@ export const UI_HTML = `<!doctype html>
   </section>
 </main>
 
-<script>
+<script nonce="${nonce}">
 const $ = (id) => document.getElementById(id);
 let VM = null;
 
@@ -158,10 +159,22 @@ function repoCell(row, repo) {
     // 로컬 디렉터리 출처 — 원격 URL이 없다. 죽은 링크를 만들지 않는다.
     td.className = "muted"; td.textContent = "로컬(" + repo.kind + ")";
   } else {
-    const a = document.createElement("a");
-    a.href = repo.url; a.textContent = repo.kind === "github" ? "GitHub" : "저장소";
-    a.target = "_blank"; a.rel = "noopener noreferrer";
-    td.appendChild(a);
+    // 심층 방어: 원천(known-marketplaces.schema.ts)이 이미 스킴을 걸렀지만, 카탈로그가
+    // 과거 버전으로 쓰였을 수 있으므로 렌더 직전에 한 번 더 본다. javascript:/data: 는
+    // 링크로 만들지 않는다(H3).
+    let safe = null;
+    try {
+      const u = new URL(repo.url);
+      if (u.protocol === "https:" || u.protocol === "http:") safe = u.href;
+    } catch (e) { safe = null; }
+    if (safe === null) {
+      td.className = "muted"; td.textContent = "링크 형식 아님(" + repo.kind + ")";
+    } else {
+      const a = document.createElement("a");
+      a.href = safe; a.textContent = repo.kind === "github" ? "GitHub" : "저장소";
+      a.target = "_blank"; a.rel = "noopener noreferrer";
+      td.appendChild(a);
+    }
   }
   row.appendChild(td);
 }
@@ -316,3 +329,17 @@ boot();
 </body>
 </html>
 `;
+}
+
+/**
+ * CSP nonce를 심어 렌더한다. **`script-src 'unsafe-inline'`을 쓰지 않는 이유가 이것이다** —
+ * `unsafe-inline`이 있으면 `javascript:` URI가 CSP 층에서 허용되어, 카탈로그에 심긴 악성
+ * `repo_url`이 클릭 한 번으로 실행된다(보안 심사 H3). nonce는 우리가 넣은 그 한 장의
+ * 스크립트만 허용한다.
+ */
+export function buildUiPage(nonce: string): string {
+  return renderUiHtml(nonce);
+}
+
+/** 테스트·회귀 검사용 — nonce 자리에 고정값을 넣은 렌더 결과. */
+export const UI_HTML = renderUiHtml("static-analysis-nonce");
