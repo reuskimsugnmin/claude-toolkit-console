@@ -60,6 +60,7 @@ function baseInput(overrides: Partial<BuildViewModelInput> = {}): BuildViewModel
     docPresence: new Map(),
     unusedExpensiveLimit: 5,
     now: NOW,
+    projects: [],
     ...overrides,
   };
 }

@@ -3,6 +3,8 @@ import path from "node:path";
 import {
   annotationMdPath,
   buildConsoleViewModel,
+  buildProjectChoices,
+  hashPath,
   machineDir,
   parseInstallation,
   parseUsageMetric,
@@ -12,7 +14,7 @@ import {
   type Installation,
   type UsageMetric,
 } from "@ctk/core";
-import { resolveHomeContext, type HomeContext } from "@ctk/probe";
+import { listKnownProjectPaths, resolveHomeContext, type HomeContext } from "@ctk/probe";
 import { listAllAssets, listAllOccupancy } from "@ctk/sync";
 import { startReadonlyServer, type AssetDocKind, type ListeningServer } from "@ctk/web";
 import { createActionHandlers, createSessionToken } from "./web-actions.js";
@@ -128,8 +130,16 @@ export function buildViewModelFromCatalog(options: BuildViewModelOptions = {}): 
     ]),
   );
 
+  // ⚠️ 절대경로는 **여기서 라벨로 바꾸고 버린다.** 경로를 뷰모델에 실어 보내고 화면에서
+  // 자르면 그 순간 응답 본문에 디렉터리 구조가 들어가 있다 — 보안 심사 M1이 지적한 형태다.
+  const projects = buildProjectChoices({
+    absolutePaths: listKnownProjectPaths(home),
+    hashPrefixOf: (p) => hashPath(p).slice(0, 6),
+  });
+
   return buildConsoleViewModel({
     machineId: machine.machine_id,
+    projects,
     assets,
     installations,
     occupancy: listAllOccupancy(catalogPath),
