@@ -1,8 +1,14 @@
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
+
+const tempHomes: string[] = [];
+afterAll(() => {
+  for (const dir of tempHomes) rmSync(dir, { recursive: true, force: true });
+});
 
 /**
  * ADR-003 데몬 불변식의 회귀 테스트 (P2-4 · Step 6b).
@@ -67,12 +73,32 @@ describe("데몬 불변식 — ctk web은 포그라운드이고 신호로 종료
   const cliPath = path.join(repoRoot, "packages/cli/dist/bin/ctk.js");
 
   it.runIf(existsSync(cliPath))("SIGTERM을 받으면 종료한다 — 상주하지 않는다", async () => {
+    // ⚠️ **격리 홈을 만들어 준다.** 처음에는 그냥 띄웠는데, `ctk web`은 카탈로그가 없으면
+    // 기동 전에 `CatalogNotInitializedError`로 죽는다 — 개발 머신에서는 카탈로그가 있어
+    // 통과했지만 CI에서는 실패했다. 이번 세션에서 **같은 형태의 실수를 두 번째** 한 것이다
+    // (앞선 것은 `$HOME/.claude` 존재를 단언한 cwd 가드 테스트).
+    const home = mkdtempSync(path.join(tmpdir(), "ctk-daemon-"));
+    tempHomes.push(home);
+    const catalog = path.join(home, "catalog");
+    mkdirSync(path.join(catalog, "catalog"), { recursive: true });
+    mkdirSync(path.join(home, ".config", "ctk"), { recursive: true });
+    writeFileSync(
+      path.join(home, ".config", "ctk", "config.json"),
+      JSON.stringify({ schema_version: 1, catalog_path: catalog }),
+      "utf8",
+    );
+
     const child = spawn(process.execPath, [cliPath, "web", "--port", "0"], {
       cwd: repoRoot,
       stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, CTK_HOME: home },
     });
 
     // 기동을 확인한 뒤에 죽인다 — 기동 전에 죽으면 "종료됐다"가 아무것도 증명하지 않는다.
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
     const started = await new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => resolve(false), 15_000);
       child.stdout.on("data", (chunk: Buffer) => {
@@ -86,7 +112,8 @@ describe("데몬 불변식 — ctk web은 포그라운드이고 신호로 종료
         resolve(false);
       });
     });
-    expect(started).toBe(true);
+    // 실패하면 왜 못 떴는지 함께 보여준다 — "expected false to be true"만으로는 알 수 없다.
+    expect(started, `서버가 기동하지 못했다. stderr: ${stderr}`).toBe(true);
 
     const exited = await new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => resolve(false), 10_000);
