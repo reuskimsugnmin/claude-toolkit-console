@@ -43,6 +43,7 @@ export * from "./snapshot/path-normalize.js";
 
 export * from "./catalog/layout.js";
 export * from "./catalog/render-markdown.js";
+export * from "./catalog/skill-body-lint.js";
 export * from "./usage/tool-names.js";
 export * from "./usage/attribution.js";
 export * from "./usage/rank.js";

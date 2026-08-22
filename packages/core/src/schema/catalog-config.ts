@@ -14,6 +14,15 @@ export const DEFAULT_TOKENIZER_MODEL = "claude-sonnet-4-5-20250929" as const;
 export const DEFAULT_OCCUPANCY_DIVERGENCE_THRESHOLD_PCT = 20;
 
 /**
+ * AC-3.1(OQ-2) — `toolkit-search` 스킬의 `name` + `description` 실측 토큰 상한.
+ *
+ * 진입 스킬은 **모든 세션에서 상시 점유**되므로(스킬 목록에 name+description이 실린다) 이 값이
+ * 곧 "에이전트가 카탈로그에 접근할 수 있게 하는 값"의 고정 비용이다. 스펙의 "에이전트 접근 상시
+ * 비용 ≈ 0"은 MCP 서버를 배제한 것으로 이미 달성했고, 남은 비용이 이 한 줄이다.
+ */
+export const DEFAULT_SKILL_DESCRIPTION_BUDGET_TOKENS = 60;
+
+/**
  * `<catalog>/ctk.config.json` — 카탈로그 결정 2: "스키마 버전·측정 정의·토크나이저 모델·검증된
  * CLI 버전". **`catalog_path`는 여기 두지 않는다** — 그 값은 카탈로그 밖의 로컬 전용 파일
  * `~/.config/ctk/config.json`에만 기록한다(§1.3 결정 2). 카탈로그 내부 파일에 카탈로그 자신의
@@ -31,6 +40,9 @@ export const CatalogConfigSchema = z
     offset_cache_location: z.enum(["catalog", "local"]),
     tokenizer_model: z.string().min(1).default(DEFAULT_TOKENIZER_MODEL),
     occupancy_divergence_threshold_pct: z.number().positive().default(DEFAULT_OCCUPANCY_DIVERGENCE_THRESHOLD_PCT),
+    /** AC-3.1(OQ-2) — 진입 스킬 name+description 토큰 상한. Step 4에서 추가했고 `.default()`라
+     * 기존 픽스처는 그대로 parse된다(tokenizer_model과 같은 방식). */
+    skill_description_budget_tokens: z.number().int().positive().default(DEFAULT_SKILL_DESCRIPTION_BUDGET_TOKENS),
   })
   .strict();
 
