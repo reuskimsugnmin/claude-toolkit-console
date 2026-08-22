@@ -17,6 +17,8 @@ import { describe, expect, it } from "vitest";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const README = readFileSync(path.join(repoRoot, "README.md"), "utf8");
+/** 로드맵도 사용 이력을 적는 문서라 실제 출력을 붙여넣기 쉽다 — 같은 검사를 받게 한다. */
+const ROADMAP = readFileSync(path.join(repoRoot, "ROADMAP.md"), "utf8");
 const BIN = readFileSync(path.join(repoRoot, "packages/cli/bin/ctk.ts"), "utf8");
 const PKG = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8")) as {
   scripts: Record<string, string>;
@@ -100,22 +102,25 @@ describe("README가 안내하는 pnpm 스크립트가 실재한다", () => {
   });
 });
 
-describe("README에 개인 환경 데이터가 없다 (public 저장소)", () => {
+describe.each([
+  ["README.md", README],
+  ["ROADMAP.md", ROADMAP],
+])("%s에 개인 환경 데이터가 없다 (public 저장소)", (_name, DOC) => {
   /**
    * 위생 검사는 **경로 리터럴만** 본다 — 설치된 툴 이름·머신 id는 그 축이 아니라서 통과한다
    * (이번 세션에 같은 사각지대를 두 번 만났다). README는 사용 안내라 실제 출력을 붙여넣기
    * 쉬우므로 여기서 따로 막는다.
    */
   it("실제 machine_id(UUID)가 없다 — `ctk init` 출력을 그대로 붙이면 들어온다", () => {
-    expect(README).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+    expect(DOC).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
   });
 
   it("실제 스냅샷 파일명이 없다 — 시각이 곧 사용 이력이다", () => {
-    expect(README).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z\.jsonl/);
+    expect(DOC).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z\.jsonl/);
   });
 
   it("마켓플레이스 자산 id 형태(`name@marketplace`)가 없다 — 설치된 툴 목록이다", () => {
     // 코드펜스 안의 `<자산id>` 같은 자리표시자는 이 패턴에 걸리지 않는다.
-    expect(README).not.toMatch(/\b[a-z][a-z0-9-]{2,}@[a-z][a-z0-9-]{2,}\b/);
+    expect(DOC).not.toMatch(/\b[a-z][a-z0-9-]{2,}@[a-z][a-z0-9-]{2,}\b/);
   });
 });
