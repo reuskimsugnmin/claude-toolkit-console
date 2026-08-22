@@ -333,7 +333,10 @@ async function main(): Promise<void> {
         const budget = readFlagValue(rest, "--max-budget-usd");
         const timeout = readFlagValue(rest, "--timeout-sec");
         if (catalog === undefined || query === undefined) {
-          console.error('사용법: ctk agent-probe --catalog <경로> --query "<질의>" --max-budget-usd <수치> --timeout-sec <초>');
+          console.error(
+            '사용법: ctk agent-probe --catalog <합성 카탈로그 루트> --query "<질의>" --max-budget-usd <수치> --timeout-sec <초>',
+          );
+          console.error("  --catalog 는 catalog/index.json 을 담은 디렉터리의 **부모**다(예: fixtures/agent-probe-catalog).");
           process.exitCode = 1;
           return;
         }
@@ -342,8 +345,12 @@ async function main(): Promise<void> {
           query,
           maxBudgetUsd: budget !== undefined ? Number(budget) : undefined,
           timeoutSec: timeout !== undefined ? Number(timeout) : undefined,
+          skillPath: readFlagValue(rest, "--skill"),
         });
         console.log(`ctk agent-probe (AC-3.3 진단 — 카탈로그·config에 쓰지 않음)`);
+        console.log(`  카탈로그 루트: ${result.catalogRoot}`);
+        // 사본이 원문과 어디가 다른지 항상 밝힌다 — 무엇을 시험했는지 모르는 결과는 근거가 못 된다.
+        console.log(`  시험한 스킬: 프로덕션 원문에서 \`${result.replacedHeading}\` 절만 교체한 사본`);
         console.log(`  exit=${result.exitCode ?? "null"}${result.timedOut ? " (타임아웃)" : ""}`);
         console.log(result.stdout);
         return;

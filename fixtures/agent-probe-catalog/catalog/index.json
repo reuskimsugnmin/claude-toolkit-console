@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "assets": [
+    { "id": "synth-tabler@synth-marketplace", "kind": "plugin", "name": "synth-tabler" },
+    { "id": "synth-lint-guard@synth-marketplace", "kind": "skill", "name": "synth-lint-guard" },
+    { "id": "synth-ledger@synth-marketplace", "kind": "mcp", "name": "synth-ledger" },
+    { "id": "synth-packer@synth-marketplace", "kind": "cli", "name": "synth-packer" }
+  ]
+}
