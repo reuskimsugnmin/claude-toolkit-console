@@ -471,7 +471,12 @@ pnpm release:ac39    # 악성 픽스처를 실제 모델에 통과시키는 인�
 pnpm release:seal    # 봉인이 실제로 동작하는지 실세션 검증
 ```
 
-설계 배경과 실측 사실은 `CLAUDE.md`와 `docs/harness-facts.md`에 있습니다.
+| 문서 | 내용 |
+|---|---|
+| [`ROADMAP.md`](ROADMAP.md) | **작업 이력과 남은 일** — 에픽·작업 단위·완료 여부 |
+| `CLAUDE.md` | 판단 기준(안전 원칙·검증 규칙) |
+| `docs/harness-facts.md` | 하네스 실측 사실 — 관측 방법과 파급 |
+| `.omc/plans/` | v1 상세 계획서 |
 
 ---
 
