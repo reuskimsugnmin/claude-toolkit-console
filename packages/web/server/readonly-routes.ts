@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ConsoleViewModel } from "@ctk/core";
 import { UI_HTML } from "./ui-page.js";
+import { handleActionRequest, type ActionRouteDeps } from "./routes/actions.js";
 
 /**
  * web/server/readonly-routes.ts — Step 6a. **GET/HEAD만 등록한다.**
@@ -25,6 +26,12 @@ export interface ReadonlyRouteDeps {
   getViewModel: () => ConsoleViewModel;
   /** 자산 문서 본문. 자산이 없거나 문서가 없으면 `null` — 빈 문자열과 구분한다. */
   getAssetDoc: (assetId: string, which: AssetDocKind) => string | null;
+  /**
+   * 액션 모드에서만 채워진다. **`undefined`면 `/actions`는 라우트로 존재하지 않는다** —
+   * 조회 모드에서 "핸들러가 없으니 403"이 아니라 **경로 자체가 없어야** 6a의 전제
+   * (쓰기 경로가 하나도 없다 ⇒ 토큰·CSRF 불요)가 구조적으로 유지된다.
+   */
+  actions?: ActionRouteDeps | undefined;
 }
 
 /** 이 서버가 응답하는 유일한 메서드 집합. `Allow` 헤더와 같은 출처를 쓴다. */
@@ -35,7 +42,7 @@ export function isAllowedMethod(method: string | undefined): boolean {
 }
 
 interface RouteMatch {
-  kind: "ui" | "view-model" | "assets" | "usage" | "health" | "asset-doc" | "not-found";
+  kind: "ui" | "view-model" | "assets" | "usage" | "health" | "asset-doc" | "actions" | "not-found";
   assetId?: string;
   doc?: AssetDocKind;
 }
@@ -51,6 +58,7 @@ export function matchRoute(pathname: string): RouteMatch {
   if (segments[0] !== "api") return { kind: "not-found" };
 
   const rest = segments.slice(1);
+  if (rest.length === 1 && rest[0] === "actions") return { kind: "actions" };
   if (rest.length === 1 && rest[0] === "view-model") return { kind: "view-model" };
   if (rest.length === 1 && rest[0] === "assets") return { kind: "assets" };
   if (rest.length === 1 && rest[0] === "usage") return { kind: "usage" };
@@ -111,16 +119,28 @@ function sendText(res: ServerResponse, status: number, body: string, isHead: boo
 }
 
 export function handleReadonlyRequest(req: IncomingMessage, res: ServerResponse, deps: ReadonlyRouteDeps): void {
-  // ① 메서드 거부가 라우팅보다 먼저다 — 쓰기 메서드는 어떤 경로에도 도달하지 않는다.
+  const pathname = (req.url ?? "/").split("?")[0] ?? "/";
+  const route = matchRoute(pathname);
+
+  // ① 액션은 **액션 모드에서 그 한 경로에만** 존재한다. 조회 모드(`deps.actions === undefined`)
+  //    에서는 라우트가 없으므로 아래 메서드 게이트가 그대로 405를 낸다 — 6a의 전제가 유지된다.
+  if (route.kind === "actions" && deps.actions !== undefined) {
+    if (req.method !== "POST") {
+      res.setHeader("allow", "POST");
+      sendJson(res, 405, { error: "method_not_allowed", allowed: ["POST"] }, false);
+      return;
+    }
+    void handleActionRequest(req, res, deps.actions);
+    return;
+  }
+
+  // ② 그 밖의 모든 경로는 GET/HEAD만 받는다. 거부가 라우팅 결과보다 먼저 적용된다.
   if (!isAllowedMethod(req.method)) {
     res.setHeader("allow", ALLOWED_METHODS.join(", "));
     sendJson(res, 405, { error: "method_not_allowed", allowed: ALLOWED_METHODS }, false);
     return;
   }
   const isHead = req.method === "HEAD";
-
-  const pathname = (req.url ?? "/").split("?")[0] ?? "/";
-  const route = matchRoute(pathname);
 
   switch (route.kind) {
     case "ui":
@@ -148,6 +168,10 @@ export function handleReadonlyRequest(req: IncomingMessage, res: ServerResponse,
       sendText(res, 200, body, isHead);
       return;
     }
+    case "actions":
+      // 조회 모드에서 여기 닿았다는 것은 액션 핸들러가 없다는 뜻이다 — 경로를 만들지 않는다.
+      sendJson(res, 404, { error: "not_found" }, isHead);
+      return;
     case "not-found":
       sendJson(res, 404, { error: "not_found" }, isHead);
       return;

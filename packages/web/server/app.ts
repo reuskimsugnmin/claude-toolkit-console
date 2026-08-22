@@ -66,3 +66,5 @@ export async function startReadonlyServer(options: CreateReadonlyServerOptions):
 }
 
 export * from "./readonly-routes.js";
+export * from "./origin-guard.js";
+export * from "./routes/actions.js";

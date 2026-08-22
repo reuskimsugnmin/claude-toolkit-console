@@ -3,6 +3,7 @@
 export * from "./schema/common.js";
 export * from "./schema/asset.js";
 export * from "./schema/installation.js";
+export * from "./schema/web-action.js";
 export * from "./schema/machine.js";
 export * from "./schema/project.js";
 export * from "./schema/usage.js";
