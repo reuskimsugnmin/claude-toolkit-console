@@ -95,9 +95,20 @@ async function main(): Promise<void> {
         const exportPath = readFlagValue(rest, "--export-view-model");
         if (exportPath === undefined) {
           const portFlag = readFlagValue(rest, "--port");
-          const server = await runWebServe({ port: portFlag === undefined ? 0 : Number(portFlag) });
-          console.log(`ctk web (조회 전용) — ${server.url}`);
-          console.log("  GET/HEAD만 응답한다. 쓰기 액션은 아직 없다(Step 6b).");
+          const actions = rest.includes("--actions");
+          const { server, sessionToken } = await runWebServe({
+            port: portFlag === undefined ? 0 : Number(portFlag),
+            actions,
+          });
+          if (sessionToken === null) {
+            console.log(`ctk web (조회 전용) — ${server.url}`);
+            console.log("  GET/HEAD만 응답한다. 쓰기 액션을 열려면 --actions를 준다.");
+          } else {
+            // 토큰은 URL 프래그먼트로 전달한다 — 프래그먼트는 서버 로그·Referer에 남지 않는다.
+            console.log(`ctk web (액션 모드) — ${server.url}/#token=${sessionToken}`);
+            console.log("  이 URL을 브라우저에 붙여넣는다. 토큰은 메모리에만 있고 종료 시 사라진다.");
+            console.log("  쓰기 액션: scan · rollback · move · gen(2단계 승인).");
+          }
           console.log("  Ctrl+C로 종료한다 — 데몬으로 상주하지 않는다.");
           // 포그라운드 프로세스로 남는다(ADR-003 데몬 불변식). 여기서 return하면 이벤트 루프가
           // 살아 있는 동안 프로세스가 유지된다.
@@ -273,6 +284,13 @@ async function main(): Promise<void> {
           console.log(`  생성 대상: ${report.assetCount}건 · 원본 크기 합계: ${report.approxBytes} bytes`);
           if (report.emptyAssetIds.length > 0) {
             console.log(`  ⚠️ 원본이 비어 생성 불가: ${report.emptyAssetIds.length}건`);
+          }
+          if (report.skipped.length > 0) {
+            // 위생 거부는 "원본 없음"과 이유가 다르다 — 뭉치면 사용자가 무엇을 고쳐야 할지 모른다.
+            const byClass = new Map<string, number>();
+            for (const s of report.skipped) byClass.set(s.failureClass, (byClass.get(s.failureClass) ?? 0) + 1);
+            const summary = [...byClass].map(([k, v]) => `${k} ${v}건`).join(" · ");
+            console.log(`  ⚠️ 위생 검사가 거부해 건너뜀: ${report.skipped.length}건 (${summary})`);
           }
           return;
         }

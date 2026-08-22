@@ -15,6 +15,7 @@ import {
 import { resolveHomeContext, type HomeContext } from "@ctk/probe";
 import { listAllAssets, listAllOccupancy } from "@ctk/sync";
 import { startReadonlyServer, type AssetDocKind, type ListeningServer } from "@ctk/web";
+import { createActionHandlers, createSessionToken } from "./web-actions.js";
 import { readLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
 import { CatalogNotInitializedError } from "./scan.js";
 
@@ -182,6 +183,14 @@ function readAssetDoc(catalogPath: string, assets: readonly { id: string; kind: 
 
 export interface ServeOptions extends BuildViewModelOptions {
   port?: number | undefined;
+  /** Step 6b — 쓰기 액션을 여는 명시 옵트인. 기본은 조회 전용이다. */
+  actions?: boolean | undefined;
+}
+
+export interface ServeResult {
+  server: ListeningServer;
+  /** 액션 모드에서만 발급된다. 조회 모드에서는 `null`. */
+  sessionToken: string | null;
 }
 
 /**
@@ -191,15 +200,38 @@ export interface ServeOptions extends BuildViewModelOptions {
  * 화면이 옛 값을 보여주는데, 그 화면에는 "마지막 스캔 N일 전" 신선도 표시가 함께 있어
  * **틀린 값에 최신이라는 딱지가 붙는다.**
  */
-export async function runWebServe(options: ServeOptions = {}): Promise<ListeningServer> {
+export async function runWebServe(options: ServeOptions = {}): Promise<ServeResult> {
   const home = options.home ?? resolveHomeContext();
   const localConfig = readLocalConfig(home);
   if (localConfig === null) throw new CatalogNotInitializedError();
   const catalogPath = localConfig.catalog_path;
 
-  return startReadonlyServer({
-    port: options.port ?? 0,
+  const base = {
     getViewModel: () => buildViewModelFromCatalog({ ...options, home }),
-    getAssetDoc: (assetId, which) => readAssetDoc(catalogPath, listAllAssets(catalogPath), assetId, which),
+    getAssetDoc: (assetId: string, which: AssetDocKind) =>
+      readAssetDoc(catalogPath, listAllAssets(catalogPath), assetId, which),
+  };
+
+  if (options.actions !== true) {
+    // 조회 모드 — `actions`를 넘기지 않으므로 `/api/actions`는 **라우트로 존재하지 않는다.**
+    return { server: await startReadonlyServer({ ...base, port: options.port ?? 0 }), sessionToken: null };
+  }
+
+  // 액션 모드는 관문이 실제 포트를 알아야 Host/Origin을 대조할 수 있다. 포트를 먼저 확정하려고
+  // 조회 서버를 한 번 띄웠다 닫는다 — 0번 포트를 OS가 고르게 두면서도 관문이 그 값을 알 수 있는
+  // 유일한 방법이다. (사용자가 --port를 주면 이 왕복은 생략된다.)
+  let port = options.port ?? 0;
+  if (port === 0) {
+    const probe = await startReadonlyServer({ ...base, port: 0 });
+    port = probe.port;
+    await probe.close();
+  }
+
+  const sessionToken = createSessionToken();
+  const server = await startReadonlyServer({
+    ...base,
+    port,
+    actions: { guard: { sessionToken, port }, handlers: createActionHandlers() },
   });
+  return { server, sessionToken };
 }

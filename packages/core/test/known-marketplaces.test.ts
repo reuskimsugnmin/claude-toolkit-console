@@ -64,3 +64,31 @@ describe("toRepoLink — 링크가 없다는 사실도 값이다", () => {
     expect(local.url).not.toBe("");
   });
 });
+
+describe("스킴 화이트리스트 — 저장소 링크가 XSS가 되지 않는다 (보안 심사 H3)", () => {
+  it("javascript: 스킴은 링크로 만들지 않는다", () => {
+    expect(toRepoLink({ source: "git", url: "javascript:fetch('/api/actions')" })).toEqual({ kind: "git", url: null });
+  });
+
+  it("data: 스킴도 거부한다", () => {
+    expect(toRepoLink({ source: "git", url: "data:text/html,<script>alert(1)</script>" }).url).toBeNull();
+  });
+
+  it("file: 스킴도 거부한다", () => {
+    expect(toRepoLink({ source: "git", url: "file:///etc/passwd" }).url).toBeNull();
+  });
+
+  it("scp 형식(git@host:path)은 URL이 아니므로 링크로 만들지 않는다", () => {
+    expect(toRepoLink({ source: "git", url: "git@github.com:synth/x" }).url).toBeNull();
+  });
+
+  it("거부해도 kind는 남는다 — '링크 없음'과 '미수집'이 여전히 구분된다", () => {
+    expect(toRepoLink({ source: "git", url: "javascript:1" }).kind).toBe("git");
+  });
+
+  it("정상 https는 그대로 통과한다 — 위 케이스들이 '전부 null'과 구분됨을 보인다", () => {
+    expect(toRepoLink({ source: "git", url: "https://git.example/synth/tools.git" }).url).toBe(
+      "https://git.example/synth/tools",
+    );
+  });
+});

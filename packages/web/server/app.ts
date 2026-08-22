@@ -16,15 +16,19 @@ import { handleReadonlyRequest, type ReadonlyRouteDeps } from "./readonly-routes
 /** 외부 인터페이스에 노출하지 않는다. 상수로 고정하고 인자로 열지 않는다. */
 export const LOOPBACK_HOST = "127.0.0.1" as const;
 
-export interface CreateReadonlyServerOptions extends ReadonlyRouteDeps {
-  /** 0을 주면 OS가 빈 포트를 고른다(테스트용). */
+export interface CreateReadonlyServerOptions extends Omit<ReadonlyRouteDeps, "port"> {
+  /** 0을 주면 OS가 빈 포트를 고른다(테스트용). 실제 포트는 listen 후 서버에서 조회한다. */
   port?: number;
 }
 
 export function createReadonlyServer(options: CreateReadonlyServerOptions): Server {
-  return createServer((req, res) => {
+  const server: Server = createServer((req, res) => {
     try {
-      handleReadonlyRequest(req, res, options);
+      // 포트는 listen 이후에야 확정된다(`port: 0`이면 OS가 고른다) — 요청 시점에 조회한다.
+      // 호출자가 명시한 값을 그대로 믿으면 0을 기대값으로 쓰게 되어 Host 검사가 항상 실패한다.
+      const address = server.address();
+      const actualPort = address !== null && typeof address !== "string" ? address.port : (options.port ?? 0);
+      handleReadonlyRequest(req, res, { ...options, port: actualPort });
     } catch (err) {
       // 조회 중 예외를 빈 200으로 삼키지 않는다 — 화면이 "자산 0건"을 정상으로 표시하게 된다.
       const message = err instanceof Error ? err.message : String(err);
@@ -34,6 +38,7 @@ export function createReadonlyServer(options: CreateReadonlyServerOptions): Serv
       res.end(`${JSON.stringify({ error: "internal_error", message })}\n`);
     }
   });
+  return server;
 }
 
 export interface ListeningServer {
@@ -66,3 +71,5 @@ export async function startReadonlyServer(options: CreateReadonlyServerOptions):
 }
 
 export * from "./readonly-routes.js";
+export * from "./origin-guard.js";
+export * from "./routes/actions.js";

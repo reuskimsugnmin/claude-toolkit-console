@@ -33,3 +33,8 @@ out/
 # 런타임 상태
 .omc/
 .playwright-mcp/
+
+# 테스트 tsconfig가 test/ 옆에 뱉은 컴파일 산출물 (심사 L7)
+packages/*/test/**/*.js
+packages/*/test/**/*.d.ts
+packages/*/test/**/*.d.ts.map

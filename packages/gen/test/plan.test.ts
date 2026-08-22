@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -130,5 +130,159 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
       maxAssets: 1,
     });
     expect(result.targets).toHaveLength(1);
+  });
+
+  // ── 회귀: 한 자산의 위생 실패가 전체 실행을 죽이지 않는다 ──────────────────────────────
+  //
+  // 실측(2026-08-22): 이 환경의 스킬 55개가 심볼릭 링크였고, `resolveAssetSource`가 던진
+  // 예외가 그대로 위로 올라가 `ctk gen`이 **통째로** 실패했다. 거부 자체는 옳다(링크를
+  // 따라가면 `~/.ssh` 내용이 카탈로그에 박힌다) — 틀린 것은 범위였다.
+
+  function setupSymlinkedSkill(name: string, targetContent: string): void {
+    const realDir = path.join(ctkHome, "elsewhere", name);
+    mkdirSync(realDir, { recursive: true });
+    const realFile = path.join(realDir, "SKILL.md");
+    writeFileSync(realFile, targetContent);
+    const skillDir = path.join(home.ctkConfigDir, "skills", name);
+    mkdirSync(skillDir, { recursive: true });
+    symlinkSync(realFile, path.join(skillDir, "SKILL.md"));
+  }
+
+  it("심볼릭 링크 자산은 건너뛰고 이유와 함께 보고된다 — 던지지 않는다", () => {
+    init();
+    setupSymlinkedSkill("linked-skill", "---\nname: linked-skill\n---\n본문\n");
+    const result = planGenTargets({
+      home,
+      assets: [skillAsset("linked-skill")],
+      index: { schema_version: 1, assets: [] },
+    });
+    expect(result.targets).toHaveLength(0);
+    expect(result.skipped).toHaveLength(1);
+    expect(result.skipped[0]?.assetId).toBe("linked-skill");
+    expect(result.skipped[0]?.failureClass).toBe("path_traversal_detected");
+  });
+
+  it("링크 자산 하나가 있어도 나머지는 정상 처리된다 — 이것이 이 수정의 핵심이다", () => {
+    init();
+    setupSymlinkedSkill("linked-skill", "---\nname: linked-skill\n---\n본문\n");
+    setupSkill("normal-a", "정상 A");
+    setupSkill("normal-b", "정상 B");
+    const result = planGenTargets({
+      home,
+      // 링크 자산을 **맨 앞에** 둔다 — 예전 구현이라면 첫 자산에서 죽어 뒤를 못 봤다.
+      assets: [skillAsset("linked-skill"), skillAsset("normal-a"), skillAsset("normal-b")],
+      index: { schema_version: 1, assets: [] },
+    });
+    expect(result.targets.map((t) => t.asset.id)).toEqual(["normal-a", "normal-b"]);
+    expect(result.skipped).toHaveLength(1);
+  });
+
+  it("건너뛴 자산은 '원본이 비어 있음'과 다르게 분류된다 — 사용자가 무엇을 고쳐야 할지 갈린다", () => {
+    init();
+    setupSymlinkedSkill("linked-skill", "본문\n");
+    const result = planGenTargets({
+      home,
+      // 디렉터리가 아예 없는 자산 = empty. 링크 자산 = skipped. 둘을 뭉치지 않는다.
+      assets: [skillAsset("linked-skill"), skillAsset("missing-skill")],
+      index: { schema_version: 1, assets: [] },
+    });
+    expect(result.skipped.map((s) => s.assetId)).toEqual(["linked-skill"]);
+    expect(result.emptyAssetIds).toEqual(["missing-skill"]);
+  });
+
+  it("크기 상한 규칙도 같은 기반으로 잡힌다 — 새 위생 규칙이 다시 gen을 죽이지 않는다", () => {
+    init();
+    // FileHygieneError 공통 기반을 만든 이유가 이것이다. 규칙별 클래스를 나열해 잡으면
+    // 규칙이 늘어날 때 그 나열을 빠뜨리고, 그 순간 새 규칙 하나가 전체 실행을 다시 죽인다.
+    const skillDir = path.join(home.ctkConfigDir, "skills", "huge-skill");
+    mkdirSync(skillDir, { recursive: true });
+    const body = "가".repeat(120_000); // UTF-8로 360KB — 상한 200KB를 넘긴다
+    writeFileSync(path.join(skillDir, "SKILL.md"), `---\nname: huge-skill\ndescription: 큼\n---\n\n${body}\n`);
+    setupSkill("normal-a", "정상 A");
+
+    const result = planGenTargets({
+      home,
+      assets: [skillAsset("huge-skill"), skillAsset("normal-a")],
+      index: { schema_version: 1, assets: [] },
+    });
+    expect(result.skipped.map((x) => x.assetId)).toEqual(["huge-skill"]);
+    expect(result.skipped[0]?.failureClass).toBe("asset_source_too_large");
+    expect(result.targets.map((t) => t.asset.id)).toEqual(["normal-a"]);
+  });
+
+  // ── H2 결합 불변식: 승인 총액이 실제 상한과 같으려면 **두 조건이 함께** 성립해야 한다 ──
+  //
+  // ⓐ 호출당 예산 = 총액 / max(호출수, 1)  ⓑ 실행 시 maxAssets = min(승인 maxAssets, 승인 호출수)
+  //
+  // 호출수가 0이면 ⓐ만으로는 안전하지 않다 — 분모 가드가 총액을 그대로 돌려주므로 호출당
+  // 상한이 총액과 같아진다. 0원이 되는 진짜 이유는 ⓑ가 `maxAssets: 0`을 주고 planGenTargets가
+  // 첫 자산에서 즉시 break하기 때문이다. 재심(H2)이 지적한 대로 이 결합에는 주석만 있고
+  // 테스트가 없었다 — 리팩터가 ⓑ를 지우면 호출당 총액이 무제한 자산에 걸린다.
+
+  it("maxAssets가 0이면 대상이 0건이다 — H2 안전성이 이 성질에 달려 있다", () => {
+    init();
+    setupSkill("a", "A");
+    setupSkill("b", "B");
+    const result = planGenTargets({
+      home,
+      assets: [skillAsset("a"), skillAsset("b")],
+      index: { schema_version: 1, assets: [] },
+      maxAssets: 0,
+    });
+    expect(result.targets).toHaveLength(0);
+  });
+
+  it("maxAssets가 양수면 그만큼만 대상이 된다 — 위 케이스가 '항상 0건'과 구분됨을 보인다", () => {
+    init();
+    setupSkill("a", "A");
+    setupSkill("b", "B");
+    const result = planGenTargets({
+      home,
+      assets: [skillAsset("a"), skillAsset("b")],
+      index: { schema_version: 1, assets: [] },
+      maxAssets: 1,
+    });
+    expect(result.targets).toHaveLength(1);
+  });
+
+  // ── L-b 회귀: 건너뛴 이유에 절대경로가 섞이지 않는다 ────────────────────────────────
+  it("홈 **밖** 프로젝트 스킬이 거부돼도 이유에 경로가 실리지 않는다", () => {
+    init();
+    // 홈 상대화로는 가려지지 않는 위치를 일부러 고른다 — 이 경우가 심사 L-b의 사례다.
+    const outside = path.join(ctkHome, "..", `ctk-outside-${path.basename(ctkHome)}`, "Clients", "Acme-secret");
+    mkdirSync(outside, { recursive: true });
+    const realFile = path.join(outside, "SKILL.md");
+    writeFileSync(realFile, "---\nname: proj-skill\n---\n본문\n");
+    const skillDir = path.join(home.ctkConfigDir, "skills", "proj-skill");
+    mkdirSync(skillDir, { recursive: true });
+    symlinkSync(realFile, path.join(skillDir, "SKILL.md"));
+
+    const result = planGenTargets({
+      home,
+      assets: [skillAsset("proj-skill")],
+      index: { schema_version: 1, assets: [] },
+    });
+    rmSync(path.dirname(path.dirname(outside)), { recursive: true, force: true });
+
+    expect(result.skipped).toHaveLength(1);
+    const reason = result.skipped[0]?.reason ?? "";
+    expect(reason).not.toContain("Acme-secret");
+    expect(reason).not.toMatch(/\/[A-Za-z]/); // 절대경로 조각이 남지 않는다
+    expect(reason).toContain("심볼릭 링크");   // 그러면서 이유는 여전히 말해준다
+  });
+
+  it("크기 초과 이유는 경로 없이 크기만 알려준다 — 무엇을 줄여야 하는지는 남긴다", () => {
+    init();
+    const skillDir = path.join(home.ctkConfigDir, "skills", "huge2");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(path.join(skillDir, "SKILL.md"), `---\nname: huge2\ndescription: x\n---\n${"가".repeat(120_000)}`);
+    const result = planGenTargets({
+      home,
+      assets: [skillAsset("huge2")],
+      index: { schema_version: 1, assets: [] },
+    });
+    const reason = result.skipped[0]?.reason ?? "";
+    expect(reason).toContain("바이트");
+    expect(reason).not.toMatch(/\/[A-Za-z]/);
   });
 });

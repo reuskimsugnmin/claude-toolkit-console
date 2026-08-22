@@ -48,6 +48,8 @@ export interface GenDryRunReport {
   assetCount: number;
   approxBytes: number;
   emptyAssetIds: string[];
+  /** 파일 위생(심볼릭 링크·크기 상한)에 걸려 건너뛴 자산. 조용히 빼지 않는다. */
+  skipped: { assetId: string; failureClass: string; reason: string }[];
 }
 
 /** `--dry-run` — 파일 직독만. API 호출도 서브프로세스 spawn도 하지 않는다(AC-3.8). */
@@ -64,7 +66,7 @@ export function runGenDryRun(options: { maxAssets?: number } = {}): GenDryRunRep
     (sum, t) => sum + t.sections.reduce((s, sec) => s + Buffer.byteLength(sec.content, "utf8"), 0),
     0,
   );
-  return { assetCount: plan.targets.length, approxBytes, emptyAssetIds: plan.emptyAssetIds };
+  return { assetCount: plan.targets.length, approxBytes, emptyAssetIds: plan.emptyAssetIds, skipped: plan.skipped };
 }
 
 async function confirmInteractively(promptText: string): Promise<boolean> {
@@ -121,6 +123,11 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
           ? `  예상 입력 토큰: ${estimate.estimatedInputTokens}tok (근사 비용: $${(estimate.approxCostUsd ?? 0).toFixed(4)}, 참고치 — 실제 상한은 각 호출의 --max-budget-usd=${options.maxBudgetUsd})`
           : `  예상 입력 토큰: 측정 불가 — approx_bytes=${estimate.approxBytes} (토큰 아님, count_tokens 크레덴셜 없음)`,
       );
+      if (plan.skipped.length > 0) {
+        // 위생 거부는 "생성 안 됨"의 이유가 다르므로 빈 자산과 분리해 보여준다.
+        console.log(`  위생 검사가 거부해 건너뛴 자산 ${plan.skipped.length}건:`);
+        for (const s of plan.skipped) console.log(`    - ${s.assetId} (${s.failureClass})`);
+      }
       if (plan.emptyAssetIds.length > 0) {
         console.log(`  원본을 찾지 못해 건너뛴 자산: ${plan.emptyAssetIds.join(", ")}`);
       }
