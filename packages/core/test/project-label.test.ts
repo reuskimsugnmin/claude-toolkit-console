@@ -7,7 +7,7 @@ import { buildProjectChoices, containsPathSeparator, toProjectLabel } from "../s
  * 이 설계의 전부다(AC-1.7 · 보안 심사 M1).
  */
 
-const hash = (p: string) => `h${p.length}`;
+const hash = (p: string) => `h${p.length}`.padEnd(16, "0");
 
 describe("toProjectLabel — 마지막 세그먼트만 남긴다", () => {
   it("홈 아래 경로에서 프로젝트 이름만 뽑는다", () => {
@@ -84,9 +84,29 @@ describe("동명 충돌 — 오조작을 막는다", () => {
   it("충돌한 선택지는 서로 다른 해시 접두를 갖는다 — 화면이 구분할 수단이 있다", () => {
     const choices = buildProjectChoices({
       absolutePaths: ["/synthetic/a/web", "/synthetic/bb/web"],
-      hashPrefixOf: (p) => `h:${p}`,
+      // 해시는 6자로 잘리므로 픽스처도 앞 6자가 달라야 한다.
+      hashPrefixOf: (p) => (p.includes("/a/") ? "aaaaaa0000" : "bbbbbb0000"),
     });
     expect(choices[0]?.hashPrefix).not.toBe(choices[1]?.hashPrefix);
+    expect(choices[0]?.hashPrefix).toHaveLength(6);
+  });
+
+  it("충돌 그룹 안에서 접두까지 겹치면 더 길게 준다 — 구별 수단이 조용히 사라지지 않는다", () => {
+    const choices = buildProjectChoices({
+      absolutePaths: ["/synthetic/a/web", "/synthetic/b/web"],
+      // 앞 6자가 같고 뒤가 다른 해시 — 6자로 자르면 구별이 사라진다(재심 L3).
+      hashPrefixOf: (p) => (p.includes("/a/") ? "same00AAAA" : "same00BBBB"),
+    });
+    expect(choices[0]?.hashPrefix).not.toBe(choices[1]?.hashPrefix);
+    expect(choices[0]?.hashPrefix).toHaveLength(10);
+  });
+
+  it("충돌하지 않으면 접두를 넓히지 않는다 — 위 케이스가 '항상 10자'와 구분됨을 보인다", () => {
+    const choices = buildProjectChoices({
+      absolutePaths: ["/synthetic/a/web", "/synthetic/b/api"],
+      hashPrefixOf: () => "same00XXXX",
+    });
+    expect(choices[0]?.hashPrefix).toHaveLength(6);
   });
 
   it("충돌이 없으면 ambiguous가 전부 false다 — 위 케이스가 '항상 true'와 구분됨을 보인다", () => {
@@ -106,5 +126,69 @@ describe("containsPathSeparator — 계약을 호출자도 확인할 수 있다"
 
   it("정상 라벨은 false", () => {
     expect(containsPathSeparator([{ index: 0, label: "synth-app", ambiguous: false, hashPrefix: "x" }])).toBe(false);
+  });
+});
+
+describe("시각적으로 같은 라벨을 놓치지 않는다 (재심 M4)", () => {
+  it("NFC/NFD 두 표기는 같은 이름으로 센다 — 화면에서는 같은 글자다", () => {
+    const nfc = "caf\u00e9-app";
+    const nfd = "cafe\u0301-app";
+    const choices = buildProjectChoices({
+      absolutePaths: [`/synthetic/a/${nfc}`, `/synthetic/b/${nfd}`],
+      hashPrefixOf: hash,
+    });
+    expect(choices.map((c) => c.ambiguous)).toEqual([true, true]);
+  });
+
+  it("후행 공백만 다른 이름도 충돌로 본다 — 브라우저가 공백을 접는다", () => {
+    const choices = buildProjectChoices({
+      absolutePaths: ["/synthetic/a/api", "/synthetic/b/api "],
+      hashPrefixOf: hash,
+    });
+    expect(choices.map((c) => c.ambiguous)).toEqual([true, true]);
+  });
+
+  it("양방향 제어문자가 섞인 이름도 충돌로 본다 — 표시 순서를 뒤집는다", () => {
+    const choices = buildProjectChoices({
+      absolutePaths: ["/synthetic/a/app", "/synthetic/b/\u202Eapp"],
+      hashPrefixOf: hash,
+    });
+    expect(choices.map((c) => c.ambiguous)).toEqual([true, true]);
+  });
+
+  it("정말 다른 이름은 충돌이 아니다 — 위 케이스들이 '전부 충돌'과 구분됨을 보인다", () => {
+    const choices = buildProjectChoices({
+      absolutePaths: ["/synthetic/a/web", "/synthetic/b/api"],
+      hashPrefixOf: hash,
+    });
+    expect(choices.map((c) => c.ambiguous)).toEqual([false, false]);
+  });
+});
+
+describe("parentHint — 사람이 읽을 구별자 (재심 M4)", () => {
+  it("충돌한 항목에만 상위 한 칸이 붙는다", () => {
+    const choices = buildProjectChoices({
+      absolutePaths: ["/synthetic/alpha/web", "/synthetic/beta/web", "/synthetic/gamma/api"],
+      hashPrefixOf: hash,
+    });
+    expect(choices[0]?.parentHint).toBe("alpha");
+    expect(choices[1]?.parentHint).toBe("beta");
+    expect(choices[2]?.parentHint).toBeUndefined();
+  });
+
+  it("parentHint도 세그먼트 하나뿐이다 — 계층이 새지 않는다", () => {
+    const choices = buildProjectChoices({
+      absolutePaths: ["/synthetic/work/Clients/Acme/web", "/synthetic/home/dev/web"],
+      hashPrefixOf: hash,
+    });
+    expect(choices[0]?.parentHint).toBe("Acme");
+    expect(JSON.stringify(choices)).not.toContain("Clients");
+    expect(containsPathSeparator(choices)).toBe(false);
+  });
+
+  it("parentHint에 구분자가 있으면 containsPathSeparator가 잡는다", () => {
+    expect(
+      containsPathSeparator([{ index: 0, label: "web", ambiguous: true, hashPrefix: "x", parentHint: "a/b" }]),
+    ).toBe(true);
   });
 });

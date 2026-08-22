@@ -1,5 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { handleReadonlyRequest, type ReadonlyRouteDeps } from "./readonly-routes.js";
+import { scrubAbsolutePaths } from "./routes/actions.js";
 
 /**
  * @ctk/web/server — Step 6a 조회 전용 서버. Step 6b(액션 API)는 아직 없다.
@@ -31,7 +32,8 @@ export function createReadonlyServer(options: CreateReadonlyServerOptions): Serv
       handleReadonlyRequest(req, res, { ...options, port: actualPort });
     } catch (err) {
       // 조회 중 예외를 빈 200으로 삼키지 않는다 — 화면이 "자산 0건"을 정상으로 표시하게 된다.
-      const message = err instanceof Error ? err.message : String(err);
+      // 최상위 catch도 무인증 응답이다 — 원문에 절대경로가 섞여 나가지 않게 한다(재심 M3·M5).
+      const message = scrubAbsolutePaths(err instanceof Error ? err.message : String(err)) as string;
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
       }

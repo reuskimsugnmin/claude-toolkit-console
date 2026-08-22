@@ -145,6 +145,11 @@ export interface ConsoleViewModel {
    * 담지 않는다**(project-label.ts). 인덱스가 곧 `move`의 인자이므로 순서를 바꾸지 않는다.
    */
   projects: ProjectChoice[];
+  /**
+   * 선택지를 만들지 못한 이유. `null`이면 정상이고, 값이 있으면 **"프로젝트가 0건"이 아니라
+   * "읽지 못했다"**는 뜻이다(재심 M5) — 화면은 이 둘을 구분해 표시해야 한다.
+   */
+  projects_unavailable: string | null;
 }
 
 export interface BuildViewModelInput {
@@ -161,6 +166,8 @@ export interface BuildViewModelInput {
   now: Date;
   /** 호출자가 이미 라벨로 바꾼 선택지. core는 경로를 보지 않는다. */
   projects: readonly ProjectChoice[];
+  /** 선택지를 만들지 못했으면 그 이유. 실패를 빈 목록으로 위장하지 않는다. */
+  projectsUnavailable?: string | null;
 }
 
 export function buildConsoleViewModel(input: BuildViewModelInput): ConsoleViewModel {
@@ -222,6 +229,7 @@ export function buildConsoleViewModel(input: BuildViewModelInput): ConsoleViewMo
     freshness: toFreshnessView(input.lastScanAt, input.now),
     assets,
     projects: [...input.projects],
+    projects_unavailable: input.projectsUnavailable ?? null,
     usage: {
       ranked,
       unrankable,

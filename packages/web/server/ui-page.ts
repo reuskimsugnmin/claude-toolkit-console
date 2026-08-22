@@ -171,6 +171,7 @@ const SESSION_TOKEN = (() => {
 })();
 
 let actionBusy = false;
+let CURRENT_ASSET = null;
 
 /** 액션 버튼 전체를 잠근다 — 연타로 겹치면 서버가 409를 내지만 화면도 막아야 한다. */
 function setActionsBusy(busy, note) {
@@ -189,7 +190,7 @@ const FAILURE_TEXT = {
   estimate_token_invalid: "승인이 만료됐거나 이미 쓰였다 — 비용을 다시 확인하고 승인한다",
   project_index_out_of_range: "선택한 프로젝트가 목록 범위 밖이다 — 다시 스캔한 뒤 시도한다",
   payload_too_large: "요청이 너무 크다",
-  bad_request: "요청이 화이트리스트 스키마와 맞지 않는다",
+  bad_request: "요청이 화이트리스트 스키마와 맞지 않거나, 고른 뒤 프로젝트 목록이 바뀌었다",
 };
 
 /**
@@ -339,6 +340,9 @@ async function refreshViewModel() {
   renderHeader();
   renderAssets();
   renderUsage();
+  // 상세가 열려 있으면 선택지도 다시 만든다. 안 그리면 드롭다운만 옛 목록을 가리켜
+  // **드롭다운·확인문구·실행 대상 셋이 서로 다른 목록을 본다**(재심 M1 갈래 2).
+  if (!$("view-detail").classList.contains("hidden") && CURRENT_ASSET !== null) renderDetailActions(CURRENT_ASSET);
 }
 
 function cell(row, text, className) {
@@ -433,6 +437,7 @@ function renderAssets() {
 }
 
 async function showDetail(asset) {
+  CURRENT_ASSET = asset;
   $("view-assets").classList.add("hidden");
   $("view-usage").classList.add("hidden");
   $("view-detail").classList.remove("hidden");
@@ -472,7 +477,11 @@ function buildProjectSelect() {
   for (const p of VM.projects) {
     const opt = document.createElement("option");
     opt.value = String(p.index);
-    opt.textContent = p.ambiguous ? p.label + "  (#" + p.index + " · " + p.hashPrefix + ")" : p.label;
+    // 충돌한 항목에만 구별자를 붙인다. parentHint가 있으면 그것을 먼저 쓴다 — 인덱스·해시는
+    // "다르다"만 알려주고 "어느 쪽이 내가 원하는 것인가"는 못 알려준다(재심 M4).
+    opt.textContent = p.ambiguous
+      ? p.label + "  (" + (p.parentHint ? "…/" + p.parentHint + " · " : "#" + p.index + " · ") + p.hashPrefix + ")"
+      : p.label;
     select.appendChild(opt);
   }
   return select;
@@ -481,7 +490,8 @@ function buildProjectSelect() {
 function selectedProjectText(select) {
   const choice = VM.projects.find((p) => String(p.index) === select.value);
   if (choice === undefined) return "(선택 없음)";
-  return choice.ambiguous ? choice.label + " (#" + choice.index + " · " + choice.hashPrefix + ")" : choice.label;
+  if (!choice.ambiguous) return choice.label;
+  return choice.label + " (" + (choice.parentHint ? "…/" + choice.parentHint + " · " : "#" + choice.index + " · ") + choice.hashPrefix + ")";
 }
 
 /**
@@ -517,11 +527,20 @@ function renderDetailActions(asset) {
     row.appendChild(toUser);
   }
 
-  if (VM.projects.length > 0 && scopes.some((sc) => sc !== "project")) {
+  if (VM.projects_unavailable !== null) {
+    const note = document.createElement("span");
+    note.className = "sep";
+    note.textContent =
+      VM.projects_unavailable === "claude_json_unreadable"
+        ? "프로젝트 목록을 읽지 못했다 — ctk doctor로 ~/.claude.json을 확인한다"
+        : "프로젝트 목록이 규약을 어겨 표시하지 않는다 (" + VM.projects_unavailable + ")";
+    row.appendChild(note);
+  } else if (VM.projects.length > 0 && scopes.some((sc) => sc !== "project")) {
     const label = document.createElement("span");
     label.className = "sep";
     label.textContent = "프로젝트로 이관:";
     const select = buildProjectSelect();
+    select.setAttribute("data-action-btn", "");
     select.disabled = actionBusy;
     const toProject = document.createElement("button");
     toProject.setAttribute("data-action-btn", "");
@@ -530,7 +549,14 @@ function renderDetailActions(asset) {
     toProject.addEventListener("click", () =>
       runSimpleAction(
         "이관",
-        { action: "move", asset_id: asset.id, to: "project", to_project_index: Number(select.value) },
+        {
+          action: "move",
+          asset_id: asset.id,
+          to: "project",
+          to_project_index: Number(select.value),
+          // 화면이 그 인덱스에서 **실제로 본** 프로젝트임을 서버가 대조할 수 있게 함께 보낸다.
+          to_project_hash_prefix: (VM.projects.find((p) => String(p.index) === select.value) || {}).hashPrefix,
+        },
         [
           ["대상", asset.name + " (" + asset.kind + ")"],
           ["옮길 프로젝트", selectedProjectText(select)],
@@ -593,6 +619,7 @@ function renderUsage() {
 }
 
 function showTab(which) {
+  CURRENT_ASSET = null;
   $("view-detail").classList.add("hidden");
   $("view-assets").classList.toggle("hidden", which !== "assets");
   $("view-usage").classList.toggle("hidden", which !== "usage");

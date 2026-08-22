@@ -17,6 +17,7 @@ const VIEW_MODEL: ConsoleViewModel = {
   freshness: { last_scan_at: "2026-08-22T00:00:00.000Z", days_since_last_scan: 0, is_stale: false, never_scanned: false },
   assets: [],
   projects: [],
+  projects_unavailable: null,
   usage: {
     ranked: [],
     unrankable: [],

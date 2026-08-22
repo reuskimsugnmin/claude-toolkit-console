@@ -3,7 +3,7 @@ import { toPerCallBudgetUsd } from "@ctk/core";
 import { ActionError, type ActionHandlers } from "@ctk/web";
 import { LockContendedError } from "@ctk/sync";
 import { runScan } from "./scan.js";
-import { runMove, ProjectIndexOutOfRangeError } from "./move.js";
+import { runMove, ProjectIndexOutOfRangeError, ProjectListChangedError } from "./move.js";
 import { runRollback } from "./rollback.js";
 import { runGenCli, runGenDryRun } from "./gen.js";
 
@@ -145,6 +145,8 @@ function genView(s: Awaited<ReturnType<typeof runGenCli>>) {
 function toActionError(err: unknown): unknown {
   if (err instanceof LockContendedError) return new ActionError("lock_contended", err.message);
   if (err instanceof ProjectIndexOutOfRangeError) return new ActionError("project_index_out_of_range", err.message);
+  // 목록이 바뀌었다는 것은 사용자 입력 문제이지 서버 결함이 아니다 — 400으로 내고 이유를 말한다.
+  if (err instanceof ProjectListChangedError) return new ActionError("bad_request", err.message);
   return err;
 }
 
@@ -187,6 +189,9 @@ export function createActionHandlers(options: CreateActionHandlersOptions = {}):
           assetId: request.asset_id,
           to: request.to,
           ...(request.to_project_index === undefined ? {} : { toProjectIndex: request.to_project_index }),
+          ...(request.to_project_hash_prefix === undefined
+            ? {}
+            : { toProjectHashPrefix: request.to_project_hash_prefix }),
           ...(request.from === undefined ? {} : { from: request.from }),
           ...(request.from_project_index === undefined ? {} : { fromProjectIndex: request.from_project_index }),
         })),

@@ -37,6 +37,7 @@ import {
   type InstallScope,
   type JournalResult,
   type RunLogEntry,
+  hashPath,
 } from "@ctk/core";
 import { acquireLock, writeJournalEntry, commitAll, writeRunLog } from "@ctk/sync";
 import { readLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
@@ -96,6 +97,8 @@ export interface MoveOptions {
   assetId: string;
   to: "user" | "project";
   toProjectIndex?: number;
+  /** 화면이 그 인덱스에서 본 프로젝트의 해시 접두. 주어지면 실행 직전 실측과 대조한다(재심 M1). */
+  toProjectHashPrefix?: string;
   from?: "user" | "project";
   fromProjectIndex?: number;
   timeoutSec?: number;
@@ -124,13 +127,39 @@ function readCatalogAssetKind(catalogPath: string, assetId: string): AssetKind {
   return entry.kind;
 }
 
-function resolveProjectPath(home: HomeContext, index: number | undefined): string {
+/**
+ * 선택 시점과 실행 시점의 프로젝트 목록이 어긋났다. 조용히 다른 프로젝트를 고치지 않는다 —
+ * "판정할 수 없으면 진행하지 않는다"(안전 원칙 7)이고, 거부에는 복구 경로를 함께 준다(원칙 6).
+ */
+export class ProjectListChangedError extends Error {
+  readonly failureClass = "project_list_changed" as const;
+  constructor() {
+    super(
+      "고른 뒤 프로젝트 목록이 바뀌었다 — 화면을 새로고침해 다시 고른다. ctk는 아무것도 바꾸지 않았다.",
+    );
+    this.name = "ProjectListChangedError";
+  }
+}
+
+/**
+ * 인덱스를 실제 경로로 바꾼다.
+ *
+ * ⚠️ **`expectedHashPrefix`가 주어지면 반드시 대조한다.** 뷰모델을 만들 때와 여기서
+ * `listKnownProjectPaths`를 **각각 따로** 읽으므로, 그 사이 `~/.claude.json`의 projects가
+ * 바뀌면 인덱스가 앞으로 밀려 **다른 프로젝트의 설정이 바뀐다**(재심 M1). 백업·감사·롤백은
+ * "우리가 쓴 곳이 맞는가"를 보지 "사용자가 고른 곳이 맞는가"는 못 본다 — 그래서 이 대조가
+ * 없으면 그 실패는 어떤 게이트에도 걸리지 않고 성공으로 끝난다.
+ */
+function resolveProjectPath(home: HomeContext, index: number | undefined, expectedHashPrefix?: string): string {
   if (index === undefined) {
     throw new Error("project 스코프에는 --project-index가 필요하다.");
   }
   const known = listKnownProjectPaths(home);
   const projectPath = known[index];
   if (projectPath === undefined) throw new ProjectIndexOutOfRangeError(index, known.length);
+  if (expectedHashPrefix !== undefined && !hashPath(projectPath).startsWith(expectedHashPrefix)) {
+    throw new ProjectListChangedError();
+  }
   return projectPath;
 }
 
@@ -234,7 +263,8 @@ async function movePluginAsset(
   const fromScope: InstallScope = options.from ?? "user";
   const toScope: InstallScope = options.to;
   const fromProjectPath = fromScope === "project" ? resolveProjectPath(home, options.fromProjectIndex) : null;
-  const toProjectPath = toScope === "project" ? resolveProjectPath(home, options.toProjectIndex) : null;
+  const toProjectPath =
+    toScope === "project" ? resolveProjectPath(home, options.toProjectIndex, options.toProjectHashPrefix) : null;
   if (fromScope === toScope && fromProjectPath === toProjectPath) throw new NoOpMoveError();
 
   const tmpCwd = mkdtempSync(path.join(tmpdir(), "ctk-move-"));
@@ -426,7 +456,8 @@ async function moveSkillAsset(
   const fromScope: "user" | "project" = options.from ?? "user";
   const toScope: "user" | "project" = options.to;
   const fromProjectPath = fromScope === "project" ? resolveProjectPath(home, options.fromProjectIndex) : null;
-  const toProjectPath = toScope === "project" ? resolveProjectPath(home, options.toProjectIndex) : null;
+  const toProjectPath =
+    toScope === "project" ? resolveProjectPath(home, options.toProjectIndex, options.toProjectHashPrefix) : null;
   if (fromScope === toScope && fromProjectPath === toProjectPath) throw new NoOpMoveError();
 
   // H6 — assetId(frontmatter name)로 경로를 지어내지 않는다. probe로 실제 디렉터리를 되찾고,

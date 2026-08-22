@@ -215,8 +215,14 @@ export async function handleActionRequest(
   } catch (err) {
     // 실패를 200으로 삼키지 않는다 — 화면이 "됐다"고 표시하면 사용자는 확인하지 않는다.
     if (err instanceof ActionError) {
-      // 분류된 실패만 메시지를 그대로 낸다 — 우리가 쓴 문장이라 무엇이 실리는지 안다.
-      send(STATUS_BY_CODE[err.code], { ok: false, code: err.code, message: err.message });
+      // ⚠️ 우리가 쓴 문장이라도 **하류 오류를 그대로 감싼 경우**가 있다(`LockContendedError`가
+      // 메시지에 lockPath 절대경로를 박는다 — 재심 M3 실측). 2차 방어선은 성공·실패 **양쪽**
+      // 출구에 걸어야 방어선이다(안전 원칙 5: 지적을 항목이 아니라 범위로 닫는다).
+      send(STATUS_BY_CODE[err.code], {
+        ok: false,
+        code: err.code,
+        message: scrubAbsolutePaths(err.message) as string,
+      });
       return;
     }
     // 미분류 예외의 원문에는 절대경로·내부 상태가 섞일 수 있다(심사 M1). 전문은 서버
