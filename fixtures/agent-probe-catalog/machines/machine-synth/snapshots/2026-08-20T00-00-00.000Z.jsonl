@@ -1,0 +1,4 @@
+{"schema_version":1,"_scope":"machine_dependent","asset_id":"synth-tabler@synth-marketplace","machine_id":"machine-synth","install_scope":"user","enabled_at":"user","project_path_hash":null,"mcp_enabled_state":null,"mcp_state_source":null}
+{"schema_version":1,"_scope":"machine_dependent","asset_id":"synth-lint-guard@synth-marketplace","machine_id":"machine-synth","install_scope":"project","enabled_at":"project","project_path_hash":"1111aaaa2222bbbb","mcp_enabled_state":null,"mcp_state_source":null}
+{"schema_version":1,"_scope":"machine_dependent","asset_id":"synth-ledger@synth-marketplace","machine_id":"machine-synth","install_scope":"user","enabled_at":null,"project_path_hash":null,"mcp_enabled_state":"disabled","mcp_state_source":"disabledMcpServers"}
+{"schema_version":1,"_scope":"machine_dependent","machine_id":"machine-synth","path_hash":"1111aaaa2222bbbb","home_relative_path":"~/synth/alpha","first_seen_at":"2026-08-01T00:00:00.000Z"}

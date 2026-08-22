@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { resolveHomeContext } from "@ctk/probe";
 import { runAgentProbe, type RunAgentProbeResult } from "@ctk/gen";
 import { ensureAgentProbeCwd } from "../sealed-cwd.js";
-import { createProbePluginDir, type ProbePluginDir } from "../probe-plugin-dir.js";
+import { createProbePluginDir, stageProbeCatalog, type ProbePluginDir } from "../probe-plugin-dir.js";
 import { findSkillSource } from "./verify-ac3.js";
 import { MissingRequiredFlagError } from "./gen.js";
 
@@ -46,12 +46,17 @@ export async function runAgentProbeCli(options: RunAgentProbeCliOptions): Promis
   const skillSourcePath =
     options.skillPath ?? findSkillSource(path.dirname(fileURLToPath(import.meta.url)));
 
+  // 카탈로그를 **cwd 안으로** 옮긴 뒤 그 경로를 스킬 사본에 박는다. cwd 밖 경로는 헤드리스
+  // 세션에서 Grep이 차단되고 Read가 승인 프롬프트를 띄우는데, 답할 사람이 없다(1회차 실측).
+  const cwd = ensureAgentProbeCwd();
+  const stagedCatalog = stageProbeCatalog(options.catalog, cwd);
+
   let probePlugin: ProbePluginDir | null = null;
   try {
-    probePlugin = createProbePluginDir({ skillSourcePath, catalogRoot: options.catalog });
+    probePlugin = createProbePluginDir({ skillSourcePath, catalogRoot: stagedCatalog });
     const result = await runAgentProbe({
       home: resolveHomeContext(),
-      cwd: ensureAgentProbeCwd(),
+      cwd,
       timeoutSec: options.timeoutSec,
       maxBudgetUsd: options.maxBudgetUsd,
       pluginDir: probePlugin.pluginDir,

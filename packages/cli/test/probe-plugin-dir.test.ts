@@ -1,10 +1,17 @@
-import { existsSync, readFileSync, statSync, writeFileSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { PROBE_SKILL_REPLACED_HEADING, splitMarkdownSections, splitSkillDocument, withoutSection } from "@ctk/core";
-import { PROBE_PLUGIN_NAME, createProbePluginDir, type ProbePluginDir } from "../src/probe-plugin-dir.js";
+import {
+  PROBE_CATALOG_DIR_NAME,
+  PROBE_PLUGIN_NAME,
+  ProbeCatalogInvalidError,
+  createProbePluginDir,
+  stageProbeCatalog,
+  type ProbePluginDir,
+} from "../src/probe-plugin-dir.js";
 
 /**
  * 안 B의 **디스크 쪽** 계약. `core`의 순수 변환 테스트가 "만들면 한 절만 다르다"를 보였다면,
@@ -114,5 +121,44 @@ describe("판정할 수 없는 원본은 거부한다", () => {
     const bad = path.join(dir, "SKILL.md");
     writeFileSync(bad, "---\nname: x\n---\n\n# 제목\n\n본문뿐\n", "utf8");
     expect(() => createProbePluginDir({ skillSourcePath: bad, catalogRoot: CATALOG })).toThrow(/카탈로그 위치/);
+  });
+});
+
+describe("stageProbeCatalog — cwd 안으로 옮긴다 (1회차 실측 반영)", () => {
+  /**
+   * 1회차 유료 진단에서 에이전트는 스킬을 제대로 발동하고 경로 규약도 이해했지만
+   * **카탈로그를 한 줄도 읽지 못했다** — cwd 밖이라 grep이 차단되고 Read는 승인 프롬프트를
+   * 띄웠는데 헤드리스 세션에는 답할 사람이 없다. cwd 안으로 옮겨 그 조건을 없앤다.
+   */
+  const cwd = (): string => mkdtempSync(path.join(tmpdir(), "ctk-probe-cwd-"));
+
+  it("복사한 카탈로그가 cwd 아래에 있다 — 이것이 차단을 없애는 유일한 조건이다", () => {
+    const dir = cwd();
+    const staged = stageProbeCatalog(CATALOG, dir);
+    expect(staged.startsWith(dir + path.sep)).toBe(true);
+    expect(path.basename(staged)).toBe(PROBE_CATALOG_DIR_NAME);
+  });
+
+  it("자산 문서까지 통째로 복사된다 — 인덱스만 옮기면 검색이 빈손으로 끝난다", () => {
+    const staged = stageProbeCatalog(CATALOG, cwd());
+    expect(existsSync(path.join(staged, "catalog", "index.json"))).toBe(true);
+    expect(existsSync(path.join(staged, "catalog", "assets", "plugin", "synth-tabler", "annotation.md"))).toBe(true);
+    expect(existsSync(path.join(staged, "catalog", "assets", "cli", "synth-packer", "usage.md"))).toBe(true);
+  });
+
+  it("두 번 실행해도 이전 잔재가 남지 않는다 — cwd는 B3 때문에 고정 경로라 누적된다", () => {
+    const dir = cwd();
+    const staged = stageProbeCatalog(CATALOG, dir);
+    const stale = path.join(staged, "catalog", "assets", "plugin", "stale-asset");
+    mkdirSync(stale, { recursive: true });
+    stageProbeCatalog(CATALOG, dir);
+    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(path.join(staged, "catalog", "index.json")), "새로 복사는 됐다").toBe(true);
+  });
+
+  it("catalog/index.json이 없으면 진단을 시작하지 않고 고치는 법을 알려준다", () => {
+    const empty = mkdtempSync(path.join(tmpdir(), "ctk-probe-empty-"));
+    expect(() => stageProbeCatalog(empty, cwd())).toThrow(ProbeCatalogInvalidError);
+    expect(() => stageProbeCatalog(empty, cwd())).toThrow(/부모/);
   });
 });

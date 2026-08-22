@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildProbeSkillDocument, withoutSection, type ProbeSkillDocument } from "@ctk/core";
@@ -24,6 +24,48 @@ import { buildProbeSkillDocument, withoutSection, type ProbeSkillDocument } from
 
 /** 임시 디렉터리 접두 — 사후에 사람이 무엇인지 알아볼 수 있어야 한다. */
 const PROBE_PLUGIN_PREFIX = "ctk-agent-probe-plugin-";
+
+/** cwd 안에 합성 카탈로그를 놓을 자리. 이름이 곧 무엇인지 말한다. */
+export const PROBE_CATALOG_DIR_NAME = "probe-catalog";
+
+/** 원본 합성 카탈로그가 카탈로그 규약을 갖추지 못했으면 진단을 시작하지 않는다(안전 원칙 7). */
+export class ProbeCatalogInvalidError extends Error {
+  constructor(readonly sourceRoot: string) {
+    super(
+      `합성 카탈로그에 catalog/index.json이 없다 — ${sourceRoot}. ` +
+        `--catalog 는 catalog/ 디렉터리를 담은 **부모**를 가리켜야 한다.`,
+    );
+    this.name = "ProbeCatalogInvalidError";
+  }
+}
+
+/**
+ * 합성 카탈로그를 **cwd 안으로** 복사하고 그 경로를 돌려준다.
+ *
+ * ## 왜 복사하는가 (실측 2026-08-22, AC-3.3 유료 진단 1회차)
+ *
+ * 처음에는 저장소 안의 픽스처 경로를 스킬 사본에 그대로 박았다. 에이전트는 스킬을 제대로
+ * 발동했고 경로 규약도 정확히 이해했지만 **카탈로그를 한 줄도 읽지 못했다**:
+ *
+ * > `Read`는 권한 승인 대기 상태로 반환됐고, `grep`은 허용된 작업 디렉터리 밖이라 차단됐다
+ *
+ * `agent-probe`의 cwd는 상위 `.claude/` 가드 때문에 홈 밖 임시 디렉터리여야 하는데, 카탈로그는
+ * 저장소 안에 있었다. 헤드리스 `-p` 세션에는 승인 프롬프트에 답할 사람이 없다.
+ *
+ * `--add-dir`로 열어주는 방법도 있지만 그것은 **자식이 닿는 파일시스템 범위를 넓히는 일**이라
+ * 봉인 변경으로 넘어간다(안 B를 고른 이유가 봉인을 건드리지 않는 것이었다). cwd 안으로
+ * 복사하면 범위를 넓히지 않고, 격리도 더 깨끗해진다 — 진단이 저장소 파일을 아예 보지 않는다.
+ */
+export function stageProbeCatalog(sourceCatalogRoot: string, cwd: string): string {
+  const source = path.resolve(sourceCatalogRoot);
+  if (!existsSync(path.join(source, "catalog", "index.json"))) throw new ProbeCatalogInvalidError(source);
+
+  const staged = path.join(cwd, PROBE_CATALOG_DIR_NAME);
+  // 이전 실행이 남긴 것을 지우고 새로 넣는다 — cwd는 B3 때문에 **고정 경로**라 누적된다.
+  rmSync(staged, { recursive: true, force: true });
+  cpSync(source, staged, { recursive: true });
+  return staged;
+}
 
 /** 진단용 플러그인 이름. 합성 자산 이름과 겹치지 않게 `ctk-` 접두를 쓴다. */
 export const PROBE_PLUGIN_NAME = "ctk-agent-probe";
