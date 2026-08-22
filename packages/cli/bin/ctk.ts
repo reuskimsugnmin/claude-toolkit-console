@@ -96,9 +96,10 @@ async function main(): Promise<void> {
         if (exportPath === undefined) {
           const portFlag = readFlagValue(rest, "--port");
           const actions = rest.includes("--actions");
-          const { server, sessionToken } = await runWebServe({
+          const { server, sessionToken, exposureNotice } = await runWebServe({
             port: portFlag === undefined ? 0 : Number(portFlag),
             actions,
+            includeProjects: !rest.includes("--no-projects"),
           });
           if (sessionToken === null) {
             console.log(`ctk web (조회 전용) — ${server.url}`);
@@ -110,6 +111,8 @@ async function main(): Promise<void> {
             console.log("  쓰기 액션: scan · rollback · move · gen(2단계 승인).");
           }
           console.log("  Ctrl+C로 종료한다 — 데몬으로 상주하지 않는다.");
+          // 노출 고지는 stderr로 낸다 — stdout을 파싱하는 스크립트를 깨지 않으면서 사람 눈에는 띈다.
+          if (exposureNotice !== null) console.error(exposureNotice);
           // 포그라운드 프로세스로 남는다(ADR-003 데몬 불변식). 여기서 return하면 이벤트 루프가
           // 살아 있는 동안 프로세스가 유지된다.
           return;
