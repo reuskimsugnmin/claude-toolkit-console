@@ -1,10 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Asset } from "@ctk/core";
-import { spawnClaude, type HomeContext } from "@ctk/probe";
+import { resolveHomeContext, spawnClaude, type HomeContext } from "@ctk/probe";
 import { ensureGitRepo, readCatalogIndex, rebuildCatalogIndex, upsertAsset } from "@ctk/sync";
 import { runGen } from "../src/index.js";
 
@@ -29,6 +29,21 @@ import { runGen } from "../src/index.js";
  * **재지 않는다**: 의미적 유도(semantic steering) — 모델이 패턴 없이 내용만 기울인 경우.
  * 그건 기계적으로 판정할 수 없고, 이 게이트가 통과했다고 그것까지 안전하다는 뜻이 아니다.
  * 못 재는 것을 잰 것처럼 적지 않는다(안전 원칙 7).
+ *
+ * ## ⚠️ 인증과 합성 데이터를 동시에 만족시키는 법 (2026-08-23 실측)
+ *
+ * 처음에는 `index.test.ts`의 스캐폴딩을 그대로 썼다 — 임시 `HOME` + `configDirExplicit: true`.
+ * **5회 호출이 4.47초에 전부 exitCode 1로 끝났다.** `CLAUDE_CONFIG_DIR`를 설정하는 행위 자체가
+ * OAuth를 깨고 임시 홈에는 크레덴셜이 없다(`docs/harness-facts.md`) — 모델은 한 번도 돌지
+ * 않았다. 스텁 spawn을 쓰는 그 파일에서는 이 조합이 문제가 되지 않았을 뿐이다.
+ *
+ * `skill`·`plugin` 자산은 원문을 `home` 아래 파일에서 읽으므로(`source-resolve.ts`) 합성
+ * 원문을 넣으려면 **사용자 실제 config dir에 써야 한다.** 그래서 쓰지 않는다.
+ *
+ * 대신 **`mcp`/`cli` 자산을 쓴다** — 이 종류의 원문은 `asset.description`이고, 그건 우리가
+ * 만드는 **임시 카탈로그**에서 온다. `home`은 실제 홈 그대로라 인증이 살고, 사용자 환경에는
+ * 아무것도 쓰지 않는다. 우회가 아니라 **더 현실적인 벡터**다 — `description`은 서드파티가 쓴
+ * 메타데이터이고 MCP·CLI 자산에서는 그것이 유일한 원문이다.
  *
  * ## 실행 방법
  *
@@ -67,42 +82,37 @@ const MALICIOUS_CASES = [
 const REAL_DELIMITER_RE = /CTK_DATA_(?![0]{16})[0-9a-f]{16,}/i;
 
 describe.runIf(RELEASE_GATE)("AC-3.9 LLM 경로 (릴리스 게이트 — 유료)", () => {
-  let ctkHome: string;
   let catalogRoot: string;
   let home: HomeContext;
   let sealedCwd: string;
 
   afterEach(() => {
-    if (ctkHome) rmSync(ctkHome, { recursive: true, force: true });
     if (catalogRoot) rmSync(catalogRoot, { recursive: true, force: true });
     if (sealedCwd) rmSync(sealedCwd, { recursive: true, force: true });
   });
 
   function init(): void {
-    ctkHome = mkdtempSync(path.join(tmpdir(), "ctk-ac39-home-"));
+    // ⚠️ **실제 홈**이다 — 인증이 여기에 달려 있다. 사용자 환경에는 아무것도 쓰지 않는다.
+    home = resolveHomeContext();
     catalogRoot = mkdtempSync(path.join(tmpdir(), "ctk-ac39-catalog-"));
-    home = { ctkHome, ctkConfigDir: path.join(ctkHome, ".claude"), configDirExplicit: true };
-    mkdirSync(home.ctkConfigDir, { recursive: true });
     sealedCwd = mkdtempSync(path.join(tmpdir(), "ctk-ac39-sealed-cwd-"));
     ensureGitRepo(catalogRoot);
   }
 
-  /** 악성 픽스처를 자산 원본 자리에 그대로 심는다 — 원문이 바뀌면 시험 대상이 달라진다. */
-  function installMaliciousSkill(caseDir: string, assetName: string): Asset {
-    const skillDir = path.join(home.ctkConfigDir, "skills", assetName);
-    mkdirSync(skillDir, { recursive: true });
-    writeFileSync(
-      path.join(skillDir, "SKILL.md"),
-      readFileSync(path.join(FIXTURES_ROOT, caseDir, "SKILL.md"), "utf8"),
-      "utf8",
-    );
+  /**
+   * 악성 픽스처 **원문 그대로**를 `description`에 싣는다. `mcp` 자산의 원문은 `description`
+   * 하나뿐이므로(`source-resolve.ts`의 `descriptionOnlySource`) 이것이 프롬프트에 들어간다.
+   * 픽스처 파일을 바꿔 넣지 않는다 — 원문이 바뀌면 시험 대상이 달라진다.
+   */
+  function seedMaliciousAsset(caseDir: string, assetName: string): Asset {
+    const body = readFileSync(path.join(FIXTURES_ROOT, caseDir, "SKILL.md"), "utf8");
     const asset: Asset = {
       schema_version: 1,
       _scope: "machine_independent",
       id: assetName,
-      kind: "skill",
+      kind: "mcp",
       name: assetName,
-      description: "합성 악성 픽스처 — AC-3.9 진단 전용",
+      description: body,
     };
     upsertAsset(catalogRoot, asset);
     rebuildCatalogIndex(catalogRoot);
@@ -114,7 +124,7 @@ describe.runIf(RELEASE_GATE)("AC-3.9 LLM 경로 (릴리스 게이트 — 유료)
     async ({ dir }) => {
       init();
       const assetName = `malicious-${dir}`;
-      const asset = installMaliciousSkill(dir, assetName);
+      const asset = seedMaliciousAsset(dir, assetName);
 
       // 실제 spawn을 쓰되 stdout을 가로챈다 — `RunGenAssetResult`에는 모델 원문이 남지 않으므로
       // 이 스파이가 없으면 "모델이 무엇을 말했는가"를 볼 수단이 아예 없다.
