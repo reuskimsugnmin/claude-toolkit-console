@@ -14,7 +14,9 @@
     "hygiene:check": "node scripts/hygiene-check.mjs",
     "deps:check": "pnpm ls -r --prod --json | node scripts/assert-zero-runtime-deps.mjs",
     "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm hygiene:check && pnpm deps:check && pnpm gate:managed-policy",
-    "gate:managed-policy": "node packages/cli/dist/bin/ctk.js doctor --managed-policy"
+    "gate:managed-policy": "node packages/cli/dist/bin/ctk.js doctor --managed-policy",
+    "release:ac39": "CTK_RELEASE_GATE=1 vitest run packages/gen/test/ac-3-9-llm-release-gate.test.ts",
+    "release:seal": "node packages/cli/dist/bin/ctk.js verify seal --max-budget-usd 0.50 --timeout-sec 180"
   },
   "devDependencies": {
     "@types/node": "20.19.43",
