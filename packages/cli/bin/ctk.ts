@@ -24,6 +24,7 @@ import { runMove, AssetNotFoundError, NoOpMoveError, ProjectIndexOutOfRangeError
 import { runRollback, NoRollbackTargetError } from "../src/commands/rollback.js";
 import { runMeasure } from "../src/commands/measure.js";
 import { runUsage, NoMeasurementError } from "../src/commands/usage.js";
+import { runExportViewModel, runWebServe } from "../src/commands/web.js";
 import { LockContendedError } from "@ctk/sync";
 import { DuplicateKeyDiffError } from "@ctk/core";
 import { McpMoveRejectedError, CliToolMoveUnsupportedError, RollbackFailedError } from "@ctk/actuator";
@@ -88,6 +89,43 @@ async function main(): Promise<void> {
         }
         console.error("사용법: ctk doctor --drift");
         process.exitCode = 1;
+        return;
+      }
+      case "web": {
+        const exportPath = readFlagValue(rest, "--export-view-model");
+        if (exportPath === undefined) {
+          const portFlag = readFlagValue(rest, "--port");
+          const server = await runWebServe({ port: portFlag === undefined ? 0 : Number(portFlag) });
+          console.log(`ctk web (조회 전용) — ${server.url}`);
+          console.log("  GET/HEAD만 응답한다. 쓰기 액션은 아직 없다(Step 6b).");
+          console.log("  Ctrl+C로 종료한다 — 데몬으로 상주하지 않는다.");
+          // 포그라운드 프로세스로 남는다(ADR-003 데몬 불변식). 여기서 return하면 이벤트 루프가
+          // 살아 있는 동안 프로세스가 유지된다.
+          return;
+        }
+        const result = runExportViewModel(exportPath);
+        console.log(`뷰모델 출력 완료 — ${result.path}`);
+        console.log(`  자산 ${result.assetCount}건`);
+        console.log(
+          `  사용량 순위 ${result.rankedCount}건 · 순위 불가(미측정/근사) ${result.unrankableCount}건`,
+        );
+        console.log(
+          result.freshnessDays === null
+            ? "  마지막 스캔: 기록 없음"
+            : `  마지막 스캔: ${result.freshnessDays}일 전`,
+        );
+        // 순위가 결론으로 읽힐 자격이 없으면 그 사실을 숫자보다 먼저 말한다.
+        const quality = result.rankingQuality;
+        if (!quality.is_meaningful) {
+          const why =
+            quality.reason === "no_measured_assets"
+              ? "점유가 측정된 자산이 없다"
+              : `점유가 측정된 ${quality.measured_count}건이 전부 0토큰이다`;
+          console.log(
+            `  ⚠️  "안 쓰는데 비싼 툴" 순위는 아직 결론이 될 수 없다 — ${why} ` +
+              `(미측정 ${quality.unmeasured_count}건). \`ctk measure\`에 count_tokens 크레덴셜이 필요하다.`,
+          );
+        }
         return;
       }
       case "verify": {

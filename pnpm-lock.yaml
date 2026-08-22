@@ -53,6 +53,9 @@ importers:
       '@ctk/sync':
         specifier: workspace:*
         version: link:../sync
+      '@ctk/web':
+        specifier: workspace:*
+        version: link:../web
 
   packages/core:
     dependencies:
@@ -92,15 +95,9 @@ importers:
 
   packages/web:
     dependencies:
-      '@ctk/actuator':
-        specifier: workspace:*
-        version: link:../actuator
       '@ctk/core':
         specifier: workspace:*
         version: link:../core
-      '@ctk/probe':
-        specifier: workspace:*
-        version: link:../probe
 
 packages:
 

@@ -16,6 +16,7 @@ export default defineConfig({
       "@ctk/actuator": path.resolve(root, "packages/actuator/src/index.ts"),
       "@ctk/sync": path.resolve(root, "packages/sync/src/index.ts"),
       "@ctk/gen": path.resolve(root, "packages/gen/src/index.ts"),
+      "@ctk/web": path.resolve(root, "packages/web/server/app.ts"),
     },
   },
 });

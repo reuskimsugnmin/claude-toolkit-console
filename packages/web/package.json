@@ -4,8 +4,14 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@ctk/actuator": "workspace:*",
-    "@ctk/core": "workspace:*",
-    "@ctk/probe": "workspace:*"
+    "@ctk/core": "workspace:*"
+  },
+  "main": "./dist/app.js",
+  "types": "./dist/app.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/app.d.ts",
+      "default": "./dist/app.js"
+    }
   }
 }

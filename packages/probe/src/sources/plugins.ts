@@ -3,12 +3,15 @@ import path from "node:path";
 import {
   normalizePath,
   parseInstalledPluginsFile,
+  parseKnownMarketplacesFile,
   parsePluginDetails,
   parsePluginList,
   parseSettingsFile,
+  toRepoLink,
   type Asset,
   type Installation,
   type PluginDetails,
+  type RepoLink,
 } from "@ctk/core";
 import type { HomeContext } from "../home.js";
 import { spawnClaude, type SpawnClaudeResult } from "../harness/spawn-claude.js";
@@ -91,6 +94,17 @@ export async function collectPlugins(options: CollectPluginsOptions): Promise<Pl
     throw new ParseSchemaMismatchError("claude plugin list --json (zod strict)", cause);
   }
 
+  // 요구사항 6 — 저장소 링크의 유일한 출처. 파일이 없거나 파싱에 실패하면 링크를 비워 둘 뿐
+  // 스캔을 실패시키지 않는다(링크는 부가 정보다). 다만 **비운 것과 "로컬 출처라 URL이 없는 것"은
+  // 다르므로**, 후자는 `repo_source: "directory"`로 남긴다.
+  const marketplacesAbsPath = path.join(home.ctkConfigDir, "plugins", "known_marketplaces.json");
+  const marketplacesRaw = readJsonOrNull(marketplacesAbsPath);
+  let repoLinkByMarketplace = new Map<string, RepoLink>();
+  if (marketplacesRaw !== null) {
+    const parsed = parseKnownMarketplacesFile(marketplacesRaw);
+    repoLinkByMarketplace = new Map(Object.entries(parsed).map(([name, entry]) => [name, toRepoLink(entry.source)]));
+  }
+
   // 자산 정체성 — id 기준 고유 집계(P1-13, AC-0.3 실측: local 스코프 "중복"은 프로젝트별 설치일 뿐
   // 자산은 하나다). 첫 등장 엔트리의 값을 대표값으로 쓴다.
   const assetById = new Map<string, Asset>();
@@ -102,6 +116,7 @@ export async function collectPlugins(options: CollectPluginsOptions): Promise<Pl
     const name = entry.id.slice(0, atIndex);
     const marketplace = entry.id.slice(atIndex + 1);
     const normalizedInstallPath = normalizePath(entry.installPath, home.ctkHome);
+    const repoLink = repoLinkByMarketplace.get(marketplace);
     assetById.set(entry.id, {
       schema_version: 1,
       _scope: "machine_independent",
@@ -110,6 +125,9 @@ export async function collectPlugins(options: CollectPluginsOptions): Promise<Pl
       name,
       marketplace,
       source_ref: normalizedInstallPath.home_relative ?? `path_hash:${normalizedInstallPath.path_hash}`,
+      // 두 필드를 함께 넣거나 함께 뺀다 — repo_source만 있고 url이 없는 상태가 "로컬 출처"의 표현이다.
+      ...(repoLink === undefined ? {} : { repo_source: repoLink.kind }),
+      ...(repoLink?.url == null ? {} : { repo_url: repoLink.url }),
     });
   }
 

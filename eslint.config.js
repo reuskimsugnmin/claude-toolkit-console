@@ -119,6 +119,27 @@ export default tseslint.config(
     },
   },
 
+  // ── web/server: core만 import 가능. **파일 쓰기·서브프로세스 금지 + 경로 조립 금지.**
+  //    조회 전용 표면이 URL 문자열로 경로를 만들면 그 순간 경로 순회가 웹에 열린다 —
+  //    카탈로그 읽기·경로 산출은 전부 주입받고, 여기서는 `node:path`조차 쓰지 않는다.
+  {
+    files: ["packages/web/server/**/*.ts"],
+    rules: {
+      ...restrictedImports([
+        {
+          group: ["@ctk/probe", "@ctk/actuator", "@ctk/sync", "@ctk/gen", "@ctk/cli", "@ctk/web"],
+          message: "web은 core만 import할 수 있다 — 카탈로그 읽기는 합성 루트(cli)가 주입한다",
+        },
+        {
+          group: ["node:path", "path", "node:fs", "fs", "node:fs/promises"],
+          message: "web/server는 경로를 조립하거나 파일을 읽지 않는다 — 문서 본문은 주입받는다(경로 순회 방지)",
+        },
+      ]),
+      "ctk/no-fs-write-mutation": "error",
+      "ctk/no-direct-child-process": "error",
+    },
+  },
+
   // ── gen: core, probe, sync만 import 가능. 직접 쓰지 않는다(fs 쓰기 금지). 홈 경로 리터럴 금지.
   {
     files: ["packages/gen/src/**/*.ts"],
