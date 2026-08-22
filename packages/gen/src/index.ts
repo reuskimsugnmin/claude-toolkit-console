@@ -117,6 +117,11 @@ export interface RunGenOptions {
   interactive: boolean;
   allowManagedPolicy: boolean;
   managedPolicies?: readonly unknown[];
+  /**
+   * 존재하는데 파싱하지 못한 managed 정책 파일 경로. **빈 배열과 "읽지 못했다"는 다르다** —
+   * 넘기지 않으면 깨진 정책 파일이 "정책 없음"으로 통과한다(안전 원칙 7).
+   */
+  managedPolicyParseFailures?: readonly string[];
   now?: Date;
   spawnFn?: typeof spawnClaude;
 }
@@ -149,13 +154,18 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
     interactive,
     allowManagedPolicy,
     managedPolicies = [],
+    managedPolicyParseFailures = [],
     spawnFn = spawnClaude,
   } = options;
   const now = options.now ?? new Date();
 
   if (!noLlm) {
     const grade = gradeManagedPolicy(managedPolicies);
-    const decision = decideManagedPolicyGate(grade, { interactive, allowManagedPolicy });
+    const decision = decideManagedPolicyGate(grade, {
+      interactive,
+      allowManagedPolicy,
+      unreadablePolicyPresent: managedPolicyParseFailures.length > 0,
+    });
     if (decision === "blocked") {
       throw new ManagedPolicyBlockedError(grade);
     }

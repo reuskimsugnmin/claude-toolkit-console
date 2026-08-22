@@ -15,6 +15,9 @@ import {
   runDoctorDrift,
   runDoctorInterruptedRestores,
   runDoctorSubagentAttribution,
+  runDoctorManagedPolicy,
+  formatManagedPolicyReport,
+  managedPolicyExitCode,
   formatInterruptedRestoreAlert,
   NoSnapshotsError,
 } from "../src/commands/doctor.js";
@@ -79,6 +82,14 @@ async function main(): Promise<void> {
           );
           console.error("");
         }
+        if (rest.includes("--managed-policy")) {
+          const report = runDoctorManagedPolicy();
+          console.log(formatManagedPolicyReport(report));
+          // 판정 불가·위험 키는 **종료 코드로도** 드러낸다 — 릴리스 게이트가 사람 눈에만
+          // 기대면 CI에서 아무것도 막지 못한다("실패가 아무것도 막지 않으면 신호가 아니다").
+          process.exitCode = managedPolicyExitCode(report);
+          return;
+        }
         if (rest.includes("--drift")) {
           const drift = runDoctorDrift();
           console.log(`드리프트 (${drift.fromSnapshot} → ${drift.toSnapshot})`);
@@ -87,7 +98,7 @@ async function main(): Promise<void> {
           console.log(`  무변경: ${drift.unchangedCount}건`);
           return;
         }
-        console.error("사용법: ctk doctor --drift");
+        console.error("사용법: ctk doctor --drift | --managed-policy");
         process.exitCode = 1;
         return;
       }
