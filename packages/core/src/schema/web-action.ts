@@ -97,8 +97,21 @@ export const WebActionRequestSchema = z
   .superRefine((request, ctx) => {
     // 조건부 필수는 스키마가 판정한다 — 핸들러까지 내려가면 클라이언트 계약 위반이
     // 500(서버 결함)으로 보고된다(재심 L2).
-    if (request.action === "move" && request.to === "project" && request.to_project_index === undefined) {
-      ctx.addIssue({ code: "custom", message: "to=project이면 to_project_index가 필요하다", path: ["to_project_index"] });
+    if (request.action === "move" && request.to === "project") {
+      if (request.to_project_index === undefined) {
+        ctx.addIssue({ code: "custom", message: "to=project이면 to_project_index가 필요하다", path: ["to_project_index"] });
+      }
+      // ⚠️ **대조값을 빼면 대조가 사라진다.** `resolveProjectPath`는 `expectedHashPrefix`가
+      // `undefined`면 검사를 건너뛰므로, optional로 두면 클라이언트가 그냥 안 보내는 것만으로
+      // M1 방어가 무력화된다. 이 스키마는 **웹 전용**이고(CLI는 `MoveOptions`를 직접 쓴다)
+      // UI는 항상 보내므로, 필수로 올려도 잃는 호환이 없다.
+      if (request.to_project_hash_prefix === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          message: "to=project이면 선택 시점의 to_project_hash_prefix가 필요하다",
+          path: ["to_project_hash_prefix"],
+        });
+      }
     }
   });
 
