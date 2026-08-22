@@ -20,7 +20,18 @@ import path from "node:path";
 
 export const DEFAULT_MAX_ASSET_SOURCE_BYTES = 200_000;
 
-export class SymlinkAssetSourceRejectedError extends Error {
+/**
+ * 위생 검사가 **그 자산의 원문 읽기를 거부**했음을 뜻하는 공통 기반.
+ *
+ * 공통 기반이 필요한 이유: 호출자(`plan.ts`)가 "이 자산만 건너뛴다"와 "실행을 중단한다"를
+ * 갈라야 하는데, 에러 클래스가 각각이면 `instanceof`를 나열해야 하고 **새 위생 규칙이
+ * 추가될 때 그 나열을 빠뜨린다.** 그러면 새 규칙 하나가 다시 전체 실행을 죽인다.
+ */
+export abstract class FileHygieneError extends Error {
+  abstract readonly failureClass: string;
+}
+
+export class SymlinkAssetSourceRejectedError extends FileHygieneError {
   readonly failureClass = "path_traversal_detected" as const;
   constructor(readonly targetPath: string) {
     super(`자산 원본 파일이 심볼릭 링크다 — 링크를 따라가지 않고 거부한다: ${targetPath}`);
@@ -28,7 +39,8 @@ export class SymlinkAssetSourceRejectedError extends Error {
   }
 }
 
-export class AssetSourceTooLargeError extends Error {
+export class AssetSourceTooLargeError extends FileHygieneError {
+  readonly failureClass = "asset_source_too_large" as const;
   constructor(
     readonly targetPath: string,
     readonly sizeBytes: number,
