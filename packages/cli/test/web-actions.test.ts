@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { buildProjectChoices, containsPathSeparator, parseWebActionRequest, type ConsoleViewModel } from "@ctk/core";
-import { projectExposureNotice } from "../src/commands/web.js";
+import {
+  PortHandoffError,
+  bindWithPortHandoff,
+  projectExposureNotice,
+} from "../src/commands/web.js";
 import { EstimateTokenStore, createSessionToken } from "../src/commands/web-actions.js";
 
 /**
@@ -216,5 +220,62 @@ describe("L1 — 프로젝트 이름 노출 고지 (재심 L1)", () => {
 
   it("노출이 없으면 고지하지 않는다 — 아무 일도 없는데 경고하지 않는다", () => {
     expect(projectExposureNotice(vm([]))).toBeNull();
+  });
+});
+
+describe("L4 — 포트 확보 TOCTOU (심사 L4)", () => {
+  /**
+   * 액션 모드는 관문이 실제 포트를 알아야 Host를 대조할 수 있는데, 포트를 OS에게 고르게 하려면
+   * 한 번 띄웠다 닫아야 한다. **그 틈에는 아무도 포트를 잡고 있지 않다.**
+   *
+   * 이 실패는 막히는 쪽이다 — 관문 없는 서버가 뜨는 일은 없다. 그래서 위험이 아니라 **진단과
+   * 복구 경로**가 본문이다(안전 원칙 6). 원래는 스택트레이스 하나로 끝나 사용자가 할 수 있는
+   * 일이 재실행뿐이었고, 재실행은 같은 확률로 또 실패한다.
+   */
+  const addrInUse = () => Object.assign(new Error("listen EADDRINUSE"), { code: "EADDRINUSE" });
+
+  it("한 번에 잡히면 다시 고르지 않는다", async () => {
+    let reserved = 0;
+    const result = await bindWithPortHandoff(
+      () => { reserved++; return Promise.resolve(40000 + reserved); },
+      (port) => Promise.resolve(`bound:${port}`),
+    );
+    expect(result).toBe("bound:40001");
+    expect(reserved).toBe(1);
+  });
+
+  it("EADDRINUSE면 새 포트를 골라 다시 시도한다 — 같은 포트를 재시도하지 않는다", async () => {
+    const tried: number[] = [];
+    let reserved = 0;
+    const result = await bindWithPortHandoff(
+      () => { reserved++; return Promise.resolve(40000 + reserved); },
+      (port) => {
+        tried.push(port);
+        return tried.length < 3 ? Promise.reject(addrInUse()) : Promise.resolve(`bound:${port}`);
+      },
+    );
+    expect(tried).toEqual([40001, 40002, 40003]);
+    expect(result).toBe("bound:40003");
+  });
+
+  it("상한까지 실패하면 --port로 빠져나갈 길을 알려준다", async () => {
+    const err = await bindWithPortHandoff(() => Promise.resolve(40000), () => Promise.reject(addrInUse()), 3)
+      .then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(PortHandoffError);
+    expect((err as PortHandoffError).attempts).toBe(3);
+    expect((err as Error).message).toContain("--port");
+    // 원인을 삼키지 않는다 — "없음"과 "실패"를 구분한다(안전 원칙 7).
+    expect((err as Error).cause).toMatchObject({ code: "EADDRINUSE" });
+  });
+
+  it("EADDRINUSE가 아닌 실패는 재시도하지 않고 그대로 올린다 — 원인을 흐리지 않는다", async () => {
+    let attempts = 0;
+    const denied = Object.assign(new Error("listen EACCES"), { code: "EACCES" });
+    const err = await bindWithPortHandoff(
+      () => Promise.resolve(80),
+      () => { attempts++; return Promise.reject(denied); },
+    ).then(() => null, (e: unknown) => e);
+    expect(err).toBe(denied);
+    expect(attempts, "권한 거부를 5회 반복해 봐야 같은 결과다").toBe(1);
   });
 });

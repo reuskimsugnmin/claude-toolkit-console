@@ -64,6 +64,47 @@ export function isExempt(relPath) {
   return EXEMPT_PATH_PREFIXES.some((prefix) => relPath.startsWith(prefix));
 }
 
+/**
+ * **구조 서명으로 잡는 검출기.** 위 정규식들은 "경로 리터럴"을 찾는데, `ctk web
+ * --export-view-model`의 산출물에는 절대경로가 **하나도 없다** — 안 B가 마지막 세그먼트만
+ * 싣도록 설계했기 때문이다. 그래서 이 저장소에 커밋해도 위 검사를 **전부 통과한다.** 실제
+ * 프로젝트 디렉터리 이름·설치 목록·머신 id·개인 사용량 수치가 그대로 들어 있는데도 그렇다
+ * (심사 L4). 탐지기가 방어를 우회당한 게 아니라 **그 축을 보지 않는다.**
+ *
+ * 값만 봐서는 개인 데이터인지 알 수 없다. 대신 **그 파일이 무엇인지**는 안다 — ctk 산출물의
+ * 구조 서명이 있으면 그것은 이 머신의 실측 결과이고, 이 저장소에 있어서는 안 된다.
+ *
+ * 서명은 최상위 키 **전체 일치**로 본다. 하나만 보면 합성 픽스처가 걸린다.
+ */
+const CTK_EXPORT_SIGNATURES = [
+  {
+    name: "exported_view_model",
+    // cli/src/commands/web.ts의 `runExportViewModel`이 쓰는 뷰모델 최상위 키.
+    requiredKeys: ["schema_version", "machine_id", "assets", "usage", "freshness"],
+  },
+];
+
+/**
+ * 확장자가 아니라 **내용이 JSON 객체인가**로 대상을 정한다. `--export-view-model`은 임의의
+ * 경로를 받으므로 `vm.txt`·확장자 없음도 가능하다 — 확장자로 거르면 그 경우가 통째로 샌다.
+ */
+export function scanStructuredExport(relPath, content) {
+  if (isExempt(relPath)) return [];
+  if (!content.trimStart().startsWith("{")) return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return []; // JSON이 아니면 ctk 산출물도 아니다
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+  return CTK_EXPORT_SIGNATURES.filter((sig) => sig.requiredKeys.every((key) => key in parsed)).map((sig) => ({
+    pattern: sig.name,
+    match: sig.requiredKeys.join("+"),
+    file: relPath,
+  }));
+}
+
 export function scanFileContent(relPath, content, patterns) {
   if (isExempt(relPath)) return [];
   const violations = [];
@@ -92,9 +133,17 @@ export function runHygieneCheck({ patterns = buildPatterns(), files = listTracke
       continue; // 바이너리 디코드 실패·삭제된 파일 등은 건너뛴다
     }
     violations.push(...scanFileContent(relPath, content, patterns));
+    violations.push(...scanStructuredExport(relPath, content));
   }
   return { violations, filesScanned: files.length };
 }
+
+/** 위반 종류별 복구 안내 — 거부에는 빠져나갈 길을 함께 준다(안전 원칙 6). */
+const REMEDY = {
+  exported_view_model:
+    "ctk 뷰모델 export는 이 머신의 실측 결과다. 저장소에서 제거하고(git rm --cached) " +
+    ".gitignore에 넣는다 — 공유가 필요하면 동기화용 private 저장소로 보낸다.",
+};
 
 function main() {
   const { violations, filesScanned } = runHygieneCheck();
@@ -102,6 +151,9 @@ function main() {
     console.error(`공개 저장소 위생 위반 ${violations.length}건 발견:`);
     for (const v of violations.slice(0, 50)) {
       console.error(`  [${v.pattern}] ${v.file}: ${v.match}`);
+    }
+    for (const pattern of new Set(violations.map((v) => v.pattern))) {
+      if (REMEDY[pattern]) console.error(`\n  → ${pattern}: ${REMEDY[pattern]}`);
     }
     process.exitCode = 1;
     return;

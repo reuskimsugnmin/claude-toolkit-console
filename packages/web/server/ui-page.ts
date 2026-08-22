@@ -84,6 +84,7 @@ function renderUiHtml(nonce: string): string {
   .confirm dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 14px; margin: 8px 0 12px; }
   .confirm dt { color: inherit; opacity: .75; }
   .confirm .row { display: flex; gap: 8px; }
+  .confirm .hint { margin: 8px 0 0; font-size: 13px; font-weight: 600; }
   .result { border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px; margin: 12px 0;
     font-size: 13.5px; white-space: pre-wrap; background: var(--panel); }
   .result.fail { border-color: var(--warn-line); background: var(--warn-bg); color: var(--warn-ink); }
@@ -172,6 +173,31 @@ const SESSION_TOKEN = (() => {
 
 let actionBusy = false;
 let CURRENT_ASSET = null;
+
+/**
+ * 열려 있는 확인 패널. **패널은 한 번에 하나만 뜬다.**
+ *
+ * 처음에는 새 패널이 열릴 때 \`action-area\`를 비웠는데, 그러면 앞 패널의 버튼이 DOM에서
+ * 떨어져 나가면서 리스너도 사라진다 — 그 promise는 **영원히 resolve되지 않고** 그것을
+ * 기다리던 async 프레임은 깨어나지 않는다(심사 L6). \`gen\` 견적이 그렇게 묶이면 미소비
+ * 견적 토큰이 상한(8개)을 채워 TTL 10분 동안 문서 생성이 막힌다 — 조용히 사라지는 것이
+ * 아니라 **나중에 엉뚱한 곳에서** 거부로 나타난다.
+ *
+ * 앞 패널을 취소로 확정하고 새 패널을 여는 방법도 있지만, 그러면 깨어난 앞 프레임이
+ * \`showResult\`로 방금 그린 새 패널을 지운다. 그래서 **열기 자체를 막는다** — 취소 버튼이
+ * 화면에 그대로 있으므로 빠져나갈 길은 닫히지 않는다(안전 원칙 6).
+ */
+let pendingConfirm = null;
+
+/**
+ * 확인이 열려 있으면 \`true\`. **조용히 무시하지 않는다** — 아무 반응 없는 버튼은 사용자가
+ * 고장으로 읽고, 그 다음에 하는 일은 새로고침이다(그러면 견적 토큰이 미소비로 남는다).
+ */
+function confirmBlocks() {
+  if (pendingConfirm === null) return false;
+  pendingConfirm.hint.textContent = "먼저 이 확인에 답한다 — 다른 액션은 그 뒤에 실행된다.";
+  return true;
+}
 
 /** 액션 버튼 전체를 잠근다 — 연타로 겹치면 서버가 409를 내지만 화면도 막아야 한다. */
 function setActionsBusy(busy, note) {
@@ -264,15 +290,27 @@ function askConfirm(title, rows, confirmLabel) {
     row.appendChild(yes);
     row.appendChild(no);
     box.appendChild(row);
+
+    // 다른 액션이 막혔을 때 그 이유를 적을 자리. 빈 채로 둔다.
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    box.appendChild(hint);
     area.appendChild(box);
 
-    yes.addEventListener("click", () => { area.textContent = ""; resolve(true); });
-    no.addEventListener("click", () => { area.textContent = ""; resolve(false); });
+    // 어느 경로로 닫히든 **반드시 한 번은** 응답한다 — 이 promise를 기다리는 프레임이 있다.
+    pendingConfirm = { hint };
+    const settle = (answer) => {
+      pendingConfirm = null;
+      area.textContent = "";
+      resolve(answer);
+    };
+    yes.addEventListener("click", () => settle(true));
+    no.addEventListener("click", () => settle(false));
   });
 }
 
 async function runSimpleAction(label, body, confirmRows) {
-  if (actionBusy) return;
+  if (actionBusy || confirmBlocks()) return;
   if (confirmRows && !(await askConfirm(label, confirmRows, "실행"))) return;
   setActionsBusy(true, label + " 실행 중…");
   try {
@@ -288,7 +326,8 @@ async function runSimpleAction(label, body, confirmRows) {
  * 사용자가 그 화면에서 명시 승인해야 실행된다. 승인 없이는 어떤 유료 호출도 일어나지 않는다.
  */
 async function runGenTwoPhase() {
-  if (actionBusy) return;
+  // 확인이 열려 있는데 견적을 또 내면 미소비 토큰만 쌓인다 — 상한(8개)을 채우는 지름길이다.
+  if (actionBusy || confirmBlocks()) return;
   setActionsBusy(true, "견적 계산 중…");
   let est;
   try {

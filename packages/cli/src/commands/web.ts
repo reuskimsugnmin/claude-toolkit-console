@@ -272,6 +272,55 @@ export interface ServeResult {
   exposureNotice: string | null;
 }
 
+/** 포트를 고르고 다시 바인딩하기까지의 틈에서 몇 번까지 다시 시도할지. */
+export const PORT_HANDOFF_ATTEMPTS = 5;
+
+/** 마지막 시도까지 포트를 못 잡았을 때. **막히는 실패이므로 위험하지는 않다** — 문제는 진단이다. */
+export class PortHandoffError extends Error {
+  constructor(readonly attempts: number, options?: { cause?: unknown }) {
+    super(
+      `액션 모드용 포트를 확보하지 못했다 (${attempts}회 시도). 포트를 고르고 다시 바인딩하는 ` +
+        `사이에 다른 프로세스가 그 포트를 가져갔다 — ctk web --actions --port <번호>로 포트를 직접 지정한다.`,
+      options,
+    );
+    this.name = "PortHandoffError";
+  }
+}
+
+function isAddressInUse(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "EADDRINUSE";
+}
+
+/**
+ * `reserve`가 고른 포트에 `bind`한다. 그 둘 사이에는 **아무도 포트를 잡고 있지 않은 틈**이
+ * 있고(TOCTOU), 그 틈에 다른 프로세스가 들어오면 `EADDRINUSE`가 난다.
+ *
+ * 원래 이 실패는 스택트레이스 하나로 끝났다. **막히는 쪽이라 위험하지는 않지만**(엉뚱한 포트에
+ * 관문 없이 뜨는 일은 없다) 사용자는 왜 실패했는지 모르고, 그때 하는 일은 보통 재실행이다 —
+ * 같은 확률로 또 실패한다. 몇 번 다시 고르고, 그래도 안 되면 **빠져나갈 길을 알려준다**
+ * (안전 원칙 6: fail-closed 가드에는 복구 경로와 진단을 함께 만든다).
+ *
+ * `EADDRINUSE`가 **아닌** 실패는 재시도하지 않고 그대로 올린다 — 권한 거부·주소 확인 실패를
+ * 5회 반복해 봐야 같은 결과이고, 원인만 흐려진다.
+ */
+export async function bindWithPortHandoff<T>(
+  reserve: () => Promise<number>,
+  bind: (port: number) => Promise<T>,
+  attempts: number = PORT_HANDOFF_ATTEMPTS,
+): Promise<T> {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const port = await reserve();
+    try {
+      return await bind(port);
+    } catch (err) {
+      if (!isAddressInUse(err)) throw err;
+      lastError = err;
+    }
+  }
+  throw new PortHandoffError(attempts, { cause: lastError });
+}
+
 /**
  * `ctk web` — 조회 전용 서버를 띄운다(Step 6a).
  *
@@ -306,18 +355,21 @@ export async function runWebServe(options: ServeOptions = {}): Promise<ServeResu
   // 액션 모드는 관문이 실제 포트를 알아야 Host/Origin을 대조할 수 있다. 포트를 먼저 확정하려고
   // 조회 서버를 한 번 띄웠다 닫는다 — 0번 포트를 OS가 고르게 두면서도 관문이 그 값을 알 수 있는
   // 유일한 방법이다. (사용자가 --port를 주면 이 왕복은 생략된다.)
-  let port = options.port ?? 0;
-  if (port === 0) {
-    const probe = await startReadonlyServer({ ...base, port: 0 });
-    port = probe.port;
-    await probe.close();
+  const sessionToken = createSessionToken();
+  const handlers = createActionHandlers();
+  const startWithActions = (port: number): Promise<ListeningServer> =>
+    startReadonlyServer({ ...base, port, actions: { guard: { sessionToken, port }, handlers } });
+
+  const fixedPort = options.port ?? 0;
+  if (fixedPort !== 0) {
+    return { server: await startWithActions(fixedPort), sessionToken, exposureNotice };
   }
 
-  const sessionToken = createSessionToken();
-  const server = await startReadonlyServer({
-    ...base,
-    port,
-    actions: { guard: { sessionToken, port }, handlers: createActionHandlers() },
-  });
+  const server = await bindWithPortHandoff(async () => {
+    const probe = await startReadonlyServer({ ...base, port: 0 });
+    const port = probe.port;
+    await probe.close();
+    return port;
+  }, startWithActions);
   return { server, sessionToken, exposureNotice };
 }
