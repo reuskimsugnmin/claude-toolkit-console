@@ -87,6 +87,16 @@ export const TIER2_CHURN_ALLOWLIST_SEALED_LIVE: readonly AllowlistRule[] = [
     pattern: /^sessions\/\d+\.[A-Za-z0-9]+\.key$/,
     note: "AC-0.11 실측 — sealed-live claude -p 실행마다 생성되는 세션 키 파일(<pid>.<hash>.key)",
   },
+  {
+    // ⚠️ 앵커된 정규식만 쓴다. `backups/*`처럼 넓히면 그 디렉터리 아래 무엇이 바뀌어도 통과하고,
+    // 그때부터 이 가드는 아무것도 막지 못한다(Pre-mortem H — 허용목록의 반사적 확장).
+    pattern: /^backups\/\.claude\.json\.backup\.\d+$/,
+    note:
+      "실측(gen 첫 실행) — `.claude.json` 갱신 시 하네스가 회전시키는 백업. harness-facts의 " +
+      "\"plugin list --json 한 번만 실행해도 .claude.json과 backups/가 생성된다\"와 같은 경로다. " +
+      "AC-0.11 최초 측정(maxdepth 2, 3회)에서는 회전이 일어나지 않아 관측되지 않았다 — " +
+      "측정 범위의 한계가 드러난 사례이므로 근거를 함께 남긴다.",
+  },
 ];
 
 /**

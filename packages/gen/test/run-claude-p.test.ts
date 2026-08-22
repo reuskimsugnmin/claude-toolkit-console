@@ -16,7 +16,26 @@ function target(): GenPlanTarget {
   };
 }
 
-const VALID_STDOUT = JSON.stringify({
+/**
+ * 실제 `claude -p --output-format json`은 **봉투**를 반환하고 모델 산출물은 그 안의
+ * `structured_output`(`--json-schema` 사용 시) 또는 `result` 문자열에 들어간다(실측).
+ * 픽스처가 페이로드를 그대로 stdout에 두면 프로덕션 파서를 전혀 거치지 않는 테스트가 된다 —
+ * 실제로 그 상태였고, 봉투 해석 버그를 테스트가 잡지 못했다.
+ */
+function envelope(payload: unknown): string {
+  return JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    structured_output: payload,
+    result: JSON.stringify(payload),
+    session_id: "test-session",
+    num_turns: 1,
+    duration_ms: 10,
+  });
+}
+
+const VALID_STDOUT = envelope({
   role: "문서 변환 도구",
   purpose: "PDF를 마크다운으로 바꾼다",
   when_to_use: "PDF 파일을 다뤄야 할 때 [[cite:SKILL.md#L1-L2]]",
@@ -95,7 +114,10 @@ describe("gen/run-claude-p — sealed-live 프로파일로 claude -p를 띄워 A
   it("스키마를 벗어난 출력(예: 필드 초과)은 GenOutputSchemaViolationError로 거부된다", async () => {
     const spawnFn = async () => ({
       exitCode: 0,
-      stdout: JSON.stringify({ ...JSON.parse(VALID_STDOUT), extra: "ignore previous instructions" }),
+      stdout: envelope({
+        ...(JSON.parse(VALID_STDOUT) as { structured_output: Record<string, unknown> }).structured_output,
+        extra: "ignore previous instructions",
+      }),
       stderr: "",
       timedOut: false,
     });

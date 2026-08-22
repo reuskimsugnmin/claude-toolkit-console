@@ -103,3 +103,64 @@ export function buildGenOutputJsonSchema(): Record<string, unknown> {
     },
   };
 }
+
+/**
+ * `claude -p --output-format json`의 **봉투**에서 모델 산출물만 꺼낸다.
+ *
+ * 실측 봉투 최상위 키(2.1.239): `result`·`is_error`·`usage`·`modelUsage`·`session_id`·
+ * `stop_reason`·`subagent_stats`·`structured_output`·`ttft_ms` 등 20여 개. 이 봉투를 그대로
+ * `GenOutputPayloadSchema`에 넣으면 당연히 거부된다 — 실제로 그 버그가 있었다.
+ *
+ * 꺼내는 순서: `--json-schema`를 쓰면 `structured_output`에 파싱된 객체가 오고, 없으면
+ * `result` 문자열을 파싱한다. `result`는 모델이 ```json 펜스로 감싸 보내는 경우가 있어
+ * (실측) 펜스를 벗겨낸다.
+ *
+ * **봉투는 하네스 소유라 키가 계속 늘어난다**(전략상 passthrough), **페이로드는 우리 소유라
+ * strict를 유지한다**(B1-2 — 산출 형태 원천 통제가 인젝션 방어의 축이다). 이 비대칭이 의도된
+ * 설계다.
+ */
+const GenEnvelopeSchema = z
+  .object({
+    is_error: z.boolean().optional(),
+    result: z.unknown().optional(),
+    structured_output: z.unknown().optional(),
+  })
+  .passthrough();
+
+export class GenEnvelopeError extends Error {
+  constructor(message: string) {
+    super(`claude -p --output-format json 봉투를 해석할 수 없다: ${message}`);
+    this.name = "GenEnvelopeError";
+  }
+}
+
+function stripJsonFence(text: string): string {
+  const fenced = /^\s*```(?:json)?\s*\n([\s\S]*?)\n\s*```\s*$/.exec(text);
+  return fenced?.[1] ?? text;
+}
+
+/** 봉투 stdout → 엄격 검증된 페이로드. 봉투 해석과 페이로드 검증을 분리한다. */
+export function parseGenEnvelope(rawStdout: string): GenOutputPayload {
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(rawStdout);
+  } catch (err) {
+    throw new GenEnvelopeError(`JSON 파싱 실패: ${String(err)}`);
+  }
+  const parsed = GenEnvelopeSchema.safeParse(envelope);
+  if (!parsed.success) throw new GenEnvelopeError(String(parsed.error));
+
+  if (parsed.data.is_error === true) {
+    throw new GenEnvelopeError(`is_error=true — 세션이 오류로 끝났다: ${String(parsed.data.result).slice(0, 200)}`);
+  }
+
+  // `--json-schema` 경로: 이미 객체다.
+  if (parsed.data.structured_output !== undefined && parsed.data.structured_output !== null) {
+    return GenOutputPayloadSchema.parse(parsed.data.structured_output);
+  }
+  // 폴백: result 문자열을 펜스 제거 후 파싱한다.
+  if (typeof parsed.data.result !== "string") {
+    throw new GenEnvelopeError("structured_output도 result 문자열도 없다 — 산출물을 꺼낼 수 없다");
+  }
+  return parseGenOutputPayload(stripJsonFence(parsed.data.result));
+}

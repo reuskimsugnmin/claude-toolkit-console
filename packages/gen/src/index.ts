@@ -84,6 +84,8 @@ export interface RunGenAssetResult {
   assetId: string;
   outcome: GenAssetOutcome;
   reason?: GenAssetSkipReason;
+  /** 거부 사유의 구체적 근거(예: 인용이 빠진 문단의 앞부분). 진단 없는 실패는 추측을 부른다. */
+  detail?: readonly string[];
 }
 
 export interface RunGenSummary {
@@ -246,7 +248,14 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
       usage_body: docPage.body,
     });
     if (citationResult.status === "violation") {
-      results.push({ assetId: target.asset.id, outcome: "stale", reason: "citation_missing" });
+      // 위반 스니펫을 결과에 실어 보낸다 — 무엇이 왜 거부됐는지 안 보이면 호출자는 추측하게 되고,
+      // 그 추측이 "가드가 너무 엄격하다"로 흐르면 가드를 푸는 방향으로 간다.
+      results.push({
+        assetId: target.asset.id,
+        outcome: "stale",
+        reason: "citation_missing",
+        detail: citationResult.violations.slice(0, 3).map((v) => v.snippet),
+      });
       setAssetGenState(catalogRoot, target.asset.id, "stale");
       continue;
     }

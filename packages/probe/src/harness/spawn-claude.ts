@@ -91,7 +91,7 @@ export class SealUnverifiedCliError extends Error {
   constructor(verifiedVersion: string, actualVersion: string) {
     super(
       `claude 버전이 검증된 버전과 다르고(검증: ${verifiedVersion}, 실제: ${actualVersion}) ` +
-        "0원 라우팅 신호 재현도 실패했다 — sealed-live 실행을 거부한다",
+        "0원 라우팅 신호 재현도 실패했다 — sealed-live 실행을 거부한다. 복구: `ctk verify seal --installed-plugin-command <설치된 슬래시 커맨드> --max-budget-usd <수치> --timeout-sec <초>`로 새 CLI 버전에서 봉인을 재증명하라 — 통과해야만 검증 버전이 갱신된다",
     );
     this.name = "SealUnverifiedCliError";
     this.verifiedVersion = verifiedVersion;
@@ -149,7 +149,13 @@ function assertLooksLikeClaudeBinary(execPath: string): void {
   );
 }
 
-function extractVersionString(stdout: string): string | null {
+/**
+ * `claude --version` 출력에서 버전 숫자만 뽑는다. **저장·비교하는 모든 경로가 이 함수를 써야
+ * 한다** — `ctk init`이 stdout 전체("2.1.239 (Claude Code)")를 저장하고 프리플라이트는
+ * 정규화값("2.1.239")과 비교해, 같은 버전인데도 불일치로 판정되는 버그가 실제로 있었다.
+ * 형식이 다른 두 구현이 같은 값을 비교하면 조용히 틀린다.
+ */
+export function extractVersionString(stdout: string): string | null {
   const match = /\d+\.\d+\.\d+/.exec(stdout);
   return match?.[0] ?? null;
 }
@@ -226,6 +232,9 @@ export interface SpawnClaudeOptions {
    * 착각하지 않는다.
    */
   verifiedCliVersion?: string;
+  /** 봉인 재증명(ⓓ-2) 전용 — 프리플라이트 버전 게이트를 건너뛴다. 이 절차가 곧 검증이므로
+   * 검증된 버전을 요구하면 순환이 된다. 다른 어떤 경로에서도 켜지 않는다. */
+  isSealVerification?: boolean;
   /**
    * iter 8 · B5 — 버전 불일치 시 재현을 시도할 0원 라우팅 신호. 실제 설치된 플러그인 슬래시
    * 커맨드(예: `/oh-my-claudecode:help`)를 안전 모드에서 호출했을 때 `Unknown command`류
@@ -380,7 +389,13 @@ export async function spawnClaude(options: SpawnClaudeOptions): Promise<SpawnCla
   // iter 8 · B5 — sealed-live 모델 세션마다 spawn 직전 버전 게이트. 실패하면 SealUnverifiedCliError를
   // 던진다(runSerialized 이전 — 직렬화 체인에 자리를 차지하지 않는다).
   let preflightVersionMatch: PreflightVersionMatch | undefined;
-  if (options.profile === "sealed-live" && isModelSession) {
+  // ⚠️ `isSealVerification`은 이 게이트의 **유일한 예외**다. 봉인 재증명(ⓓ-2)은 새 CLI 버전에서
+  // 3신호를 실제로 재현해 검증 기록을 갱신하는 절차이므로, 그 절차 자체가 "검증된 버전"을
+  // 요구하면 순환이 되어 **영원히 복구할 수 없다** — 게이트에 복구 경로가 없으면 사용자는
+  // 게이트를 우회하는 법부터 찾고, 그 시점에 가드는 무력화된다.
+  // 예외의 안전성 근거: 재증명은 결과를 **통과했을 때만** 기록에 반영하고, 실패하면 아무것도
+  // 쓰지 않는다(cli/commands/verify-seal.ts). 즉 이 경로로는 봉인이 약해질 수 없다.
+  if (options.profile === "sealed-live" && isModelSession && options.isSealVerification !== true) {
     preflightVersionMatch = runPreflightVersionGate(
       execPath,
       env,

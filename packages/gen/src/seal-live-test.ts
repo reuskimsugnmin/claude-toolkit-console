@@ -82,6 +82,7 @@ export async function runSealLiveTest(options: SealLiveTestOptions): Promise<Sea
     timeoutSec,
     stdinPrompt: YES_NO_QUESTION(claudeMdMarkerString),
     verifiedCliVersion,
+    isSealVerification: true, // 이 절차가 곧 검증이다 — 게이트를 요구하면 순환이 된다.
   });
   const positiveControlDetected = control.exitCode === 0 && containsYes(control.stdout);
 
@@ -94,6 +95,7 @@ export async function runSealLiveTest(options: SealLiveTestOptions): Promise<Sea
     timeoutSec,
     stdinPrompt: YES_NO_QUESTION(claudeMdMarkerString),
     verifiedCliVersion,
+    isSealVerification: true, // 이 절차가 곧 검증이다 — 게이트를 요구하면 순환이 된다.
   });
   const claudeMdStringAbsent = !(claudeMdCheck.exitCode === 0 && containsYes(claudeMdCheck.stdout));
 
@@ -109,6 +111,7 @@ export async function runSealLiveTest(options: SealLiveTestOptions): Promise<Sea
     timeoutSec,
     stdinPrompt: installedPluginCommand,
     verifiedCliVersion,
+    isSealVerification: true, // 이 절차가 곧 검증이다 — 게이트를 요구하면 순환이 된다.
   });
   const installedPluginCommandUnrecognized = looksUnrecognized(pluginCheck.stdout, pluginCheck.stderr);
 

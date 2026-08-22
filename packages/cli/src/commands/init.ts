@@ -1,4 +1,4 @@
-import { resolveHomeContext, spawnClaude } from "@ctk/probe";
+import { extractVersionString, resolveHomeContext, spawnClaude } from "@ctk/probe";
 import { ensureGitRepo, writeCatalogConfig, readCatalogConfig, acquireLock, LockContendedError } from "@ctk/sync";
 import { DEFAULT_OCCUPANCY_DIVERGENCE_THRESHOLD_PCT, DEFAULT_TOKENIZER_MODEL } from "@ctk/core";
 import { defaultCatalogPath, writeLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
@@ -24,7 +24,7 @@ export function isRemoteCatalogUrl(value: string): boolean {
   return REMOTE_URL_PATTERN.test(value);
 }
 
-async function detectClaudeVersion(cwd: string): Promise<string> {
+export async function detectClaudeVersion(cwd: string): Promise<string> {
   try {
     const result = await spawnClaude({
       profile: "test-isolated",
@@ -33,7 +33,8 @@ async function detectClaudeVersion(cwd: string): Promise<string> {
       cwd,
       timeoutSec: 15,
     });
-    return result.stdout.trim() || "unknown";
+    // 프리플라이트 게이트와 **같은 정규화**를 쓴다 — 형식이 다르면 같은 버전이 불일치로 판정된다.
+    return extractVersionString(result.stdout) ?? "unknown";
   } catch {
     return "unknown";
   }
