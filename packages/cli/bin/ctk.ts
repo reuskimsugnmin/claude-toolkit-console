@@ -24,7 +24,7 @@ import { runMove, AssetNotFoundError, NoOpMoveError, ProjectIndexOutOfRangeError
 import { runRollback, NoRollbackTargetError } from "../src/commands/rollback.js";
 import { runMeasure } from "../src/commands/measure.js";
 import { runUsage, NoMeasurementError } from "../src/commands/usage.js";
-import { runExportViewModel } from "../src/commands/web.js";
+import { runExportViewModel, runWebServe } from "../src/commands/web.js";
 import { LockContendedError } from "@ctk/sync";
 import { DuplicateKeyDiffError } from "@ctk/core";
 import { McpMoveRejectedError, CliToolMoveUnsupportedError, RollbackFailedError } from "@ctk/actuator";
@@ -94,9 +94,13 @@ async function main(): Promise<void> {
       case "web": {
         const exportPath = readFlagValue(rest, "--export-view-model");
         if (exportPath === undefined) {
-          // 서버 기동은 Step 6a의 다음 조각이다. "곧 됩니다"를 조용한 성공으로 바꾸지 않는다.
-          console.error("ctk web은 아직 --export-view-model <경로>만 지원한다 (조회 서버는 준비 중).");
-          process.exitCode = 1;
+          const portFlag = readFlagValue(rest, "--port");
+          const server = await runWebServe({ port: portFlag === undefined ? 0 : Number(portFlag) });
+          console.log(`ctk web (조회 전용) — ${server.url}`);
+          console.log("  GET/HEAD만 응답한다. 쓰기 액션은 아직 없다(Step 6b).");
+          console.log("  Ctrl+C로 종료한다 — 데몬으로 상주하지 않는다.");
+          // 포그라운드 프로세스로 남는다(ADR-003 데몬 불변식). 여기서 return하면 이벤트 루프가
+          // 살아 있는 동안 프로세스가 유지된다.
           return;
         }
         const result = runExportViewModel(exportPath);

@@ -4,12 +4,28 @@
     "outDir": "./dist",
     "rootDir": "."
   },
-  "include": ["bin/**/*.ts", "src/**/*.ts"],
+  "include": [
+    "bin/**/*.ts",
+    "src/**/*.ts"
+  ],
   "references": [
-    { "path": "../core" },
-    { "path": "../probe" },
-    { "path": "../actuator" },
-    { "path": "../sync" },
-    { "path": "../gen" }
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../probe"
+    },
+    {
+      "path": "../actuator"
+    },
+    {
+      "path": "../sync"
+    },
+    {
+      "path": "../gen"
+    },
+    {
+      "path": "../web"
+    }
   ]
 }

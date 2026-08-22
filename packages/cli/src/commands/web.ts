@@ -7,12 +7,14 @@ import {
   parseInstallation,
   parseUsageMetric,
   usageMdPath,
+  type Asset,
   type ConsoleViewModel,
   type Installation,
   type UsageMetric,
 } from "@ctk/core";
 import { resolveHomeContext, type HomeContext } from "@ctk/probe";
 import { listAllAssets, listAllOccupancy } from "@ctk/sync";
+import { startReadonlyServer, type AssetDocKind, type ListeningServer } from "@ctk/web";
 import { readLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
 import { CatalogNotInitializedError } from "./scan.js";
 
@@ -162,4 +164,42 @@ export function runExportViewModel(outPath: string, options: BuildViewModelOptio
     freshnessDays: viewModel.freshness.days_since_last_scan,
     rankingQuality: viewModel.usage.ranking_quality,
   };
+}
+
+
+/**
+ * 자산 문서 본문을 읽는다. **경로는 URL이 아니라 카탈로그가 아는 kind/name에서만 만든다** —
+ * `assetId`는 조회 키로만 쓰이고 경로 산출에 들어가지 않는다(H2). 카탈로그에 없는 id면 `null`이다.
+ */
+function readAssetDoc(catalogPath: string, assets: readonly { id: string; kind: Asset["kind"]; name: string }[], assetId: string, which: AssetDocKind): string | null {
+  const asset = assets.find((a) => a.id === assetId);
+  if (asset === undefined) return null;
+  const relPath = which === "annotation" ? annotationMdPath(asset.kind, asset.name) : usageMdPath(asset.kind, asset.name);
+  const absPath = path.join(catalogPath, relPath);
+  if (!existsSync(absPath)) return null;
+  return readFileSync(absPath, "utf8");
+}
+
+export interface ServeOptions extends BuildViewModelOptions {
+  port?: number | undefined;
+}
+
+/**
+ * `ctk web` — 조회 전용 서버를 띄운다(Step 6a).
+ *
+ * 뷰모델은 **요청마다 다시 만든다.** 기동 시 한 번 캐시하면 `ctk scan`/`measure`를 돌린 뒤에도
+ * 화면이 옛 값을 보여주는데, 그 화면에는 "마지막 스캔 N일 전" 신선도 표시가 함께 있어
+ * **틀린 값에 최신이라는 딱지가 붙는다.**
+ */
+export async function runWebServe(options: ServeOptions = {}): Promise<ListeningServer> {
+  const home = options.home ?? resolveHomeContext();
+  const localConfig = readLocalConfig(home);
+  if (localConfig === null) throw new CatalogNotInitializedError();
+  const catalogPath = localConfig.catalog_path;
+
+  return startReadonlyServer({
+    port: options.port ?? 0,
+    getViewModel: () => buildViewModelFromCatalog({ ...options, home }),
+    getAssetDoc: (assetId, which) => readAssetDoc(catalogPath, listAllAssets(catalogPath), assetId, which),
+  });
 }
