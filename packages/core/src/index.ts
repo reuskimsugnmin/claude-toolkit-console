@@ -48,4 +48,5 @@ export * from "./catalog/skill-body-lint.js";
 export * from "./usage/tool-names.js";
 export * from "./usage/attribution.js";
 export * from "./usage/rank.js";
+export * from "./view/view-model.js";
 export * from "./failure/classes.js";

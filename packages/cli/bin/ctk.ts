@@ -24,6 +24,7 @@ import { runMove, AssetNotFoundError, NoOpMoveError, ProjectIndexOutOfRangeError
 import { runRollback, NoRollbackTargetError } from "../src/commands/rollback.js";
 import { runMeasure } from "../src/commands/measure.js";
 import { runUsage, NoMeasurementError } from "../src/commands/usage.js";
+import { runExportViewModel } from "../src/commands/web.js";
 import { LockContendedError } from "@ctk/sync";
 import { DuplicateKeyDiffError } from "@ctk/core";
 import { McpMoveRejectedError, CliToolMoveUnsupportedError, RollbackFailedError } from "@ctk/actuator";
@@ -88,6 +89,39 @@ async function main(): Promise<void> {
         }
         console.error("사용법: ctk doctor --drift");
         process.exitCode = 1;
+        return;
+      }
+      case "web": {
+        const exportPath = readFlagValue(rest, "--export-view-model");
+        if (exportPath === undefined) {
+          // 서버 기동은 Step 6a의 다음 조각이다. "곧 됩니다"를 조용한 성공으로 바꾸지 않는다.
+          console.error("ctk web은 아직 --export-view-model <경로>만 지원한다 (조회 서버는 준비 중).");
+          process.exitCode = 1;
+          return;
+        }
+        const result = runExportViewModel(exportPath);
+        console.log(`뷰모델 출력 완료 — ${result.path}`);
+        console.log(`  자산 ${result.assetCount}건`);
+        console.log(
+          `  사용량 순위 ${result.rankedCount}건 · 순위 불가(미측정/근사) ${result.unrankableCount}건`,
+        );
+        console.log(
+          result.freshnessDays === null
+            ? "  마지막 스캔: 기록 없음"
+            : `  마지막 스캔: ${result.freshnessDays}일 전`,
+        );
+        // 순위가 결론으로 읽힐 자격이 없으면 그 사실을 숫자보다 먼저 말한다.
+        const quality = result.rankingQuality;
+        if (!quality.is_meaningful) {
+          const why =
+            quality.reason === "no_measured_assets"
+              ? "점유가 측정된 자산이 없다"
+              : `점유가 측정된 ${quality.measured_count}건이 전부 0토큰이다`;
+          console.log(
+            `  ⚠️  "안 쓰는데 비싼 툴" 순위는 아직 결론이 될 수 없다 — ${why} ` +
+              `(미측정 ${quality.unmeasured_count}건). \`ctk measure\`에 count_tokens 크레덴셜이 필요하다.`,
+          );
+        }
         return;
       }
       case "verify": {
