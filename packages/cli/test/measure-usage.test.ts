@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runInit } from "../src/commands/init.js";
 import { runScan } from "../src/commands/scan.js";
 import { runMeasure } from "../src/commands/measure.js";
+import { assessRankingQuality } from "@ctk/core";
 import { runUsage } from "../src/commands/usage.js";
 import { runDoctorSubagentAttribution } from "../src/commands/doctor.js";
 import { readLocalConfig } from "../src/local-config.js";
@@ -201,6 +202,34 @@ describe("cli — ctk measure / ctk usage 왕복 (Step 3)", () => {
 
     expect(report.rows).toHaveLength(0);
     expect(report.excludedUnmeasuredAssetIds).toContain("demo-skill");
+  });
+
+  it("ctk usage — 순위 자격 판정을 함께 싣는다 (안전 원칙 5·8)", async () => {
+    /**
+     * `ctk web --export-view-model`은 이 판정을 싣는데 **CLI 경로만 빠져 있었다.**
+     * 크레덴셜이 없으면 대부분의 자산이 unmeasured로 빠지고 **비용이 정말로 0인 것만 순위에
+     * 남는다** — 개별 숫자는 다 맞는데 "안 쓰는데 비싼 툴"이라는 질문에는 거짓이 된다.
+     * 실측(2026-08-23): 상위 3건이 전부 0토큰이고 미측정이 177건이었다.
+     */
+    await runMeasure({ noCredentialsOk: true });
+    const report = runUsage({ unusedExpensive: 5 });
+
+    expect(report.rankingQuality.is_meaningful, "측정된 자산이 없으면 순위는 결론이 아니다").toBe(false);
+    expect(report.rankingQuality.reason).toBe("no_measured_assets");
+    // 미측정 건수가 판정에 실려야 사용자가 모집단 크기를 안다.
+    expect(report.rankingQuality.unmeasured_count).toBe(report.excludedUnmeasuredAssetIds.length);
+  });
+
+  it("판정기는 `core`의 것을 그대로 쓴다 — 두 경로가 각자 판정하면 어긋난다", async () => {
+    await runMeasure({ noCredentialsOk: true });
+    const report = runUsage({ unusedExpensive: 5 });
+    // web 경로(`buildConsoleViewModel`)와 같은 함수를 통과한 값이어야 한다.
+    expect(report.rankingQuality).toEqual(
+      assessRankingQuality(
+        report.rows.map((r) => r.idle_tokens),
+        report.excludedUnmeasuredAssetIds.length,
+      ),
+    );
   });
 
   it("credential_missing 사유 없이 크레덴셜 부재 상태로 실행하면(--no-credentials-ok 없이) 거부된다(AC-4.5)", async () => {

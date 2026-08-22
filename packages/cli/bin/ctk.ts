@@ -387,6 +387,18 @@ async function main(): Promise<void> {
           console.log(JSON.stringify(report, null, 2));
           return;
         }
+        // 순위가 결론으로 읽힐 자격이 없으면 **숫자보다 먼저** 말한다 — `ctk web`은 이미
+        // 그렇게 하는데 이 경로만 빠져 있었다(안전 원칙 5).
+        if (!report.rankingQuality.is_meaningful) {
+          const why =
+            report.rankingQuality.reason === "no_measured_assets"
+              ? "점유가 측정된 자산이 없다"
+              : `점유가 측정된 ${report.rankingQuality.measured_count}건이 전부 0토큰이다`;
+          console.error(
+            `⚠️  이 순위는 아직 결론이 될 수 없다 — ${why} (미측정 ${report.rankingQuality.unmeasured_count}건).\n` +
+              `    ANTHROPIC_API_KEY를 설정하고 \`ctk measure\`를 다시 돌리면 점유가 측정된다.`,
+          );
+        }
         console.log(`ctk usage --unused-expensive ${n} — 스냅샷 ${report.snapshotId}`);
         for (const row of report.rows) {
           console.log(
