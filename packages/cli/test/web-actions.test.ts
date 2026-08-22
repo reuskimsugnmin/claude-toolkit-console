@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildProjectChoices, containsPathSeparator, parseWebActionRequest } from "@ctk/core";
+import { buildProjectChoices, containsPathSeparator, parseWebActionRequest, type ConsoleViewModel } from "@ctk/core";
+import { projectExposureNotice } from "../src/commands/web.js";
 import { EstimateTokenStore, createSessionToken } from "../src/commands/web-actions.js";
 
 /**
@@ -170,5 +171,50 @@ describe("M2 회귀 — 계약이 실제로 막는가", () => {
   it("정상 라벨은 false — 위 케이스가 '항상 true'와 구분됨을 보인다", () => {
     const ok = buildProjectChoices({ absolutePaths: ["/synthetic/a/proj"], hashPrefixOf: () => "aaaaaa" });
     expect(containsPathSeparator(ok)).toBe(false);
+  });
+});
+
+describe("L1 — 프로젝트 이름 노출 고지 (재심 L1)", () => {
+  /**
+   * `/api/view-model`은 **무인증**이다(막을 대상은 "다른 출처"이지 "사용자 본인"이 아니다).
+   * 그래서 여기 실리는 디렉터리 이름은 같은 머신의 **다른 계정**도 읽을 수 있다 —
+   * `~/.claude.json`이 `-rw-------`인 것과 비교하면 접근 통제가 느슨해진다.
+   *
+   * 설계로는 못 닫는다("이름 자체가 비밀"인 경우). 대신 **결정을 매번 사용자 앞에 다시
+   * 놓는다** — 착수 전 점검은 시점 표본일 뿐이고, `~/.claude.json`은 새 디렉터리에서
+   * `claude`를 한 번 띄우면 자동으로 늘어난다.
+   */
+  const vm = (projects: unknown[]): ConsoleViewModel =>
+    ({
+      schema_version: 1,
+      generated_at: "2026-08-22T00:00:00.000Z",
+      machine_id: "m",
+      freshness: { last_scan_at: null, days_since_last_scan: null, is_stale: true, never_scanned: true },
+      assets: [],
+      projects,
+      projects_unavailable: null,
+      usage: {
+        ranked: [],
+        unrankable: [],
+        total_assets_with_occupancy: 0,
+        ranking_quality: { measured_count: 0, unmeasured_count: 0, is_meaningful: false, reason: "no_measured_assets" },
+      },
+    }) as ConsoleViewModel;
+
+  it("선택지가 있으면 건수와 끄는 법을 함께 알린다", () => {
+    const notice = projectExposureNotice(vm([{ index: 0 }, { index: 1 }]));
+    expect(notice).toContain("2건");
+    expect(notice).toContain("--no-projects");
+    // 경고만 하고 끌 방법이 없으면 경고가 아니라 잔소리다(안전 원칙 6).
+    expect(notice).toContain("다른 계정");
+  });
+
+  it("건수가 바뀌면 고지도 바뀐다 — 시점 표본 문제를 매번 눈에 띄게 한다", () => {
+    expect(projectExposureNotice(vm([{ index: 0 }]))).toContain("1건");
+    expect(projectExposureNotice(vm(Array.from({ length: 40 }, (_, i) => ({ index: i }))))).toContain("40건");
+  });
+
+  it("노출이 없으면 고지하지 않는다 — 아무 일도 없는데 경고하지 않는다", () => {
+    expect(projectExposureNotice(vm([]))).toBeNull();
   });
 });

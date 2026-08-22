@@ -530,10 +530,13 @@ function renderDetailActions(asset) {
   if (VM.projects_unavailable !== null) {
     const note = document.createElement("span");
     note.className = "sep";
-    note.textContent =
-      VM.projects_unavailable === "claude_json_unreadable"
-        ? "프로젝트 목록을 읽지 못했다 — ctk doctor로 ~/.claude.json을 확인한다"
-        : "프로젝트 목록이 규약을 어겨 표시하지 않는다 (" + VM.projects_unavailable + ")";
+    // 세 사유는 사용자가 할 일이 서로 다르다 — 뭉치면 "고칠 것이 있다"와 "내가 껐다"가 같아진다.
+    const REASON_TEXT = {
+      claude_json_unreadable: "프로젝트 목록을 읽지 못했다 — ctk doctor로 ~/.claude.json을 확인한다",
+      disabled_by_flag: "프로젝트 이관은 --no-projects로 꺼져 있다 — CLI의 ctk move를 쓴다",
+      label_contains_path_separator: "프로젝트 이름이 규약을 어겨 표시하지 않는다 (내부 결함)",
+    };
+    note.textContent = REASON_TEXT[VM.projects_unavailable] || VM.projects_unavailable;
     row.appendChild(note);
   } else if (VM.projects.length > 0 && scopes.some((sc) => sc !== "project")) {
     const label = document.createElement("span");

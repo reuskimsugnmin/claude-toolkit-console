@@ -117,10 +117,17 @@ function findLatestUsageMetrics(catalogPath: string, machineId: string): UsageMe
  * 않는다** — 빠져나갈 길이 없는 거부다(안전 원칙 6). 그렇다고 실패를 "프로젝트 0건"으로
  * 위장하지도 않는다(원칙 7) — 이유를 실어 화면이 말하게 한다.
  */
-function collectProjectChoices(home: HomeContext): {
+function collectProjectChoices(
+  home: HomeContext,
+  includeProjects: boolean,
+): {
   projects: ProjectChoice[];
   projectsUnavailable: string | null;
 } {
+  // `--no-projects`로 끈 것은 "못 읽었다"와 다른 사실이다 — 사유를 따로 둔다.
+  // 하나로 뭉치면 화면이 "고칠 것이 있다"와 "내가 껐다"를 같게 말한다.
+  if (!includeProjects) return { projects: [], projectsUnavailable: "disabled_by_flag" };
+
   let projects: ProjectChoice[];
   try {
     projects = buildProjectChoices({
@@ -144,6 +151,14 @@ export interface BuildViewModelOptions {
   home?: HomeContext | undefined;
   unusedExpensive?: number | undefined;
   now?: Date | undefined;
+  /**
+   * `false`면 프로젝트 선택지를 응답에 싣지 않는다(`--no-projects`).
+   *
+   * 조회 엔드포인트는 **무인증**이므로(막을 대상은 "다른 출처"이지 "사용자 본인"이 아니다)
+   * 여기 실리는 디렉터리 이름은 같은 머신의 **다른 계정**도 읽을 수 있다 — `~/.claude.json`이
+   * `-rw-------`인 것과 비교하면 접근 통제가 느슨해진다. 공용 호스트에서 이 플래그로 끈다.
+   */
+  includeProjects?: boolean | undefined;
 }
 
 export function buildViewModelFromCatalog(options: BuildViewModelOptions = {}): ConsoleViewModel {
@@ -166,7 +181,7 @@ export function buildViewModelFromCatalog(options: BuildViewModelOptions = {}): 
     ]),
   );
 
-  const { projects, projectsUnavailable } = collectProjectChoices(home);
+  const { projects, projectsUnavailable } = collectProjectChoices(home, options.includeProjects !== false);
 
   return buildConsoleViewModel({
     machineId: machine.machine_id,
@@ -181,6 +196,23 @@ export function buildViewModelFromCatalog(options: BuildViewModelOptions = {}): 
     unusedExpensiveLimit: options.unusedExpensive ?? 5,
     now: options.now ?? new Date(),
   });
+}
+
+/**
+ * 기동 시 사용자에게 알릴 노출 고지. **결정을 매번 사용자 앞에 다시 놓는다**(재심 L1).
+ *
+ * 착수 전 점검으로 "민감한 이름 0건"을 확인했지만 그것은 **시점 표본**이다 —
+ * `~/.claude.json`은 새 디렉터리에서 `claude`를 한 번 띄우면 자동으로 늘어나고, 한 달 뒤
+ * 늘어난 이름을 아무도 다시 점검하지 않는다. 건수를 매번 출력하면 그 변화가 눈에 띈다.
+ *
+ * 노출이 실제로 없으면(0건·꺼짐·못 읽음) `null`이다 — 아무 일도 없는데 경고하지 않는다.
+ */
+export function projectExposureNotice(viewModel: ConsoleViewModel): string | null {
+  if (viewModel.projects.length === 0) return null;
+  return (
+    `⚠️  프로젝트 이름 ${viewModel.projects.length}건이 무인증 로컬 응답(/api/view-model)에 실린다.\n` +
+    `    같은 머신의 다른 계정도 읽을 수 있다 — 공용 호스트라면 --no-projects로 끈다.`
+  );
 }
 
 export interface ExportViewModelResult {
@@ -233,6 +265,11 @@ export interface ServeResult {
   server: ListeningServer;
   /** 액션 모드에서만 발급된다. 조회 모드에서는 `null`. */
   sessionToken: string | null;
+  /**
+   * 기동 시 출력할 노출 고지(없으면 `null`). **조회 모드에서도 나온다** — 노출은 액션 여부와
+   * 무관하게 `/api/view-model`에서 일어나기 때문이다.
+   */
+  exposureNotice: string | null;
 }
 
 /**
@@ -254,9 +291,16 @@ export async function runWebServe(options: ServeOptions = {}): Promise<ServeResu
       readAssetDoc(catalogPath, listAllAssets(catalogPath), assetId, which),
   };
 
+  // 고지는 실제로 나갈 응답을 기준으로 만든다 — 플래그·읽기 실패가 이미 반영된 값이다.
+  const exposureNotice = projectExposureNotice(base.getViewModel());
+
   if (options.actions !== true) {
     // 조회 모드 — `actions`를 넘기지 않으므로 `/api/actions`는 **라우트로 존재하지 않는다.**
-    return { server: await startReadonlyServer({ ...base, port: options.port ?? 0 }), sessionToken: null };
+    return {
+      server: await startReadonlyServer({ ...base, port: options.port ?? 0 }),
+      sessionToken: null,
+      exposureNotice,
+    };
   }
 
   // 액션 모드는 관문이 실제 포트를 알아야 Host/Origin을 대조할 수 있다. 포트를 먼저 확정하려고
@@ -275,5 +319,5 @@ export async function runWebServe(options: ServeOptions = {}): Promise<ServeResu
     port,
     actions: { guard: { sessionToken, port }, handlers: createActionHandlers() },
   });
-  return { server, sessionToken };
+  return { server, sessionToken, exposureNotice };
 }
