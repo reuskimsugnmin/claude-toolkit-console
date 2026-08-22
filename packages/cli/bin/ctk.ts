@@ -19,6 +19,7 @@ import {
   NoSnapshotsError,
 } from "../src/commands/doctor.js";
 import { runVerifyAc1, NotYetScannedError } from "../src/commands/verify-ac1.js";
+import { runVerifyAc3, SkillSourceNotFoundError } from "../src/commands/verify-ac3.js";
 import { runMove, AssetNotFoundError, NoOpMoveError, ProjectIndexOutOfRangeError } from "../src/commands/move.js";
 import { runRollback, NoRollbackTargetError } from "../src/commands/rollback.js";
 import { runMeasure } from "../src/commands/measure.js";
@@ -127,7 +128,45 @@ async function main(): Promise<void> {
           }
           return;
         }
-        console.error("사용법: ctk verify ac1");
+        if (rest[0] === "ac3") {
+          const report = await runVerifyAc3({ skillPath: readFlagValue(rest, "--skill") });
+          console.log(`AC-3 진입 스킬 검증 — ${report.name}`);
+
+          // AC-3.1 — 상한 비교는 measured일 때만 성립한다. 미측정을 통과로 인쇄하지 않는다.
+          if (report.budgetValue.state === "measured") {
+            const verdict = report.budgetExceeded === true ? "초과" : "이내";
+            console.log(
+              `  AC-3.1 상시 비용: ${report.budgetValue.value_tokens} 토큰 / 상한 ${report.budgetTokens} — ${verdict}`,
+            );
+          } else if (report.budgetValue.state === "unmeasured") {
+            console.log(
+              `  AC-3.1 상시 비용: 미측정(reason: ${report.budgetValue.reason}) — 상한 ${report.budgetTokens}과 비교하지 못했다`,
+            );
+          } else {
+            console.log(`  AC-3.1 상시 비용: approx_bytes=${report.budgetValue.approx_bytes} (토큰 아님)`);
+          }
+
+          // AC-3.2 — 두 규칙의 상태를 따로 출력한다. 이름 대조 미실행을 "위반 0건"과 같은 줄에
+          // 쓰면 검사하지 않은 것이 통과로 읽힌다.
+          const pathViolations = report.lint.violations.filter((v) => v.rule === "concrete_asset_path");
+          const nameViolations = report.lint.violations.filter((v) => v.rule === "asset_name_literal");
+          console.log(`  AC-3.2 구체 자산 경로: 위반 ${pathViolations.length}건`);
+          if (report.lint.nameCheck.state === "checked") {
+            console.log(
+              `  AC-3.2 자산 이름 리터럴: 위반 ${nameViolations.length}건 (카탈로그 자산 ${report.lint.nameCheck.namesCompared}개와 대조)`,
+            );
+          } else {
+            console.log(
+              `  AC-3.2 자산 이름 리터럴: 미검사(reason: ${report.lint.nameCheck.reason}) — 카탈로그가 없어 대조하지 못했다`,
+            );
+          }
+          for (const violation of report.lint.violations) {
+            console.error(`    ${report.skillPath}:${violation.line} [${violation.rule}] ${violation.match} — ${violation.note}`);
+          }
+          if (report.hasViolation) process.exitCode = 1;
+          return;
+        }
+        console.error("사용법: ctk verify ac1 | ac3 [--skill <경로>] | seal");
         process.exitCode = 1;
         return;
       }
@@ -300,7 +339,8 @@ async function main(): Promise<void> {
       err instanceof NoOpMoveError ||
       err instanceof ProjectIndexOutOfRangeError ||
       err instanceof NoRollbackTargetError ||
-      err instanceof NoMeasurementError
+      err instanceof NoMeasurementError ||
+      err instanceof SkillSourceNotFoundError
     ) {
       console.error(`FAIL: ${err.message}`);
       process.exitCode = 1;

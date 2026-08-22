@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "bin": {
-    "ctk": "./bin/ctk.ts"
+    "ctk": "./dist/bin/ctk.js"
   },
   "dependencies": {
     "@ctk/actuator": "workspace:*",

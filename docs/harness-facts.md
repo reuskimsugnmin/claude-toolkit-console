@@ -182,3 +182,61 @@ Tier-2 허용목록의 유일한 근거다** — AC-0.8(플러그인 명령·격
   레지스트리)가 이 경로에 의존한다. actuator의 격리 홈 e2e 테스트(cli/test/move-rollback.test.ts)는
   이 함정을 알고 `~/.claude.json`의 `projects` 키를 테스트가 직접 시딩해 우회한다. Step 2 범위
   밖이라 `home.ts` 자체는 고치지 않았다 — Step 2/AC-1 재검토 시 반영 대상으로 남긴다.
+
+## `CLAUDE_CONFIG_DIR`을 설정하면 OAuth 인증이 깨진다 — 기본값과 같은 값이어도 (Step 4 실측, 2026-08-22)
+
+**관측 방법.** `claude auth status`(0원 신호)를 `env`를 정확히 통제한 채 네 조합으로 실행했다
+(파이썬 `subprocess`로 env 딕셔너리를 직접 구성 — 셸 인용 오류를 배제하기 위함).
+
+| env | `loggedIn` |
+|---|---|
+| `HOME`+`PATH`+`USER` (`CLAUDE_CONFIG_DIR` **미설정**) | `true` (`claude.ai`) |
+| 위 + `TERM=dumb` | `true` |
+| 위 + `CLAUDE_CONFIG_DIR=$HOME/.claude` (**기본값과 동일한 값**) | `false` (`none`) |
+| 위 + `CLAUDE_CONFIG_DIR=$HOME/.claude/` (후행 슬래시) | `false` |
+
+즉 키체인 항목은 **"env가 설정됐는가" 자체로 갈린다** — 값이 기본 경로와 문자열까지 같아도
+미설정일 때와 다른 항목을 본다. 기존 사실("항목명이 `Claude Code-credentials-<hex>`로 config
+dir별로 분리된다")의 강한 형태다.
+
+**델타 디버깅으로 얻은 최소 인증 env는 `HOME`·`PATH`·`USER` 3개다.** 전체 env에서 하나씩
+빼며 `loggedIn`이 `true`로 남는지 확인했다. `USER`가 빠지면 인증이 실패한다 —
+`ENV_WHITELIST_COMMON`에 이미 있으므로 현행 봉인은 이 조건을 만족한다.
+
+**파급 ①** `seal-profiles.ts`의 H5 수정(프로덕션에서 `CLAUDE_CONFIG_DIR`를 자식 env에 **넣지
+않는다**)은 결과적으로 인증을 살린 조치였다. 넣었다면 `sealed-live`(=`ctk gen`의 본경로)가
+전부 미인증으로 떨어졌을 것이다. 이 사실을 모른 채 "기본값이니 명시해도 같다"고 되돌리면
+`gen`이 통째로 죽는다 — **되돌리지 말 것.**
+
+**파급 ② AC-3.3은 현행 설계로 실행 불가다.** 두 요구가 동시에 성립하지 않는다:
+- 합성 카탈로그를 보게 하려면 자식 `HOME`을 합성 홈으로 덮어써야 한다
+  (스킬이 `~/.config/ctk/config.json`에서 카탈로그 경로를 읽으므로).
+- 인증이 살려면 `CLAUDE_CONFIG_DIR`를 설정하지 **않아야** 하고, 그러면 config dir은
+  `$HOME/.claude`가 된다 — 위에서 덮어쓴 합성 홈 아래이므로 인증 정보가 없다.
+
+두 조건을 모두 만족하는 env 조합은 존재하지 않는다. 해소하려면 **카탈로그 경로를 `HOME`과
+분리해 전달하는 수단**(예: 화이트리스트에 등재된 전용 env)이 필요하며, 이는 봉인 수단 변경이라
+`security-reviewer` 재심 대상이다.
+
+## `agent-probe`의 cwd는 홈 밖이어야 한다 (Step 4 실측, 2026-08-22)
+
+`assertNoAncestorConfig`는 cwd의 상위 경로를 루트까지 훑어 `CLAUDE.md`·`.claude/`가 있으면
+거부한다(M2). cwd가 `$HOME/.cache/ctk/probe-cwd`이면 상위에 `$HOME`이 들어오고,
+**`$HOME/.claude`는 모든 Claude Code 사용자에게 존재하므로** 이 가드는 어떤 환경에서도
+발동한다 — `ctk agent-probe`는 구현된 이래 한 번도 실행 가능한 적이 없었다.
+
+기존 `cwd-guard` 테스트 6종이 이를 놓친 이유는 **전부 합성 임시 루트를 만들어 넣었기 때문**이다.
+프로덕션 기본값이 한 번도 검사 대상이 아니었다. 회귀 테스트는 `resolveAgentProbeCwd()`의
+**실제 반환값**을 `$HOME/.claude`가 존재하는 상태에서 검사한다.
+
+cwd를 임시 루트 아래(`<tmpdir>/ctk-agent-probe-cwd-<uid>`)로 옮겨 해소했다. B3(고정 경로
+재사용으로 `.claude.json`의 `projects.*` 누적 방지)은 경로 문자열이 실행마다 같으므로 유지된다.
+
+## 자산 유형별 스코프·토글 (CLAUDE.md에서 이관)
+
+| 자산 유형 | 스코프가 사는 곳 | 끄는 방법 |
+|---|---|---|
+| 플러그인 | **설치 스코프**는 `~/.claude/plugins/installed_plugins.json` · **활성 여부**는 `settings.json`의 `enabledPlugins`(값은 boolean뿐) | `claude plugin disable -s user\|project\|local` |
+| MCP 서버 | `~/.claude.json` 루트 `mcpServers`(user) · 프로젝트 엔트리 `mcpServers`(local) · `.mcp.json`(project) · 플러그인 번들 | **CLI 명령 없음.** 단 상태는 프로젝트별 `enabledMcpServers`/`disabledMcpServers`에 기록됨 — `/mcp` UI로 토글 |
+| 전역 스킬 | `~/.claude/skills/<name>/` 존재 여부 | **명령 없음** — 디렉터리 이동 |
+| CLI 도구 | PATH | 해당 없음 (상시 토큰 0) |

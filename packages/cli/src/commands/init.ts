@@ -1,6 +1,10 @@
 import { extractVersionString, resolveHomeContext, spawnClaude } from "@ctk/probe";
 import { ensureGitRepo, writeCatalogConfig, readCatalogConfig, acquireLock, LockContendedError } from "@ctk/sync";
-import { DEFAULT_OCCUPANCY_DIVERGENCE_THRESHOLD_PCT, DEFAULT_TOKENIZER_MODEL } from "@ctk/core";
+import {
+  DEFAULT_OCCUPANCY_DIVERGENCE_THRESHOLD_PCT,
+  DEFAULT_SKILL_DESCRIPTION_BUDGET_TOKENS,
+  DEFAULT_TOKENIZER_MODEL,
+} from "@ctk/core";
 import { defaultCatalogPath, writeLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -85,6 +89,7 @@ export async function runInit(options: InitOptions): Promise<InitResult> {
         offset_cache_location: "catalog",
         tokenizer_model: DEFAULT_TOKENIZER_MODEL,
         occupancy_divergence_threshold_pct: DEFAULT_OCCUPANCY_DIVERGENCE_THRESHOLD_PCT,
+        skill_description_budget_tokens: DEFAULT_SKILL_DESCRIPTION_BUDGET_TOKENS,
       });
     }
 
