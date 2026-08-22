@@ -120,6 +120,25 @@ export async function readBodyWithLimit(req: IncomingMessage, limit = MAX_BODY_B
   });
 }
 
+/**
+ * 응답에 절대경로가 섞였는지 마지막으로 훑는다.
+ *
+ * 핸들러가 화이트리스트로 값을 고르는 것이 1차 방어이고 이것은 2차다 — **새 핸들러가 투영을
+ * 빠뜨려도 경로가 나가지 않게** 한 곳에서 막는다. 심사 M1을 위생 메시지에서만 닫고 액션
+ * 응답 전체를 감사하지 않아 같은 유출이 성공 응답에 남아 있었다.
+ *
+ * 던지지 않고 **가린다** — 액션은 이미 성공했으므로 그 사실까지 실패로 뒤집으면 사용자가
+ * 무슨 일이 일어났는지 알 수 없게 된다.
+ */
+export function scrubAbsolutePaths(value: unknown): unknown {
+  if (typeof value === "string") return value.replace(/(?:^|[\s"'(])(\/[^\s"')]+)/g, " <경로 생략>");
+  if (Array.isArray(value)) return value.map(scrubAbsolutePaths);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubAbsolutePaths(v)]));
+  }
+  return value;
+}
+
 export async function dispatchAction(request: WebActionRequest, handlers: ActionHandlers): Promise<unknown> {
   switch (request.action) {
     case "scan":
@@ -191,7 +210,7 @@ export async function handleActionRequest(
   }
 
   try {
-    const data = await dispatchAction(request, deps.handlers);
+    const data = scrubAbsolutePaths(await dispatchAction(request, deps.handlers));
     send(200, { ok: true, data });
   } catch (err) {
     // 실패를 200으로 삼키지 않는다 — 화면이 "됐다"고 표시하면 사용자는 확인하지 않는다.

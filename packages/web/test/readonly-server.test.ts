@@ -1,4 +1,5 @@
 import { request as httpRequest } from "node:http";
+import vm from "node:vm";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ConsoleViewModel } from "@ctk/core";
 import { LOOPBACK_HOST, matchRoute, startReadonlyServer, type ListeningServer } from "../server/app.js";
@@ -198,11 +199,26 @@ describe("UI 한 장 — Step 6a 수용 기준의 회귀 테스트", () => {
     expect(UI_HTML).not.toMatch(/<(script|link|img)[^>]+(src|href)=["']https?:/i);
   });
 
-  it("MCP 상태를 바꾸는 UI 요소가 없다 — v1은 읽기 전용이다", () => {
-    // 폼·전송 요소가 아예 없어야 한다. 있으면 쓰기 경로가 없다는 전제가 화면에서 흔들린다.
+  it("MCP 상태를 바꾸는 UI 요소가 없다 — v1에서 MCP 쓰기는 미지원이다", () => {
+    // ⚠️ 이 단언의 범위가 6b에서 좁아졌다. 예전에는 "POST가 아예 없다"를 봤는데, 그건 조회
+    // 전용이던 6a의 조건이었다. 지금은 화이트리스트 액션이 실제로 POST를 보내므로, 수용
+    // 기준이 실제로 요구하는 것(**MCP 상태 토글의 부재**)만 단언한다 — 범위를 넓힌 채 두면
+    // 정당한 기능 추가마다 깨지고, 결국 테스트가 지워진다.
+    expect(UI_HTML).not.toMatch(/mcp[_-]?(enable|disable|toggle)/i);
     expect(UI_HTML).not.toMatch(/<form\b/i);
     expect(UI_HTML).not.toMatch(/<input[^>]+type=["'](checkbox|radio|submit)/i);
-    expect(UI_HTML).not.toMatch(/method:\s*["'](POST|PUT|DELETE|PATCH)/i);
+  });
+
+  it("POST는 화이트리스트 액션에만 쓰인다 — 임의 경로로 쓰기를 보내지 않는다", () => {
+    const postTargets = [...UI_HTML.matchAll(/fetch\((?:"|')([^"']+)(?:"|')[^)]*method:\s*"POST"/g)].map((m) => m[1]);
+    expect(new Set(postTargets)).toEqual(new Set(["/api/actions"]));
+  });
+
+  it("액션 본문의 action 값이 전부 화이트리스트 안이다", () => {
+    const allowed = new Set(["scan", "rollback", "move", "gen_estimate", "gen_execute"]);
+    const used = [...UI_HTML.matchAll(/action:\s*"([a-z_]+)"/g)].map((m) => m[1] ?? "");
+    expect(used.length).toBeGreaterThan(0);
+    for (const a of used) expect(allowed.has(a)).toBe(true);
   });
 
   it("unknown과 unset을 서로 다른 라벨·클래스로 표시한다 — 뭉개지 않는다", () => {
@@ -298,5 +314,109 @@ describe("H3 회귀 — CSP nonce와 스킴 검증", () => {
   it("UI가 repo.url을 렌더 전에 스킴 검증한다", () => {
     expect(buildUiPage("n")).toContain('u.protocol === "https:" || u.protocol === "http:"');
     expect(UI_HTML).toContain("링크 형식 아님");
+  });
+});
+
+describe("액션 UI — 토큰 취급 (심사 L6)", () => {
+  it("프래그먼트에서 토큰을 읽은 뒤 히스토리에서 즉시 지운다", () => {
+    expect(UI_HTML).toContain("location.hash.slice(1)");
+    expect(UI_HTML).toContain("history.replaceState(null,");
+  });
+
+  it("토큰을 전역·window·DOM에 넣지 않는다 — XSS 하나가 액션 전권이 되지 않게", () => {
+    expect(UI_HTML).not.toMatch(/window\.[A-Za-z_$]*[Tt]oken/);
+    expect(UI_HTML).not.toMatch(/localStorage|sessionStorage/);
+    // 토큰이 DOM 속성으로 새지 않는다 — 헤더로만 쓴다.
+    expect(UI_HTML).not.toMatch(/setAttribute\([^)]*SESSION_TOKEN/);
+    expect(UI_HTML).toContain('"x-ctk-session": SESSION_TOKEN');
+  });
+
+  it("토큰이 없으면 액션 바가 숨겨진 채로 남는다 — 조회 모드에서 버튼이 보이지 않는다", () => {
+    expect(UI_HTML).toContain('<div class="actions hidden" id="action-bar">');
+    expect(UI_HTML).toContain("if (SESSION_TOKEN !== null)");
+  });
+});
+
+describe("액션 UI — 승인 없이는 유료 호출이 없다 (F6)", () => {
+  it("gen은 estimate 응답의 토큰으로만 execute한다", () => {
+    expect(UI_HTML).toContain('action: "gen_estimate"');
+    expect(UI_HTML).toContain("estimate_token: d.estimate_token");
+  });
+
+  it("승인 화면이 총액과 호출당 상한을 **따로** 보여준다 — 한 이름으로 뭉치면 H2가 재발한다", () => {
+    expect(UI_HTML).toContain("총 지출 상한");
+    expect(UI_HTML).toContain("호출당 상한");
+  });
+
+  it("취소하면 유료 호출이 없었다는 사실을 말해준다", () => {
+    expect(UI_HTML).toContain("유료 호출은 일어나지 않았다");
+  });
+
+  it("실패를 성공처럼 표시하지 않는다 — 분류 코드를 사람이 읽을 문장으로 바꾼다", () => {
+    expect(UI_HTML).toContain("lock_contended:");
+    expect(UI_HTML).toContain("estimate_token_invalid:");
+    expect(UI_HTML).toContain('div.className = failed ? "result fail" : "result"');
+  });
+
+  it("이관은 영향 요약을 먼저 보여주고 확인받는다", () => {
+    expect(UI_HTML).toContain("바뀌는 것");
+    expect(UI_HTML).toContain("백업");
+    expect(UI_HTML).toContain("되돌리는 법");
+  });
+
+  it("실행 중에는 버튼이 잠긴다 — 연타로 겹치지 않게", () => {
+    expect(UI_HTML).toContain("setActionsBusy(true");
+    expect(UI_HTML).toContain("el.disabled = busy");
+  });
+});
+
+describe("UI 스크립트가 실제로 파싱되는가", () => {
+  /**
+   * ⚠️ **이 테스트가 없어서 UI를 두 번 깨뜨렸다.** UI는 TS 템플릿 리터럴 안의 문자열이라
+   * 백틱과 백슬래시가 한 단계 더 이스케이프돼야 하는데, 그걸 어기면 **타입체크도 통과하고
+   * 752개 테스트도 통과한 채** 브라우저에서만 `SyntaxError`가 난다.
+   *
+   * 문자열 포함 검사(`toContain`)로는 절대 잡히지 않는다 — 깨진 코드에도 그 문자열은 있다.
+   * 서빙되는 스크립트를 **실제로 파싱**해야 한다.
+   */
+  function extractScript(html: string): string {
+    const match = /<script nonce="[^"]+">([\s\S]*?)<\/script>/.exec(html);
+    expect(match, "UI에 nonce가 붙은 script 태그가 있어야 한다").not.toBeNull();
+    return match?.[1] ?? "";
+  }
+
+  it("서빙되는 스크립트가 유효한 JavaScript다", async () => {
+    const server = await start();
+    const script = extractScript(await (await fetch(`${server.url}/`)).text());
+    expect(script.length).toBeGreaterThan(1000);
+    // 파싱만 한다 — 실행하지 않는다(document·fetch가 없다).
+    expect(() => new vm.Script(script)).not.toThrow();
+  });
+
+  it("이 검사가 공허하지 않다 — 깨진 스크립트는 실제로 걸린다", () => {
+    expect(() => new vm.Script('const a = "열린 채 끝난 문자열')).toThrow();
+  });
+
+  it("문자열 안의 개행이 실제 개행으로 새지 않는다", async () => {
+    const server = await start();
+    const script = extractScript(await (await fetch(`${server.url}/`)).text());
+    // 따옴표가 홀수인 줄 = 문자열이 그 줄에서 끊겼다는 뜻(주석 제외).
+    const broken = script
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("//") && !line.trim().startsWith("*"))
+      .filter((line) => (line.match(/"/g) ?? []).length % 2 === 1);
+    expect(broken).toEqual([]);
+  });
+});
+
+describe("액션 버튼은 준비되기 전에 눌리지 않는다", () => {
+  it("버튼이 disabled로 시작한다 — boot 전에 누르면 리스너가 없어 조용히 아무 일도 없다", () => {
+    for (const id of ["btn-scan", "btn-gen", "btn-rollback"]) {
+      expect(UI_HTML).toMatch(new RegExp(`<button id="${id}"[^>]*\\bdisabled\\b`));
+    }
+  });
+
+  it("boot가 리스너를 붙인 뒤 잠금을 푼다", () => {
+    expect(UI_HTML).toContain('setActionsBusy(false, "");');
   });
 });
