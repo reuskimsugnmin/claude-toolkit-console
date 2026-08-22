@@ -25,6 +25,12 @@ out/
 *.snapshot.json
 /.ctk/
 
+# `ctk web --export-view-model` 산출물 — 절대경로가 없어 위생 정규식에는 안 걸리지만
+# 프로젝트 디렉터리 이름·설치 목록·머신 id가 그대로 들어 있다(심사 L4). 관례적인 이름은
+# 여기서 막고, 이름을 벗어난 경우는 hygiene-check의 구조 서명이 잡는다.
+view-model.json
+*.view-model.json
+
 # OS / 에디터
 .DS_Store
 .vscode/
