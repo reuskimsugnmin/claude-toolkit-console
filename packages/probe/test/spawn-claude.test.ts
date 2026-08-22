@@ -1,8 +1,16 @@
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ClaudeExecutableNotFoundError, spawnClaude, SealProfileMissingError, SealTimeoutError } from "../src/harness/spawn-claude.js";
+import {
+  ClaudeExecutableNotFoundError,
+  spawnClaude,
+  spawnClaudeAgentProbe,
+  SealProfileMissingError,
+  SealTimeoutError,
+  SealUnverifiedCliError,
+} from "../src/harness/spawn-claude.js";
+import { SealCwdAncestorConfigError } from "../src/harness/cwd-guard.js";
 import type { HomeContext } from "../src/home.js";
 
 /**
@@ -223,5 +231,114 @@ describe("probe/harness/spawn-claude — §1.3 결정 6 봉인 래퍼 (가짜 cl
     expect(result.stdout).toContain("out line");
     expect(result.stderr).toContain("err line");
     expect(result.timedOut).toBe(false);
+  });
+
+  describe("iter 8 · B4/B5 — sealed-live 모델 세션 전용 통제", () => {
+    it("sealed-live -p 세션은 --tools \"\"를 실제 argv에 실어 자식에게 전달한다(B4)", async () => {
+      const argvFile = path.join(binDir, "argv.txt");
+      writeFakeClaude(`printf '%s\\n' "$@" > "${argvFile}"`);
+      const result = await spawnClaude({
+        profile: "sealed-live",
+        subcommand: ["-p"],
+        home,
+        cwd: home.ctkHome,
+        timeoutSec: 5,
+        verifiedCliVersion: "9.9.9",
+      });
+      expect(result.exitCode).toBe(0);
+      const argvLines = readFileSync(argvFile, "utf8").split("\n");
+      const toolsIndex = argvLines.indexOf("--tools");
+      expect(toolsIndex).toBeGreaterThan(-1);
+      expect(argvLines[toolsIndex + 1]).toBe("");
+    });
+
+    it("검증 버전과 실제 버전이 같으면 preflightVersionMatch가 match다", async () => {
+      writeFakeClaude("exit 0");
+      const result = await spawnClaude({
+        profile: "sealed-live",
+        subcommand: ["-p"],
+        home,
+        cwd: home.ctkHome,
+        timeoutSec: 5,
+        verifiedCliVersion: "9.9.9", // writeFakeClaude가 --version에 답하는 값과 동일
+      });
+      expect(result.preflightVersionMatch).toBe("match");
+    });
+
+    it("버전이 다르고 라우팅 신호 재현 수단이 없으면 SealUnverifiedCliError로 거부한다(경고가 아니다)", async () => {
+      writeFakeClaude("exit 0");
+      await expect(
+        spawnClaude({
+          profile: "sealed-live",
+          subcommand: ["-p"],
+          home,
+          cwd: home.ctkHome,
+          timeoutSec: 5,
+          verifiedCliVersion: "1.2.3", // 가짜 바이너리는 9.9.9로 응답 — 불일치
+        }),
+      ).rejects.toBeInstanceOf(SealUnverifiedCliError);
+    });
+
+    it("버전이 다르지만 0원 라우팅 신호가 재현되면 진행하고 mismatch_routing_reproduced를 기록한다", async () => {
+      const marker = "/__ctk_probe_marker__";
+      writeFakeClaude(
+        `for a in "$@"; do if [ "$a" = "${marker}" ]; then echo "Unknown command: ${marker}"; exit 1; fi; done\necho real-call-ok`,
+      );
+      const result = await spawnClaude({
+        profile: "sealed-live",
+        subcommand: ["-p"],
+        home,
+        cwd: home.ctkHome,
+        timeoutSec: 5,
+        verifiedCliVersion: "1.2.3",
+        routingProbeCommand: marker,
+      });
+      expect(result.preflightVersionMatch).toBe("mismatch_routing_reproduced");
+      expect(result.stdout).toContain("real-call-ok");
+    });
+  });
+
+  describe("iter 8 · M2 — spawnClaudeAgentProbe cwd 상위 경로 검사", () => {
+    it("cwd 상위에 CLAUDE.md가 있으면 spawn 자체를 시도하지 않고 SealCwdAncestorConfigError로 거부한다", async () => {
+      const markerFile = path.join(binDir, "invoked.marker");
+      writeFakeClaude(`touch "${markerFile}"`);
+      const probeRoot = mkdtempSync(path.join(tmpdir(), "ctk-agent-probe-root-"));
+      writeFileSync(path.join(probeRoot, "CLAUDE.md"), "# 상위 경로에 심어진 설정\n");
+      const probeCwd = path.join(probeRoot, "cwd");
+      mkdirSync(probeCwd, { recursive: true });
+      try {
+        await expect(
+          spawnClaudeAgentProbe({
+            subcommand: ["-p"],
+            home,
+            cwd: probeCwd,
+            timeoutSec: 5,
+            pluginDir: "/synthetic/plugin-dir",
+          }),
+        ).rejects.toBeInstanceOf(SealCwdAncestorConfigError);
+        expect(existsSync(markerFile)).toBe(false);
+      } finally {
+        rmSync(probeRoot, { recursive: true, force: true });
+      }
+    });
+
+    it("상위 경로가 깨끗하면 --safe-mode 없이 --setting-sources project + --plugin-dir로 spawn한다", async () => {
+      writeFakeClaude("exit 0");
+      const probeRoot = mkdtempSync(path.join(tmpdir(), "ctk-agent-probe-clean-"));
+      const probeCwd = path.join(probeRoot, "cwd");
+      mkdirSync(probeCwd, { recursive: true });
+      try {
+        const result = await spawnClaudeAgentProbe({
+          subcommand: ["-p"],
+          home,
+          cwd: probeCwd,
+          timeoutSec: 5,
+          pluginDir: "/synthetic/plugin-dir",
+        });
+        expect(result.exitCode).toBe(0);
+      } finally {
+        rmSync(probeRoot, { recursive: true, force: true });
+      }
+    });
   });
 });

@@ -109,6 +109,8 @@ describe("sync stores — 카탈로그 저장소 쓰기 (Step 2)", () => {
       schema_version: 1,
       verified_cli_version: "2.1.237 (Claude Code)",
       offset_cache_location: "catalog",
+      tokenizer_model: "claude-demo",
+      occupancy_divergence_threshold_pct: 20,
     });
     const readBack = readCatalogConfig(catalogRoot);
     expect(readBack?.verified_cli_version).toBe("2.1.237 (Claude Code)");

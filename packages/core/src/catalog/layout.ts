@@ -65,6 +65,11 @@ export function usageMdPath(kind: AssetKind, name: string): string {
   return `${assetDir(kind, name)}/usage.md`;
 }
 
+/** Occupancy 레코드(schema/occupancy.ts) — Asset과 같은 디렉터리에 upsert(Step 3). */
+export function occupancyJsonPath(kind: AssetKind, name: string): string {
+  return `${assetDir(kind, name)}/occupancy.json`;
+}
+
 export function catalogIndexPath(): string {
   return "catalog/index.json";
 }

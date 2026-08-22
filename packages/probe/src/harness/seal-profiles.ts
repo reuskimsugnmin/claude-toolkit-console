@@ -5,11 +5,14 @@ import { ENV_WHITELIST_COMMON, ENV_WHITELIST_SEALED_LIVE_EXTRA } from "@ctk/core
  * 구성한다. I/O 없음(실제 spawn은 spawn-claude.ts가 한다) — 그래서 유닛 테스트로 프로파일별
  * 구성이 정확한지 검증할 수 있다.
  *
- * ⚠️ Step 2 범위: `test-isolated`만 실사용한다(인증 불요 호출뿐). `sealed-live`는 모델 세션
- * (`claude -p`) 전용 통제(`--tools ""`·`--json-schema`·`--max-budget-usd`·프리플라이트 버전
- * 게이트 등)를 아직 구현하지 않는다 — 그건 Step 4(`gen`)가 실제로 `-p` 세션을 띄울 때 채운다.
- * 여기서는 두 프로파일 모두에 적용되는 "공통 강제 사항"(cwd 규약 밖 부분 · MCP 차단 · env 격리 ·
- * safe-mode 자기 선언)만 구성한다.
+ * Step 4 — `sealed-live`의 모델 세션(`claude -p`) 전용 통제를 여기서 채운다: `--tools ""`
+ * (B4, 필수) · `--disallowedTools`(병행 심층 방어) · `--disable-slash-commands` ·
+ * `--setting-sources project`(`--safe-mode`와 중첩 — 단일 플래그 의존 해소, iter 8 무료 통제 4) ·
+ * `--no-session-persistence`(AC-0.11 — projects/ churn 제거). `--json-schema`+`--output-format
+ * json`·`--max-budget-usd`·`--timeout-sec`는 호출별로 값이 달라 여기서 고정하지 않는다 —
+ * 호출자(`gen`)가 subcommand로 넘긴다. `agent-probe`(AC-3.3) 예외 조합은
+ * `buildAgentProbeArgv()`가 별도로 구성한다 — `--safe-mode` 대신 `--setting-sources project` +
+ * `--plugin-dir`를 쓰므로 이 파일의 일반 프로파일 argv 구성과 섞지 않는다.
  */
 
 export type SealProfile = "test-isolated" | "sealed-live";
@@ -43,13 +46,60 @@ export function isModelSessionSubcommand(subcommand: readonly string[]): boolean
  * `plugin` 서브커맨드는 이 두 플래그를 아예 모르는 별도 파서를 쓴다. `--safe-mode`는 실측상
  * `plugin list --json`을 깨지 않으므로(exit 0, 동일 바이트 수 출력) 구조적 서브커맨드에도 유지한다.
  */
+/**
+ * `--disallowedTools` 심층 방어 목록(iter 8 · ADR-004) — `--tools ""`가 이미 도구 0개를
+ * 강제하므로 이 목록은 **대체가 아니라 병행**이다. `--tools ""`의 의미론이 어떤 이유로든
+ * 회귀해도(버전 드리프트 등) 이 두 번째 경계가 남는다. 알려진 내장 도구 이름을 전부 나열한다 —
+ * 이름 목록이 하네스 버전에 종속되므로(R13 대상) `--tools ""` 자체가 여전히 1차 방어선이다.
+ */
+export const SEALED_LIVE_DISALLOWED_TOOLS: readonly string[] = [
+  "Bash",
+  "Edit",
+  "Write",
+  "NotebookEdit",
+  "WebFetch",
+  "WebSearch",
+  "Read",
+  "Glob",
+  "Grep",
+  "Task",
+  "Agent",
+  "TodoWrite",
+  "BashOutput",
+  "KillShell",
+];
+
+/**
+ * `sealed-live` 모델 세션 전용 통제(iter 8). `--tools ""`는 여기서 래퍼가 직접 주입한다 —
+ * 호출자가 subcommand로 넘기는 값을 신뢰하지 않는다(H1, "래퍼가 argv를 전량 구성한다").
+ * `spawn-claude.ts`가 이 리터럴이 실제로 argv에 도달했는지 마지막 방어선으로 재확인한다(B4).
+ */
+function sealedLiveModelSessionFlags(): string[] {
+  return [
+    "--tools",
+    "",
+    "--disallowedTools",
+    SEALED_LIVE_DISALLOWED_TOOLS.join(","),
+    "--disable-slash-commands",
+    // --safe-mode와 대안이 아니라 중첩(iter 8 무료 통제 4 — R14 "단일 플래그 의존"을 완화가
+    // 아니라 해소한다). 고정 cwd(~/.cache/ctk/sealed-cwd)에는 프로젝트 설정이 없으므로 이
+    // 값은 항상 빈 프로젝트 설정을 로드하는 것과 같다 — 그 자체가 독립된 두 번째 잠금이다.
+    "--setting-sources",
+    "project",
+    "--no-session-persistence",
+  ];
+}
+
 export function buildArgvPrefix(profile: SealProfile, subcommand: readonly string[]): string[] {
   const modelSession = isModelSessionSubcommand(subcommand);
   const prefix: string[] = [];
   if (profile === "sealed-live") {
     // safe-mode는 모든 커스터마이즈(훅·user CLAUDE.md·설치 플러그인)를 비활성화한다(Step 0 실측,
-    // AC-0.10ⓓ). LLM 세션 전용 통제(--tools ""·--json-schema 등)는 Step 4가 추가한다.
+    // AC-0.10ⓓ).
     prefix.push("--safe-mode");
+    if (modelSession) {
+      prefix.push(...sealedLiveModelSessionFlags());
+    }
   }
   if (modelSession) {
     prefix.push("--strict-mcp-config", "--mcp-config", EMPTY_MCP_CONFIG_JSON);
@@ -59,6 +109,23 @@ export function buildArgvPrefix(profile: SealProfile, subcommand: readonly strin
 
 export function buildFullArgv(profile: SealProfile, subcommand: readonly string[]): string[] {
   return [...buildArgvPrefix(profile, subcommand), ...subcommand];
+}
+
+/**
+ * `agent-probe`(AC-3.3) 예외 조합 — `--safe-mode` **대신** `--setting-sources project` +
+ * `--plugin-dir <pluginDir>`를 쓴다. `--safe-mode`는 스킬을 전부 죽여 "정확히 하나만 켠다"는
+ * 이 AC의 실험 설계와 양립하지 않는다(§1.3 결정 6). 이 조합은 `--safe-mode`보다 약한 봉인이므로
+ * **합성 카탈로그·진단 전용**이며, 호출자(gen/src/agent-probe.ts)가 stdout 머리말에 그 사실을
+ * 명시해야 한다. `pluginDir`는 마켓플레이스 루트가 아니라 **플러그인 디렉터리 자체**여야 등록된다
+ * (Architect 실측 정정, §1.3).
+ */
+export function buildAgentProbeArgv(subcommand: readonly string[], pluginDir: string): string[] {
+  const modelSession = isModelSessionSubcommand(subcommand);
+  const prefix: string[] = ["--setting-sources", "project", "--plugin-dir", pluginDir];
+  if (modelSession) {
+    prefix.push("--strict-mcp-config", "--mcp-config", EMPTY_MCP_CONFIG_JSON);
+  }
+  return [...prefix, ...subcommand];
 }
 
 /**

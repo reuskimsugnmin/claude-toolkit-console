@@ -1,12 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { assertEnvWhitelist, assertForbiddenArgv } from "@ctk/core";
+import { AGENT_PROBE_FORBIDDEN_ARGV_RULES, assertEnvWhitelist, assertForbiddenArgv, DEFAULT_SINGLE_VALUE_ARGV_FLAGS } from "@ctk/core";
 import {
+  buildAgentProbeArgv,
   buildArgvPrefix,
   buildChildEnv,
   buildFullArgv,
   isSealProfile,
   SEAL_PROFILES,
+  SEALED_LIVE_DISALLOWED_TOOLS,
 } from "../src/harness/seal-profiles.js";
+
+/** spawn-claude.ts가 실제로 쓰는 단일값 플래그 전량 — 테스트도 같은 목록으로 판정해야 한다. */
+const WRAPPER_SINGLE_VALUE_ARGV_FLAGS = [
+  ...DEFAULT_SINGLE_VALUE_ARGV_FLAGS,
+  "--setting-sources",
+  "--disallowedTools",
+  "--json-schema",
+  "--output-format",
+  "--max-budget-usd",
+];
+const AGENT_PROBE_SINGLE_VALUE_ARGV_FLAGS = [...WRAPPER_SINGLE_VALUE_ARGV_FLAGS, "--plugin-dir"];
 
 describe("probe/harness/seal-profiles — §1.3 결정 6 프로파일 조합 (순수 함수)", () => {
   it("허용 프로파일은 정확히 둘이다", () => {
@@ -35,10 +48,29 @@ describe("probe/harness/seal-profiles — §1.3 결정 6 프로파일 조합 (�
     expect(prefix).toEqual(["--safe-mode"]);
   });
 
-  it("sealed-live + -p 모델 세션은 --safe-mode와 MCP 차단 플래그를 모두 붙인다", () => {
+  it("sealed-live + -p 모델 세션은 --safe-mode·MCP 차단·LLM 세션 전용 통제를 전부 붙인다(iter 8)", () => {
     const prefix = buildArgvPrefix("sealed-live", ["-p"]);
     expect(prefix[0]).toBe("--safe-mode");
     expect(prefix).toContain("--strict-mcp-config");
+    // B4 — --tools ""가 항상 존재한다(선택이 아니라 필수).
+    const toolsIndex = prefix.indexOf("--tools");
+    expect(toolsIndex).toBeGreaterThan(-1);
+    expect(prefix[toolsIndex + 1]).toBe("");
+    // 병행 심층 방어.
+    expect(prefix).toContain("--disallowedTools");
+    expect(prefix[prefix.indexOf("--disallowedTools") + 1]).toBe(SEALED_LIVE_DISALLOWED_TOOLS.join(","));
+    expect(prefix).toContain("--disable-slash-commands");
+    // 무료 통제 4 — --safe-mode와 --setting-sources를 대안이 아니라 중첩한다.
+    expect(prefix).toContain("--setting-sources");
+    expect(prefix[prefix.indexOf("--setting-sources") + 1]).toBe("project");
+    expect(prefix).toContain("--no-session-persistence");
+  });
+
+  it("test-isolated + -p 모델 세션에는 sealed-live 전용 LLM 통제를 붙이지 않는다", () => {
+    const prefix = buildArgvPrefix("test-isolated", ["-p"]);
+    expect(prefix).not.toContain("--tools");
+    expect(prefix).not.toContain("--disable-slash-commands");
+    expect(prefix).not.toContain("--setting-sources");
   });
 
   it("buildFullArgv는 프리픽스 뒤에 subcommand를 그대로 이어붙인다", () => {
@@ -57,11 +89,30 @@ describe("probe/harness/seal-profiles — §1.3 결정 6 프로파일 조합 (�
     }
   });
 
-  it("-p 모델 세션 서브커맨드는 위치인자 0개 단언이 여전히 적용된다(기본값 유지)", () => {
-    const argv = buildFullArgv("sealed-live", ["-p", "--tools", ""]);
-    expect(assertForbiddenArgv(argv).status).toBe("clean");
+  it("-p 모델 세션 서브커맨드는 위치인자 0개 단언이 여전히 적용된다(wrapper 전용 단일값 목록)", () => {
+    const argv = buildFullArgv("sealed-live", ["-p"]);
+    expect(
+      assertForbiddenArgv(argv, undefined, WRAPPER_SINGLE_VALUE_ARGV_FLAGS).status,
+    ).toBe("clean");
     const withStrayPositional = buildFullArgv("sealed-live", ["-p", "stray prompt text"]);
-    expect(assertForbiddenArgv(withStrayPositional).status).toBe("violation");
+    expect(
+      assertForbiddenArgv(withStrayPositional, undefined, WRAPPER_SINGLE_VALUE_ARGV_FLAGS).status,
+    ).toBe("violation");
+  });
+
+  it("buildAgentProbeArgv는 --safe-mode 대신 --setting-sources project + --plugin-dir를 쓴다(AC-3.3 예외 조합)", () => {
+    const argv = buildAgentProbeArgv(["-p"], "/synthetic/plugin-dir");
+    expect(argv).not.toContain("--safe-mode");
+    expect(argv.slice(0, 4)).toEqual(["--setting-sources", "project", "--plugin-dir", "/synthetic/plugin-dir"]);
+    expect(argv).toContain("--strict-mcp-config");
+  });
+
+  it("agent-probe 조합은 AGENT_PROBE_FORBIDDEN_ARGV_RULES 아래에서만 clean이다(일반 규칙 아래에서는 --plugin-dir이 위반)", () => {
+    const argv = buildAgentProbeArgv(["-p"], "/synthetic/plugin-dir");
+    expect(
+      assertForbiddenArgv(argv, AGENT_PROBE_FORBIDDEN_ARGV_RULES, AGENT_PROBE_SINGLE_VALUE_ARGV_FLAGS).status,
+    ).toBe("clean");
+    expect(assertForbiddenArgv(argv, undefined, AGENT_PROBE_SINGLE_VALUE_ARGV_FLAGS).status).toBe("violation");
   });
 
   it("buildChildEnv는 HOME을 항상 인자값으로 덮어쓴다(부모 env 무관)", () => {

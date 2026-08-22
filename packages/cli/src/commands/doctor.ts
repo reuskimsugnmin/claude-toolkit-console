@@ -85,6 +85,58 @@ export function runDoctorDrift(): DriftSummary {
   };
 }
 
+export interface SubagentAttributionGapReport {
+  runLogFile: string;
+  agentToolUseCount: number;
+  newSubagentFiles: number;
+}
+
+interface MeasureRunLogEntry {
+  command?: string;
+  failure_class?: string | null;
+  args?: { counts?: { agent_tool_use_count_this_run?: number; new_subagent_files_this_run?: number } };
+}
+
+/**
+ * `ctk doctor` — R17(§3 AC-4 표) 서브에이전트 귀속 괴리 노출. 최근 `measure` run-log 중
+ * `failure_class: "subagent_attribution_unresolved"`로 표시된(measure.ts가 남긴다) 가장 최근
+ * 건을 찾는다. 괴리가 없으면 `null` — "0을 사실로 기록"하지 않도록 대상이 없을 때와 괴리가 없을
+ * 때를 호출자가 구분할 수 있게 `runs` 자체가 없으면 별도로 빈 배열을 반환한다(예외를 던지지 않음
+ * — doctor는 진단 도구이므로 측정 이력이 없어도 그냥 "정보 없음"을 보여줘야 한다).
+ */
+export function runDoctorSubagentAttribution(): SubagentAttributionGapReport | null {
+  const home = resolveHomeContext();
+  const localConfig = readLocalConfig(home);
+  if (localConfig === null) return null;
+  const machine = readOrCreateMachineIdentity(home, "local-machine");
+  const runsDir = path.join(localConfig.catalog_path, machineDir(machine.machine_id), "runs");
+
+  let files: string[];
+  try {
+    files = readdirSync(runsDir).filter((f) => f.endsWith(".jsonl")).sort().reverse();
+  } catch {
+    return null;
+  }
+
+  for (const file of files) {
+    const lines = readFileSync(path.join(runsDir, file), "utf8")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l) as MeasureRunLogEntry);
+    for (const entry of lines.reverse()) {
+      if (entry.command !== "measure") continue;
+      if (entry.failure_class !== "subagent_attribution_unresolved") return null; // 가장 최근 measure가 이미 괴리 없음
+      return {
+        runLogFile: file,
+        agentToolUseCount: entry.args?.counts?.agent_tool_use_count_this_run ?? 0,
+        newSubagentFiles: entry.args?.counts?.new_subagent_files_this_run ?? 0,
+      };
+    }
+  }
+  return null;
+}
+
 /**
  * `ctk doctor`의 **최상단 경보**. 중단된 복원이 남아 있으면 다른 어떤 요약보다 먼저 보여야 한다(§7.2) —
  * 대상 자리가 비어 있어 사용자 눈에는 파일이 소실된 것으로 보이지만 실제로는 evicted에 온전히 남아

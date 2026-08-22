@@ -8,15 +8,21 @@
 
 import { runInit } from "../src/commands/init.js";
 import { runScan, CatalogNotInitializedError } from "../src/commands/scan.js";
+import { runGenCli, runGenDryRun, MissingRequiredFlagError } from "../src/commands/gen.js";
+import { runAgentProbeCli } from "../src/commands/agent-probe.js";
+import { runVerifySeal } from "../src/commands/verify-seal.js";
 import {
   runDoctorDrift,
   runDoctorInterruptedRestores,
+  runDoctorSubagentAttribution,
   formatInterruptedRestoreAlert,
   NoSnapshotsError,
 } from "../src/commands/doctor.js";
 import { runVerifyAc1, NotYetScannedError } from "../src/commands/verify-ac1.js";
 import { runMove, AssetNotFoundError, NoOpMoveError, ProjectIndexOutOfRangeError } from "../src/commands/move.js";
 import { runRollback, NoRollbackTargetError } from "../src/commands/rollback.js";
+import { runMeasure } from "../src/commands/measure.js";
+import { runUsage, NoMeasurementError } from "../src/commands/usage.js";
 import { LockContendedError } from "@ctk/sync";
 import { DuplicateKeyDiffError } from "@ctk/core";
 import { McpMoveRejectedError, CliToolMoveUnsupportedError, RollbackFailedError } from "@ctk/actuator";
@@ -61,6 +67,16 @@ async function main(): Promise<void> {
           console.error(alert);
           console.error("");
         }
+        // R17 — 가장 최근 `ctk measure`가 Agent tool_use 건수 대비 신규 subagent 파일 수 괴리를
+        // 남겼으면 여기서 노출한다(수용 기준: "subagent_attribution: unresolved + ctk doctor 노출").
+        const subagentGap = runDoctorSubagentAttribution();
+        if (subagentGap !== null) {
+          console.error(
+            `⚠️  R17 서브에이전트 귀속 괴리 (${subagentGap.runLogFile}) — Agent tool_use ${subagentGap.agentToolUseCount}건 vs ` +
+              `신규 subagent 파일 ${subagentGap.newSubagentFiles}건. 해당 실행 범위에서 일부 서브에이전트 호출을 미확인.`,
+          );
+          console.error("");
+        }
         if (rest.includes("--drift")) {
           const drift = runDoctorDrift();
           console.log(`드리프트 (${drift.fromSnapshot} → ${drift.toSnapshot})`);
@@ -74,6 +90,29 @@ async function main(): Promise<void> {
         return;
       }
       case "verify": {
+        if (rest[0] === "seal") {
+          const budget = readFlagValue(rest, "--max-budget-usd");
+          const timeout = readFlagValue(rest, "--timeout-sec");
+          const pluginCmd = readFlagValue(rest, "--installed-plugin-command");
+          const report = await runVerifySeal({
+            maxBudgetUsd: budget !== undefined ? Number(budget) : undefined,
+            timeoutSec: timeout !== undefined ? Number(timeout) : undefined,
+            installedPluginCommand: pluginCmd,
+          });
+          const sig = report.result.signals;
+          console.log(`ctk verify seal — 검증 ${report.previousVerifiedVersion} → 실제 ${report.actualVersion}`);
+          console.log(`  양성 대조군(탐지 가능한가): ${sig.positiveControlDetected ? "통과" : "실패"}`);
+          console.log(`  (i) 훅 마커 미생성: ${sig.hookMarkerAbsent ? "통과" : "실패"}`);
+          console.log(`  (ii) CLAUDE.md 미로드: ${sig.claudeMdStringAbsent ? "통과" : "실패"}`);
+          console.log(`  (iii) 플러그인 커맨드 미인식: ${sig.installedPluginCommandUnrecognized ? "통과" : "실패"}`);
+          if (report.updated) {
+            console.log(`  ✅ 봉인 재증명 완료 — verified_cli_version을 ${report.actualVersion}로 갱신했다`);
+          } else {
+            console.error(`  ❌ 봉인 재증명 실패 — 기록을 갱신하지 않았다(봉인이 깨진 채 통과시키지 않는다)`);
+            process.exitCode = 1;
+          }
+          return;
+        }
         if (rest[0] === "ac1") {
           const report = await runVerifyAc1();
           console.log(
@@ -125,14 +164,129 @@ async function main(): Promise<void> {
         console.log(`  journal: ${summary.journalPath}`);
         return;
       }
+      case "measure": {
+        const transcriptsDir = readFlagValue(rest, "--transcripts");
+        const noCredentialsOk = rest.includes("--no-credentials-ok");
+        const summary = await runMeasure({ transcriptsDir, noCredentialsOk });
+        console.log(`ctk measure 완료 (${summary.durationMs}ms)`);
+        console.log(`  스냅샷: ${summary.snapshotPath}`);
+        console.log(`  실행 로그: ${summary.runLogPath}`);
+        console.log(
+          `  트랜스크립트: ${summary.transcriptFilesParsed}개 파일 (파싱 실패 ${summary.parseFailureCount}건)`,
+        );
+        console.log(
+          `  UsageMetric: ${summary.usageMetricCount}건 · SessionUsage: ${summary.sessionUsageCount}건 · Occupancy: ${summary.occupancyCount}건`,
+        );
+        console.log(
+          `  미귀속 호출: ${summary.unattributedCallCount}건 · occupancy_divergence: ${summary.occupancyDivergenceCount}건 · usage_divergence: ${summary.usageDivergenceCount}건`,
+        );
+        console.log(
+          `  R17 대조(이번 실행 범위) — Agent tool_use: ${summary.agentToolUseCountThisRun}건 vs 신규 subagent 파일: ${summary.newSubagentFilesThisRun}건` +
+            (summary.subagentAttributionGap ? " ⚠️ 괴리" : " 일치"),
+        );
+        console.log(`  크레덴셜(ANTHROPIC_API_KEY): ${summary.credentialsAvailable ? "있음" : "없음(unmeasured로 열화)"}`);
+        return;
+      }
+      case "gen": {
+        const maxAssets = readFlagValue(rest, "--max-assets");
+        if (rest.includes("--dry-run")) {
+          // AC-3.8 — 네트워크 호출 0 · 서브프로세스 spawn 0. 파일 직독만 한다.
+          const report = runGenDryRun({ maxAssets: maxAssets !== undefined ? Number(maxAssets) : undefined });
+          console.log(`ctk gen --dry-run (로컬 전용 미리보기 — 네트워크·spawn 없음)`);
+          console.log(`  생성 대상: ${report.assetCount}건 · 원본 크기 합계: ${report.approxBytes} bytes`);
+          if (report.emptyAssetIds.length > 0) {
+            console.log(`  ⚠️ 원본이 비어 생성 불가: ${report.emptyAssetIds.length}건`);
+          }
+          return;
+        }
+        const budget = readFlagValue(rest, "--max-budget-usd");
+        const timeout = readFlagValue(rest, "--timeout-sec");
+        const summary = await runGenCli({
+          maxAssets: maxAssets !== undefined ? Number(maxAssets) : undefined,
+          maxBudgetUsd: budget !== undefined ? Number(budget) : undefined,
+          timeoutSec: timeout !== undefined ? Number(timeout) : undefined,
+          resume: rest.includes("--resume"),
+          noLlm: rest.includes("--no-llm"),
+          allowManagedPolicy: rest.includes("--allow-managed-policy"),
+          yes: rest.includes("--yes"),
+        });
+        const fresh = summary.results.filter((r) => r.outcome === "fresh").length;
+        const pending = summary.results.filter((r) => r.outcome === "pending").length;
+        const stale = summary.results.filter((r) => r.outcome === "stale").length;
+        console.log(`ctk gen 완료 — 최신 ${fresh}건 · 미처리 ${pending}건 · 갱신필요 ${stale}건`);
+        // 건너뛴 자산은 이유를 그대로 노출한다 — "처리됨"과 "조용히 빠짐"을 구분한다(안전 원칙 6).
+        for (const r of summary.results.filter((x) => x.reason !== undefined)) {
+          console.log(`    ${r.assetId}: ${r.reason}`);
+          for (const d of r.detail ?? []) console.log(`        └ ${d}`);
+        }
+        if (summary.stoppedEarly) {
+          console.log(`  ⚠️ 예산 초과로 조기 종료 — 남은 대상은 \`ctk gen --resume\`으로 이어서 처리한다`);
+        }
+        const inj = summary.injectionFindingsTotal;
+        console.log(
+          `  인젝션 후검증 — 지시문 ${inj.directive} · 실행명령 ${inj.executable} · URL ${inj.url} · 길이 ${inj.length}`,
+        );
+        console.log(`  인덱스: ${summary.indexPath}`);
+        return;
+      }
+      case "agent-probe": {
+        const catalog = readFlagValue(rest, "--catalog");
+        const query = readFlagValue(rest, "--query");
+        const budget = readFlagValue(rest, "--max-budget-usd");
+        const timeout = readFlagValue(rest, "--timeout-sec");
+        if (catalog === undefined || query === undefined) {
+          console.error('사용법: ctk agent-probe --catalog <경로> --query "<질의>" --max-budget-usd <수치> --timeout-sec <초>');
+          process.exitCode = 1;
+          return;
+        }
+        const result = await runAgentProbeCli({
+          catalog,
+          query,
+          maxBudgetUsd: budget !== undefined ? Number(budget) : undefined,
+          timeoutSec: timeout !== undefined ? Number(timeout) : undefined,
+        });
+        console.log(`ctk agent-probe (AC-3.3 진단 — 카탈로그·config에 쓰지 않음)`);
+        console.log(`  exit=${result.exitCode ?? "null"}${result.timedOut ? " (타임아웃)" : ""}`);
+        console.log(result.stdout);
+        return;
+      }
+      case "usage": {
+        const nRaw = readFlagValue(rest, "--unused-expensive");
+        const n = nRaw !== undefined ? Number(nRaw) : 5;
+        const report = runUsage({ unusedExpensive: n });
+        const asJson = rest.includes("--json");
+        if (asJson) {
+          console.log(JSON.stringify(report, null, 2));
+          return;
+        }
+        console.log(`ctk usage --unused-expensive ${n} — 스냅샷 ${report.snapshotId}`);
+        for (const row of report.rows) {
+          console.log(
+            `  ${row.asset_id}: idle=${row.idle_tokens}tok call_count=${row.call_count} last_used_at=${row.last_used_at ?? "(없음)"} ` +
+              `token_sum=${row.token_sum} attribution=${row.attribution_source ?? "(없음)"}/${row.attribution_rule ?? "(없음)"} ` +
+              `(스냅샷:${row.snapshot_id}, 파싱한 트랜스크립트:${row.transcript_files_parsed}개)`,
+          );
+        }
+        if (report.excludedUnmeasuredAssetIds.length > 0) {
+          console.log(`  순위 제외(occupancy 미측정): ${report.excludedUnmeasuredAssetIds.join(", ")}`);
+        }
+        return;
+      }
       default: {
         console.error(`알 수 없는 명령: ${command ?? "(없음)"}`);
-        console.error("사용법: ctk <init|scan|doctor|verify|move|rollback> [...args]");
+        console.error("사용법: ctk <init|scan|measure|usage|doctor|verify|move|rollback> [...args]");
         process.exitCode = 1;
         return;
       }
     }
   } catch (err) {
+    if (err instanceof MissingRequiredFlagError) {
+      // 예산·타임아웃 미지정은 기본값으로 때우지 않고 거부한다 — 무인 실행에서 상한 없는
+      // 유료 세션이 도는 것이 이 프로젝트가 막으려는 실패 모드다(전역 CLAUDE.md 비용 규칙).
+      console.error(`FAIL missing_required_flag: ${err.message}`);
+      process.exitCode = 1;
+      return;
+    }
     if (err instanceof LockContendedError) {
       console.error(`FAIL lock_contended: ${err.message}`);
       process.exitCode = 1;
@@ -145,7 +299,8 @@ async function main(): Promise<void> {
       err instanceof AssetNotFoundError ||
       err instanceof NoOpMoveError ||
       err instanceof ProjectIndexOutOfRangeError ||
-      err instanceof NoRollbackTargetError
+      err instanceof NoRollbackTargetError ||
+      err instanceof NoMeasurementError
     ) {
       console.error(`FAIL: ${err.message}`);
       process.exitCode = 1;

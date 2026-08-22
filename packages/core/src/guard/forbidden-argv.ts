@@ -63,13 +63,40 @@ export const FORBIDDEN_ARGV_RULES: readonly ForbiddenArgvRule[] = [
  * 호출자가 이 목록을 교체할 수 있게 파라미터화한다 — Step 4의 실제 spawn wrapper는 자신이 쓰는
  * 전체 플래그 집합(`--timeout-sec` 등 다른 단일값 플래그 포함)으로 이 인자를 넘겨야 한다.
  */
+/**
+ * 값 토큰 1개를 소비하는 플래그. **여기 없는 플래그의 값은 위치인자로 오판된다** — 실제로
+ * `--append-system-prompt`가 빠져 있어 봉인 재검증(ⓓ-2)이 자기 자신의 가드에 막혔다.
+ *
+ * 오판의 방향은 안전하다(정당한 실행을 거부할 뿐 위험한 실행을 통과시키지 않는다). 그러나
+ * "항상 거부하는 가드"는 우회를 학습시키므로, 우리가 실제로 쓰는 플래그는 빠짐없이 등록한다.
+ * **새 플래그를 spawn 인자에 추가할 때는 이 목록도 함께 본다.**
+ */
 export const DEFAULT_SINGLE_VALUE_ARGV_FLAGS: readonly string[] = [
   "--permission-mode",
   "--tools",
   "--allowedTools",
+  "--disallowed-tools",
   "--mcp-config",
   "--add-dir",
+  "--append-system-prompt",
+  "--max-budget-usd",
+  "--timeout-sec",
+  "--setting-sources",
+  "--plugin-dir",
+  "--json-schema",
+  "--output-format",
+  "--model",
 ];
+
+/**
+ * `agent-probe`(AC-3.3) 예외 조합 전용 규칙 — `--plugin-dir`만 제외한 나머지 15종은 그대로
+ * 금지한다. `agent-probe`는 `--safe-mode` 대신 `--setting-sources project` + `--plugin-dir
+ * <합성 카탈로그 플러그인 디렉터리>`를 쓰므로(§1.3 결정 6) `--plugin-dir` 하나만 예외가
+ * 필요하다 — 이 상수를 통하지 않는 일반 `spawnClaude()` 호출에는 여전히 전체 16종이 적용된다.
+ */
+export const AGENT_PROBE_FORBIDDEN_ARGV_RULES: readonly ForbiddenArgvRule[] = FORBIDDEN_ARGV_RULES.filter(
+  (rule) => rule.flag !== "--plugin-dir",
+);
 
 export type ArgvViolationReason = "forbidden_flag" | "forbidden_value" | "positional_argument";
 

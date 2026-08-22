@@ -3,13 +3,15 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "scripts": {
     "typecheck": "tsc -b tsconfig.json",
     "lint": "eslint .",
     "test": "vitest run",
-    "hygiene:check": "node scripts/hygiene-check.mjs"
+    "hygiene:check": "node scripts/hygiene-check.mjs",
+    "deps:check": "pnpm ls -r --prod --json | node scripts/assert-zero-runtime-deps.mjs",
+    "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm hygiene:check && pnpm deps:check"
   },
   "devDependencies": {
     "@types/node": "20.19.43",

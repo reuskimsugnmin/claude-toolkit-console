@@ -21,10 +21,14 @@ jobs:
         with:
           version: 11.4.0
 
+      # Node 22.13은 pnpm 11.4.0의 최소 요구 버전이다(pnpm이 `node:sqlite`를 쓴다).
+      # 여기를 20으로 두는 동안 CI 5회가 전부 이 단계에서 죽었고 — `cache: pnpm`이
+      # `pnpm store path`를 호출한다 — 아래 게이트는 한 번도 실행되지 않았다.
+      # engines.node의 하한과 같은 값을 쓴다: 선언한 하한이 실제로 도는지 CI가 검증한다.
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22.13
           cache: pnpm
 
       # B2 — 락파일과 매니페스트가 어긋나면 여기서 실패한다. 이 워크플로 전체에서 install은
@@ -41,6 +45,9 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      - name: Runtime dependency allowlist
+        run: pnpm deps:check
 
       - name: Public repo hygiene check
         run: pnpm hygiene:check

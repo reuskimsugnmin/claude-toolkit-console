@@ -3,10 +3,12 @@ import path from "node:path";
 import {
   normalizePath,
   parseInstalledPluginsFile,
+  parsePluginDetails,
   parsePluginList,
   parseSettingsFile,
   type Asset,
   type Installation,
+  type PluginDetails,
 } from "@ctk/core";
 import type { HomeContext } from "../home.js";
 import { spawnClaude, type SpawnClaudeResult } from "../harness/spawn-claude.js";
@@ -203,4 +205,129 @@ export async function collectPlugins(options: CollectPluginsOptions): Promise<Pl
   // project-committed settings.json만으로 활성화된 케이스는 다루지 않는다. install_scope의
   // 유일한 권위 출처는 installed_plugins.json이라는 §4.1 Step 2 spec 문구를 그대로 따른다.
   return { assets: [...assetById.values()], installations };
+}
+
+/**
+ * Step 4(`gen`) 전용 — 플러그인 자산의 실제 설치 경로(절대경로)를 되찾는다. `installed_plugins.json`
+ * 의 `installPath`가 유일한 권위 출처다(P0-3과 동일 논리 — `plugin list --json`의 정규화된
+ * `source_ref`는 이미 홈 상대화·해시화됐으므로 실제 파일을 읽을 절대경로로 되돌릴 수 없다).
+ * 같은 id가 여러 스코프(project별 local 등)에 설치돼 있으면 첫 항목을 대표값으로 쓴다 —
+ * `gen`은 원문 텍스트를 읽는 용도일 뿐 어느 설치를 "정답"으로 볼지가 카탈로그 정합성에 영향을
+ * 주지 않는다(플러그인 코드 자체는 스코프와 무관하게 동일하다).
+ */
+export function findPluginInstallPath(home: HomeContext, assetId: string): string | null {
+  const installedPluginsAbsPath = path.join(home.ctkConfigDir, "plugins", "installed_plugins.json");
+  const raw = readJsonOrNull(installedPluginsAbsPath);
+  if (raw === null) return null;
+  const parsed = parseInstalledPluginsFile(raw);
+  const entries = parsed.plugins[assetId];
+  return entries?.[0]?.installPath ?? null;
+}
+
+/**
+ * `claude plugin details <id>` 파싱 — Step 3 확장(AC-4.8 5D 교차검증, harness_alwayson_tokens).
+ * `--json` 옵션이 없어(AC-0.5 실측) 텍스트를 정규식으로 파싱한다. `ctk scan`이 아니라 `ctk measure`
+ * 전용 경로다 — 플러그인 자산마다 서브프로세스를 1회씩 추가로 띄우므로 매 스캔에 끼워 넣지 않는다.
+ *
+ * 실측 원문 3건(2026-08-21, 이 세션에서 직접 실행 — `claude plugin details`는 읽기 전용 구조적
+ * 서브커맨드라 인증·비용이 들지 않는다):
+ * ```
+ * context7
+ *   Upstash Context7 MCP server for ...
+ *   Source: context7@claude-plugins-official
+ *
+ * Component inventory
+ *   Skills (0)
+ *   Agents (0)
+ *   Hooks (0)
+ *   MCP servers (1)  context7  (tool schemas resolved at runtime; not counted)
+ *   LSP servers (0)
+ *
+ * Projected token cost
+ *   Always-on:   ~0 tok   added to every session
+ * ```
+ * `oh-my-claudecode 4.15.7`처럼 **첫 줄에 버전이 붙는 경우도, `context7`처럼 붙지 않는 경우도**
+ * 실측됐다 — `version`을 필수로 가정한 AC-0.5 원 스키마를 여기서 정정한다
+ * (`core/harness/plugin-details.schema.ts` 갱신 주석 참조).
+ */
+const SOURCE_LINE_PREFIX = "Source:";
+
+export function parsePluginDetailsText(text: string): PluginDetails | null {
+  const lines = text.split("\n");
+  const firstLine = lines[0]?.trim();
+  if (firstLine === undefined || firstLine.length === 0) return null;
+  const nameVersionMatch = /^(\S+)(?:\s+(\d[\w.-]*))?$/.exec(firstLine);
+  if (nameVersionMatch === null) return null;
+  const version = nameVersionMatch[2];
+
+  const sourceLineIndex = lines.findIndex((l) => l.trim().startsWith(SOURCE_LINE_PREFIX));
+  if (sourceLineIndex === -1) return null;
+  const sourceLine = lines[sourceLineIndex];
+  if (sourceLine === undefined) return null;
+  const id = sourceLine.trim().slice(SOURCE_LINE_PREFIX.length).trim();
+  if (id.length === 0) return null;
+
+  let description: string | undefined;
+  for (let i = 1; i < sourceLineIndex; i++) {
+    const candidate = lines[i]?.trim();
+    if (candidate !== undefined && candidate.length > 0) {
+      description = candidate;
+      break;
+    }
+  }
+
+  const countOf = (label: string): number | null => {
+    const m = new RegExp(`${label} \\((\\d+)\\)`).exec(text);
+    return m?.[1] !== undefined ? Number(m[1]) : null;
+  };
+  const skills = countOf("Skills");
+  const agents = countOf("Agents");
+  const hooks = countOf("Hooks");
+  const mcpServers = countOf("MCP servers");
+  const lspServers = countOf("LSP servers");
+  if (skills === null || agents === null || hooks === null || mcpServers === null || lspServers === null) {
+    return null;
+  }
+
+  const alwaysOnMatch = /Always-on:\s*~?([\d,]+)\s*tok/.exec(text);
+  if (alwaysOnMatch?.[1] === undefined) return null;
+  const alwaysOnTokens = Number(alwaysOnMatch[1].replace(/,/g, ""));
+  if (!Number.isFinite(alwaysOnTokens)) return null;
+
+  try {
+    return parsePluginDetails({
+      id,
+      version,
+      description,
+      source: id,
+      components: { skills, agents, hooks, mcp_servers: mcpServers, lsp_servers: lspServers },
+      projected_token_cost: { always_on_tokens: alwaysOnTokens },
+    });
+  } catch {
+    // R13 — 파서가 만든 구조가 zod strict 계약과 안 맞으면(우리 자신의 파싱 버그이거나 하네시
+    // 문구가 더 크게 바뀌었거나) null로 열화한다. 호출자는 harness_alwayson을
+    // unmeasured(reason: parse_failed)로 남긴다(AC-4.8 — 자동 보정하지 않는다).
+    return null;
+  }
+}
+
+export interface FetchPluginDetailsOptions {
+  home: HomeContext;
+  cwd: string;
+  timeoutSec: number;
+  spawnFn?: typeof spawnClaude;
+}
+
+/** `null` = 명령 실패 또는 파싱 실패 — 호출자가 unmeasured 사유(command_failed/parse_failed)를 구분해 붙인다. */
+export async function fetchPluginDetails(pluginId: string, options: FetchPluginDetailsOptions): Promise<{ details: PluginDetails } | { error: "command_failed" | "parse_failed" }> {
+  const { home, cwd, timeoutSec, spawnFn = spawnClaude } = options;
+  const result = await spawnFn({ profile: "test-isolated", subcommand: ["plugin", "details", pluginId], home, cwd, timeoutSec });
+  if (result.exitCode !== 0) {
+    return { error: "command_failed" };
+  }
+  const details = parsePluginDetailsText(result.stdout);
+  if (details === null) {
+    return { error: "parse_failed" };
+  }
+  return { details };
 }
