@@ -21,6 +21,7 @@ describe("gen/seal-live-test — ⓓ-2 실행형 봉인 테스트 (가짜 spawnF
       maxBudgetUsd: 0.2,
       verifiedCliVersion: "2.1.238",
       hookMarkerPath,
+      hookMarkerControlConfirmed: true,
       claudeMdMarkerString: "CTK_SPIKE_MARKER_STRING",
       installedPluginCommand: "/oh-my-claudecode:help",
     };
@@ -41,7 +42,7 @@ describe("gen/seal-live-test — ⓓ-2 실행형 봉인 테스트 (가짜 spawnF
     const result = await runSealLiveTest({ ...baseOptions(hookMarkerPath), spawnFn: spawnFn as never });
     expect(result.signals).toEqual({
       positiveControlDetected: true,
-      hookMarkerAbsent: true,
+      hookMarker: "confirmed_absent",
       claudeMdStringAbsent: true,
       installedPluginCommandUnrecognized: true,
     });
@@ -70,7 +71,7 @@ describe("gen/seal-live-test — ⓓ-2 실행형 봉인 테스트 (가짜 spawnF
       return { exitCode: 1, stdout: "", stderr: "Unknown command", timedOut: false };
     };
     const result = await runSealLiveTest({ ...baseOptions(hookMarkerPath), spawnFn: spawnFn as never });
-    expect(result.signals.hookMarkerAbsent).toBe(false);
+    expect(result.signals.hookMarker).toBe("present");
     expect(result.passed).toBe(false);
   });
 
@@ -101,6 +102,62 @@ describe("gen/seal-live-test — ⓓ-2 실행형 봉인 테스트 (가짜 spawnF
     };
     const result = await runSealLiveTest({ ...baseOptions(hookMarkerPath), spawnFn: spawnFn as never });
     expect(result.signals.installedPluginCommandUnrecognized).toBe(false);
+    expect(result.passed).toBe(false);
+  });
+});
+
+describe("(i)의 양성 대조군 — 없으면 판정하지 않는다 (2026-08-23 실측)", () => {
+  /**
+   * `hookMarkerAbsent`는 **봉인 여부와 무관하게 항상 true였다.** 마커를 만드는 훅이
+   * settings에 0건이었기 때문이다(실측). 부재가 "훅이 발화하지 않았다"인지 "애초에 만들 것이
+   * 없었다"인지 구분되지 않으면 그건 신호가 아니다 — (ii)에 대해 이미 강제하던 논리(R14)가
+   * (i)에는 빠져 있었다.
+   */
+  function opts(dir: string, controlConfirmed: boolean) {
+    return {
+      home: { ctkHome: dir, ctkConfigDir: path.join(dir, ".claude"), configDirExplicit: false } as never,
+      cwd: dir,
+      timeoutSec: 60,
+      maxBudgetUsd: 0.5,
+      verifiedCliVersion: "2.1.238",
+      hookMarkerPath: path.join(dir, "hook-marker.txt"), // 존재하지 않음
+      hookMarkerControlConfirmed: controlConfirmed,
+      claudeMdMarkerString: "SYNTHETIC-MARKER-STRING-FOR-TEST",
+      installedPluginCommand: "/synth-plugin:help",
+    };
+  }
+
+  /** 세 신호가 전부 통과하도록 만든 spawn 스텁 — (i)만 변수로 남긴다. */
+  const allPassSpawn = () => {
+    let call = 0;
+    return () => {
+      call++;
+      // 1: 대조군(YES) · 2: (ii) 실제 세션(NO) · 3: (iii) 커맨드 미인식
+      if (call === 1) return Promise.resolve({ stdout: "YES", stderr: "", exitCode: 0, timedOut: false });
+      if (call === 2) return Promise.resolve({ stdout: "NO", stderr: "", exitCode: 0, timedOut: false });
+      return Promise.resolve({ stdout: "", stderr: "unknown command", exitCode: 1, timedOut: false });
+    };
+  };
+
+  it("대조군이 없으면 (i)은 unmeasured이고 passed가 false다", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ctk-seal-nocontrol-"));
+    const result = await runSealLiveTest({ ...opts(dir, false), spawnFn: allPassSpawn() as never });
+    expect(result.signals.hookMarker).toBe("unmeasured");
+    expect(result.passed, "못 잰 축이 있으면 통과가 아니다").toBe(false);
+  });
+
+  it("대조군이 있으면 같은 조건에서 통과한다 — 위 케이스가 '항상 실패'와 구분됨을 보인다", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ctk-seal-control-"));
+    const result = await runSealLiveTest({ ...opts(dir, true), spawnFn: allPassSpawn() as never });
+    expect(result.signals.hookMarker).toBe("confirmed_absent");
+    expect(result.passed).toBe(true);
+  });
+
+  it("대조군이 있어도 마커가 생겼으면 present이고 실패다 — 봉인이 뚫린 경우다", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ctk-seal-fired-"));
+    writeFileSync(path.join(dir, "hook-marker.txt"), "fired");
+    const result = await runSealLiveTest({ ...opts(dir, true), spawnFn: allPassSpawn() as never });
+    expect(result.signals.hookMarker).toBe("present");
     expect(result.passed).toBe(false);
   });
 });

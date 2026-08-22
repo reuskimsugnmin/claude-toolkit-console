@@ -166,7 +166,15 @@ async function main(): Promise<void> {
           const sig = report.result.signals;
           console.log(`ctk verify seal — 검증 ${report.previousVerifiedVersion} → 실제 ${report.actualVersion}`);
           console.log(`  양성 대조군(탐지 가능한가): ${sig.positiveControlDetected ? "통과" : "실패"}`);
-          console.log(`  (i) 훅 마커 미생성: ${sig.hookMarkerAbsent ? "통과" : "실패"}`);
+          // (i)은 3상태다 — "미측정"을 "통과"로 쓰면 아무것도 증명하지 않은 신호가 통과에 섞인다.
+          const HOOK_MARKER_TEXT = {
+            confirmed_absent: "통과 (대조군 확인됨)",
+            present: "실패 — 봉인 세션에서 훅이 발화했다",
+            unmeasured:
+              "미측정 — settings.json의 SessionStart 훅이 마커 경로를 쓰지 않는다. " +
+              "그 훅을 배선해야 이 축을 잴 수 있다",
+          } as const;
+          console.log(`  (i) 훅 마커 미생성: ${HOOK_MARKER_TEXT[sig.hookMarker]}`);
           console.log(`  (ii) CLAUDE.md 미로드: ${sig.claudeMdStringAbsent ? "통과" : "실패"}`);
           console.log(`  (iii) 플러그인 커맨드 미인식: ${sig.installedPluginCommandUnrecognized ? "통과" : "실패"}`);
           if (report.updated) {

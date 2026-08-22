@@ -27,6 +27,16 @@ export interface SealLiveTestOptions {
   /** (i) — SessionStart 훅이 발화하면 생성될 것으로 기대되는 마커 파일의 절대경로.
    * 호출자가 세션 시작 전에 이 파일이 없음을 이미 확인해 뒀어야 한다. */
   hookMarkerPath: string;
+  /**
+   * (i)의 **양성 대조군**. 실제 settings에 이 마커를 만드는 SessionStart 훅이 배선돼 있고
+   * 그 명령이 실제로 파일을 만든다는 것이 확인됐는가.
+   *
+   * ⚠️ 이것이 없으면 (i)은 **아무것도 증명하지 않는다.** 마커 부재가 "훅이 발화하지 않았다"인지
+   * "애초에 만들 것이 없었다"인지 구분되지 않기 때문이다 — (ii)에 대해 이미 강제하고 있는
+   * 논리(R14)가 (i)에는 빠져 있었고, 그래서 `hookMarkerAbsent`가 봉인 여부와 무관하게 항상
+   * true였다. 대조군이 없으면 (i)은 `unmeasured`이며 `passed`에 기여하지 않는다.
+   */
+  hookMarkerControlConfirmed: boolean;
   /** (ii) — 실제 `~/.claude/CLAUDE.md`에만 있는(양성 대조군에서만 반드시 등장해야 하는)
    * 고유 문자열. */
   claudeMdMarkerString: string;
@@ -40,7 +50,11 @@ export interface SealLiveTestSignals {
    * 답하는가. 이게 실패하면 (ii)의 음성 결과가 "미로드"인지 "탐지 자체 불가"인지 구분할 수
    * 없다(R14). */
   positiveControlDetected: boolean;
-  hookMarkerAbsent: boolean;
+  /**
+   * (i)의 3상태. `confirmed_absent`만이 "훅이 발화하지 않았다"는 판정이다.
+   * `unmeasured`는 대조군이 없어 **잴 수 없었다**는 뜻이며 통과로 세지 않는다(안전 원칙 7).
+   */
+  hookMarker: "confirmed_absent" | "present" | "unmeasured";
   claudeMdStringAbsent: boolean;
   installedPluginCommandUnrecognized: boolean;
 }
@@ -65,7 +79,18 @@ function looksUnrecognized(stdout: string, stderr: string): boolean {
 
 /** ⓓ-2 3신호 + 양성 대조군을 실제로 재현한다. 유료 세션 최대 3회(대조군 1 + (ii) 1 + (iii) 1). */
 export async function runSealLiveTest(options: SealLiveTestOptions): Promise<SealLiveTestResult> {
-  const { home, cwd, timeoutSec, maxBudgetUsd, verifiedCliVersion, hookMarkerPath, claudeMdMarkerString, installedPluginCommand, spawnFn = spawnClaude } = options;
+  const {
+    home,
+    cwd,
+    timeoutSec,
+    maxBudgetUsd,
+    verifiedCliVersion,
+    hookMarkerPath,
+    hookMarkerControlConfirmed,
+    claudeMdMarkerString,
+    installedPluginCommand,
+    spawnFn = spawnClaude,
+  } = options;
 
   // 양성 대조군 — 같은 문자열을 명시 주입했을 때 탐지되는가.
   const control = await spawnFn({
@@ -100,7 +125,13 @@ export async function runSealLiveTest(options: SealLiveTestOptions): Promise<Sea
   const claudeMdStringAbsent = !(claudeMdCheck.exitCode === 0 && containsYes(claudeMdCheck.stdout));
 
   // (i) — 세션 종료 후 훅 마커 파일이 생성되지 않았는가(파일시스템 신호 — 모델 응답보다 강하다).
-  const hookMarkerAbsent = !existsSync(hookMarkerPath);
+  // **대조군이 없으면 부재는 판정이 아니다** — 만들 것이 애초에 없었던 것과 구분되지 않는다.
+  const markerExists = existsSync(hookMarkerPath);
+  const hookMarker: SealLiveTestSignals["hookMarker"] = markerExists
+    ? "present"
+    : hookMarkerControlConfirmed
+      ? "confirmed_absent"
+      : "unmeasured";
 
   // (iii) — 설치 플러그인 커맨드가 인식되지 않는가(라우팅은 인증 이전 — 0원에 가깝다).
   const pluginCheck = await spawnFn({
@@ -117,14 +148,19 @@ export async function runSealLiveTest(options: SealLiveTestOptions): Promise<Sea
 
   const signals: SealLiveTestSignals = {
     positiveControlDetected,
-    hookMarkerAbsent,
+    hookMarker,
     claudeMdStringAbsent,
     installedPluginCommandUnrecognized,
   };
 
   // 양성 대조군이 실패하면 (ii)는 판정 근거가 아니다(R14) — passed는 무조건 false.
+  // (i)도 같다: `unmeasured`는 통과가 아니다. 셋 중 하나라도 못 잰 채로 통과하면, 그 뒤의
+  // 모든 sealed-live 실행이 "검증됨"으로 통과하지만 실제로는 아무도 그 축을 확인하지 않았다.
   const passed =
-    positiveControlDetected && hookMarkerAbsent && claudeMdStringAbsent && installedPluginCommandUnrecognized;
+    positiveControlDetected &&
+    hookMarker === "confirmed_absent" &&
+    claudeMdStringAbsent &&
+    installedPluginCommandUnrecognized;
 
   return { signals, passed };
 }
