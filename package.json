@@ -6,7 +6,9 @@
     "node": ">=22.13"
   },
   "scripts": {
+    "build": "tsc -b tsconfig.json",
     "typecheck": "tsc -b tsconfig.json",
+    "ctk": "pnpm build && node packages/cli/dist/bin/ctk.js",
     "lint": "eslint .",
     "test": "vitest run",
     "hygiene:check": "node scripts/hygiene-check.mjs",
