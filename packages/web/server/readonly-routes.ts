@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ConsoleViewModel } from "@ctk/core";
+import { UI_HTML } from "./ui-page.js";
 
 /**
  * web/server/readonly-routes.ts — Step 6a. **GET/HEAD만 등록한다.**
@@ -34,7 +35,7 @@ export function isAllowedMethod(method: string | undefined): boolean {
 }
 
 interface RouteMatch {
-  kind: "view-model" | "assets" | "usage" | "health" | "asset-doc" | "not-found";
+  kind: "ui" | "view-model" | "assets" | "usage" | "health" | "asset-doc" | "not-found";
   assetId?: string;
   doc?: AssetDocKind;
 }
@@ -45,6 +46,7 @@ interface RouteMatch {
  */
 export function matchRoute(pathname: string): RouteMatch {
   const segments = pathname.split("/").filter((s) => s.length > 0);
+  if (segments.length === 0) return { kind: "ui" };
   if (segments.length === 1 && segments[0] === "healthz") return { kind: "health" };
   if (segments[0] !== "api") return { kind: "not-found" };
 
@@ -83,6 +85,21 @@ function sendJson(res: ServerResponse, status: number, body: unknown, isHead: bo
   res.end(isHead ? undefined : payload);
 }
 
+function sendHtml(res: ServerResponse, status: number, body: string, isHead: boolean): void {
+  res.writeHead(status, {
+    "content-type": "text/html; charset=utf-8",
+    "content-length": String(Buffer.byteLength(body)),
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+    // UI는 인라인 스타일·스크립트 한 장이고 외부에서 아무것도 불러오지 않는다.
+    // 카탈로그 문서에 심긴 문자열이 어떤 원격 호출도 만들 수 없게 못 박는다(인젝션 방어).
+    "content-security-policy":
+      "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'none'; base-uri 'none'",
+    "referrer-policy": "no-referrer",
+  });
+  res.end(isHead ? undefined : body);
+}
+
 function sendText(res: ServerResponse, status: number, body: string, isHead: boolean): void {
   res.writeHead(status, {
     "content-type": "text/markdown; charset=utf-8",
@@ -106,6 +123,9 @@ export function handleReadonlyRequest(req: IncomingMessage, res: ServerResponse,
   const route = matchRoute(pathname);
 
   switch (route.kind) {
+    case "ui":
+      sendHtml(res, 200, UI_HTML, isHead);
+      return;
     case "health":
       sendJson(res, 200, { ok: true }, isHead);
       return;
