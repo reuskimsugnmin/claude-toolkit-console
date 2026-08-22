@@ -240,3 +240,25 @@ cwd를 임시 루트 아래(`<tmpdir>/ctk-agent-probe-cwd-<uid>`)로 옮겨 해�
 | MCP 서버 | `~/.claude.json` 루트 `mcpServers`(user) · 프로젝트 엔트리 `mcpServers`(local) · `.mcp.json`(project) · 플러그인 번들 | **CLI 명령 없음.** 단 상태는 프로젝트별 `enabledMcpServers`/`disabledMcpServers`에 기록됨 — `/mcp` UI로 토글 |
 | 전역 스킬 | `~/.claude/skills/<name>/` 존재 여부 | **명령 없음** — 디렉터리 이동 |
 | CLI 도구 | PATH | 해당 없음 (상시 토큰 0) |
+
+## 저장소 링크의 유일한 출처는 `known_marketplaces.json`이다 (Step 6a 실측, 2026-08-22)
+
+요구사항 6("GitHub 링크")의 데이터 소스. `installed_plugins.json`에도 `plugin list --json`에도
+저장소 URL이 **없다** — 플러그인 id의 `@marketplace` 부분을 `<config>/plugins/known_marketplaces.json`
+에서 찾아야 출처가 나온다.
+
+형태: `{ "<marketplace>": { source, installLocation, lastUpdated, autoUpdate? } }`.
+엔트리 16건 전수에서 `source.source`는 세 값만 관측됐다.
+
+| `source.source` | 함께 오는 필드 | 링크 |
+|---|---|---|
+| `github` (12건) | `repo` = `owner/name` 슬러그 | `https://github.com/<repo>` |
+| `git` (3건) | `url` (실측값에 `.git` 접미사 있음) | `.git`만 떼어 그대로 사용 — **호스트를 가정하지 않는다** |
+| `directory` (1건) | `path` = **개인 절대경로** | **없음** |
+
+⚠️ **`directory` 출처의 `path`를 카탈로그에 넣으면 AC-1.7(경로 원문 금지) 위반이다.**
+`toRepoLink()`는 이 경우 `url: null`을 반환하고 경로를 밖으로 내보내지 않는다. Asset에는
+`repo_url`과 `repo_source`를 **함께** 두어 "링크 없음(로컬 출처)"과 "아직 수집 안 됨"을 구분한다 —
+빈 문자열로 메우면 화면이 클릭 가능한 죽은 링크를 렌더한다.
+
+실제 스캔 결과(플러그인 66개): `github` 56 · `git` 9 · `directory` 1. 65개에 링크가 붙는다.
