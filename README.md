@@ -106,7 +106,7 @@ pnpm ctk gen --max-budget-usd 2 --timeout-sec 180   # 유료
 
 ```sh
 pnpm ctk usage --unused-expensive 5   # 안 쓰는데 비싼 툴
-pnpm ctk web                          # 브라우저 콘솔
+pnpm ctk web --open                   # 브라우저 콘솔 (브라우저까지 자동으로 열림)
 ```
 
 ---
@@ -180,11 +180,15 @@ pnpm ctk doctor --drift
 ## 웹 콘솔
 
 ```sh
-pnpm ctk web                 # 조회 전용 (GET/HEAD만)
-pnpm ctk web --actions       # 쓰기 액션 열기 (scan · rollback · move · gen)
-pnpm ctk web --no-projects   # 프로젝트 이름을 응답에 싣지 않는다
-pnpm ctk web --port 8787     # 포트 고정 (기본은 OS가 고름)
+pnpm ctk web --open                    # 브라우저까지 자동으로 연다 (조회 전용)
+pnpm ctk web --actions --open          # 액션 모드 + 브라우저 자동 실행
+pnpm ctk web                           # URL만 출력 (직접 복사)
+pnpm ctk web --no-projects             # 프로젝트 이름을 응답에 싣지 않는다
+pnpm ctk web --port 8787               # 포트 고정 (기본은 OS가 고름)
 ```
+
+`--open`이 없으면 URL만 출력되며 직접 붙여넣어야 합니다. macOS·Linux·Windows에서 동작하고,
+브라우저를 못 열어도 **서버는 그대로 뜹니다** — 출력된 URL을 직접 열면 됩니다.
 
 **127.0.0.1에만 바인딩하고 데몬으로 상주하지 않습니다.** 사용자가 띄우고 `Ctrl+C`로 끕니다.
 자동 시작하지 않고, 유닛 파일도 데몬화 플래그도 제공하지 않습니다.
@@ -208,6 +212,15 @@ pnpm ctk web --port 8787     # 포트 고정 (기본은 OS가 고름)
 
 `gen`은 **2단계 승인**입니다 — 먼저 비용만 계산해 보여주고, 그 화면에서 명시 승인해야 유료
 호출이 일어납니다. 승인 없이는 어떤 유료 호출도 발생하지 않습니다.
+
+#### ⚠️ `--actions --open`이 치르는 값
+
+액션 URL에는 세션 토큰이 들어 있고, `--open`은 그 URL을 **브라우저 실행기의 인자로** 넘깁니다.
+같은 머신의 다른 계정이 `ps`로 볼 수 있습니다. 노출 창은 실행기가 즉시 종료하므로 짧지만
+**쓰기 자격증명**이므로 기동 시 매번 고지합니다.
+
+- 개인 노트북 → 실질적 문제 없음
+- **공용 호스트 → `--open` 없이** URL을 직접 붙여넣거나, 조회 전용(`--open`만)을 쓰세요
 
 ### ⚠️ 전제 — 개인 로컬 머신
 
