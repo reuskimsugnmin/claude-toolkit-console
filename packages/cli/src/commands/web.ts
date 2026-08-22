@@ -272,6 +272,48 @@ export interface ServeResult {
   exposureNotice: string | null;
 }
 
+export interface BrowserOpenCommand {
+  command: string;
+  args: readonly string[];
+}
+
+/**
+ * 플랫폼별 브라우저 실행 명령. **순수 함수다** — 실제 spawn은 호출자가 한다.
+ *
+ * `darwin`은 절대경로를 쓴다(PATH 오설정·동명 바이너리 방어 — `spawn-claude.ts`와 같은 이유).
+ * 모르는 플랫폼은 `null`이며, 호출자는 URL만 출력하고 조용히 넘어간다 — 브라우저를 못 여는
+ * 것이 서버 기동을 막을 이유는 없다.
+ */
+export function browserOpenCommand(url: string, platform: NodeJS.Platform = process.platform): BrowserOpenCommand | null {
+  switch (platform) {
+    case "darwin":
+      return { command: "/usr/bin/open", args: [url] };
+    case "linux":
+      return { command: "xdg-open", args: [url] };
+    case "win32":
+      // `start`는 셸 내장이라 cmd를 거쳐야 하고, 첫 인자는 창 제목 자리라 빈 문자열을 넣는다.
+      return { command: "cmd", args: ["/c", "start", "", url] };
+    default:
+      return null;
+  }
+}
+
+/**
+ * `--open`이 액션 모드에서 치르는 값. **URL에 세션 토큰이 들어 있고, 그것이 실행 인자로
+ * 올라간다** — 같은 머신의 다른 계정이 `ps`로 볼 수 있다.
+ *
+ * 노출 창은 `open`이 즉시 종료하므로 짧지만, 조회 노출(프로젝트 이름)과 달리 **쓰기 자격증명**
+ * 이므로 그냥 넘기지 않는다. 임시 HTML 파일 경유도 검토했으나 그쪽은 토큰이 **디스크에 남는**
+ * 시간이 생겨 더 나쁘다. argv를 쓰되 매번 고지한다(안전 원칙 3 — 조치 결과를 함께 기록한다).
+ */
+export function browserOpenTokenNotice(hasToken: boolean): string | null {
+  if (!hasToken) return null;
+  return (
+    "⚠️  --open이 액션 URL을 브라우저에 넘기는 동안 세션 토큰이 실행 인자에 실린다.\n" +
+    "    같은 머신의 다른 계정이 볼 수 있다 — 공용 호스트라면 --open 없이 URL을 직접 붙여넣는다."
+  );
+}
+
 /** 포트를 고르고 다시 바인딩하기까지의 틈에서 몇 번까지 다시 시도할지. */
 export const PORT_HANDOFF_ATTEMPTS = 5;
 

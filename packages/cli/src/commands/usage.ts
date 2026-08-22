@@ -1,6 +1,15 @@
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { machineDir, parseSessionUsage, parseUsageMetric, rankUnusedExpensive, type SessionUsage, type UsageMetric } from "@ctk/core";
+import {
+  assessRankingQuality,
+  machineDir,
+  parseSessionUsage,
+  parseUsageMetric,
+  rankUnusedExpensive,
+  type RankingQualityView,
+  type SessionUsage,
+  type UsageMetric,
+} from "@ctk/core";
 import { resolveHomeContext } from "@ctk/probe";
 import { listAllOccupancy } from "@ctk/sync";
 import { readLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
@@ -113,6 +122,15 @@ export interface UsageReport {
   rows: UsageReportRow[];
   excludedUnmeasuredAssetIds: string[];
   snapshotId: string;
+  /**
+   * 이 순위를 결론으로 제시할 수 있는가. **`ctk web --export-view-model`은 이 판정을 싣는데
+   * CLI는 싣지 않았다**(안전 원칙 5 — 방어를 만든 것과 모든 경로에 배선한 것은 다르다).
+   *
+   * 크레덴셜이 없으면 대부분의 자산이 `unmeasured`로 빠지고 **비용이 정말로 0인 것만 순위에
+   * 남는다.** 개별 숫자는 다 맞는데 "안 쓰는데 비싼 툴"이라는 질문에는 거짓이 된다(원칙 8).
+   * 두 경로가 각자 판정하면 어긋나므로 `core`의 같은 함수를 쓴다.
+   */
+  rankingQuality: RankingQualityView;
 }
 
 export function runUsage(options: { unusedExpensive: number }): UsageReport {
@@ -133,11 +151,15 @@ export function runUsage(options: { unusedExpensive: number }): UsageReport {
   });
 
   const transcriptFilesParsed = findLatestMeasureTranscriptFileCount(catalogPath, machine.machine_id);
+  const rankingQuality = assessRankingQuality(
+    ranked.map((r) => r.idle_tokens),
+    excludedUnmeasuredAssetIds.length,
+  );
   const rows: UsageReportRow[] = ranked.map((r) => ({
     ...r,
     snapshot_id: latest.snapshotId,
     transcript_files_parsed: transcriptFilesParsed,
   }));
 
-  return { rows, excludedUnmeasuredAssetIds, snapshotId: latest.snapshotId };
+  return { rows, excludedUnmeasuredAssetIds, snapshotId: latest.snapshotId, rankingQuality };
 }

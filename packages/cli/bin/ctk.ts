@@ -27,7 +27,8 @@ import { runMove, AssetNotFoundError, NoOpMoveError, ProjectIndexOutOfRangeError
 import { runRollback, NoRollbackTargetError } from "../src/commands/rollback.js";
 import { runMeasure } from "../src/commands/measure.js";
 import { runUsage, NoMeasurementError } from "../src/commands/usage.js";
-import { runExportViewModel, runWebServe } from "../src/commands/web.js";
+import { browserOpenTokenNotice, runExportViewModel, runWebServe } from "../src/commands/web.js";
+import { openInBrowser } from "../src/open-browser.js";
 import { LockContendedError } from "@ctk/sync";
 import { DuplicateKeyDiffError } from "@ctk/core";
 import { McpMoveRejectedError, CliToolMoveUnsupportedError, RollbackFailedError } from "@ctk/actuator";
@@ -112,14 +113,29 @@ async function main(): Promise<void> {
             actions,
             includeProjects: !rest.includes("--no-projects"),
           });
+          const url = sessionToken === null ? server.url : `${server.url}/#token=${sessionToken}`;
           if (sessionToken === null) {
-            console.log(`ctk web (조회 전용) — ${server.url}`);
+            console.log(`ctk web (조회 전용) — ${url}`);
             console.log("  GET/HEAD만 응답한다. 쓰기 액션을 열려면 --actions를 준다.");
           } else {
             // 토큰은 URL 프래그먼트로 전달한다 — 프래그먼트는 서버 로그·Referer에 남지 않는다.
-            console.log(`ctk web (액션 모드) — ${server.url}/#token=${sessionToken}`);
+            console.log(`ctk web (액션 모드) — ${url}`);
             console.log("  이 URL을 브라우저에 붙여넣는다. 토큰은 메모리에만 있고 종료 시 사라진다.");
             console.log("  쓰기 액션: scan · rollback · move · gen(2단계 승인).");
+          }
+          if (rest.includes("--open")) {
+            // 고지를 **열기 전에** 낸다 — 연 뒤에 알리면 이미 인자에 실린 뒤다.
+            const tokenNotice = browserOpenTokenNotice(sessionToken !== null);
+            if (tokenNotice !== null) console.error(tokenNotice);
+            const outcome = openInBrowser(url);
+            if (!outcome.opened) {
+              // 실패를 조용히 삼키지 않는다 — 사용자는 브라우저가 열릴 것으로 기대하고 기다린다.
+              console.error(
+                outcome.reason === "unsupported_platform"
+                  ? "  브라우저를 자동으로 열 수 없는 플랫폼이다 — 위 URL을 직접 연다."
+                  : "  브라우저 실행에 실패했다 — 위 URL을 직접 연다.",
+              );
+            }
           }
           console.log("  Ctrl+C로 종료한다 — 데몬으로 상주하지 않는다.");
           // 노출 고지는 stderr로 낸다 — stdout을 파싱하는 스크립트를 깨지 않으면서 사람 눈에는 띈다.
@@ -386,6 +402,18 @@ async function main(): Promise<void> {
         if (asJson) {
           console.log(JSON.stringify(report, null, 2));
           return;
+        }
+        // 순위가 결론으로 읽힐 자격이 없으면 **숫자보다 먼저** 말한다 — `ctk web`은 이미
+        // 그렇게 하는데 이 경로만 빠져 있었다(안전 원칙 5).
+        if (!report.rankingQuality.is_meaningful) {
+          const why =
+            report.rankingQuality.reason === "no_measured_assets"
+              ? "점유가 측정된 자산이 없다"
+              : `점유가 측정된 ${report.rankingQuality.measured_count}건이 전부 0토큰이다`;
+          console.error(
+            `⚠️  이 순위는 아직 결론이 될 수 없다 — ${why} (미측정 ${report.rankingQuality.unmeasured_count}건).\n` +
+              `    ANTHROPIC_API_KEY를 설정하고 \`ctk measure\`를 다시 돌리면 점유가 측정된다.`,
+          );
         }
         console.log(`ctk usage --unused-expensive ${n} — 스냅샷 ${report.snapshotId}`);
         for (const row of report.rows) {
