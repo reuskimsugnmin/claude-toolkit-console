@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
 import type { Asset } from "@ctk/core";
 import type { HomeContext } from "@ctk/probe";
 import type { CatalogIndex } from "@ctk/sync";
@@ -47,23 +46,12 @@ export interface GenPlanResult {
 }
 
 /**
- * 메시지에 섞인 홈 절대경로를 `~` 상대 표기로 바꾼다. 심볼릭 링크 때문에 `ctkHome`과
- * `realpath(ctkHome)`가 다를 수 있으므로 둘 다 치환한다 — 하나만 보면 다른 쪽이 그대로 샌다.
+ * 메시지에 절대경로가 섞이지 않았는지 마지막으로 훑는다 — 위생 에러는 애초에 경로를 넣지
+ * 않지만(file-hygiene.ts), 새 에러 타입이 그 규약을 어겨도 브라우저까지 나가지 않게 한다.
+ * 홈 상대화가 아니라 **제거**다: 홈 밖 프로젝트 경로는 상대화로 가려지지 않는다(심사 L-b).
  */
-function toHomeRelative(message: string, ctkHome: string): string {
-  let out = message;
-  for (const base of new Set([ctkHome, safeRealpath(ctkHome)])) {
-    if (base.length > 0) out = out.split(base).join("~");
-  }
-  return out;
-}
-
-function safeRealpath(p: string): string {
-  try {
-    return realpathSync(p);
-  } catch {
-    return "";
-  }
+function scrubPaths(message: string): string {
+  return message.replace(/(?:^|\s)(\/[^\s:]+)/g, " <경로 생략>");
 }
 
 function hashSections(sections: ResolvedAssetSource["sections"]): string {
@@ -104,19 +92,15 @@ export function planGenTargets(options: PlanGenTargetsOptions): GenPlanResult {
     } catch (err) {
       // 위생 실패만 자산 단위로 가둔다. 그 밖의 예외는 그대로 올린다 — 여기서 넓게 잡으면
       // 진짜 결함이 "건너뛴 자산 1건"으로 조용히 묻힌다.
-      // ENOENT도 자산 단위로 가둔다(심사 L5-b) — `existsSync` 확인과 실제 읽기 사이의 경합,
-      // 마운트 변경, 깨진 링크에서 난다. 이 커밋이 고치려던 실패 모드와 동형이므로
-      // 여기서 함께 닫지 않으면 같은 사고가 다른 이름으로 재발한다.
-      const isMissingFile = (err as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
-      if (isMissingFile) {
-        skipped.push({ assetId: asset.id, failureClass: "asset_source_missing", reason: "원문 파일이 읽는 시점에 사라졌다" });
-        continue;
-      }
+      // 포획은 `FileHygieneError` **한 계층**으로 좁힌다. ENOENT는 `readAssetSourceFileSafely`
+      // 안에서 `AssetSourceMissingError`로 분류되므로 여기서 errno를 다시 볼 필요가 없다 —
+      // errno로 잡으면 설정 디렉터리 읽기 실패 같은 진짜 결함까지 묻힌다(심사 L-c).
       if (!(err instanceof FileHygieneError)) throw err;
-      // ⚠️ 홈 절대경로를 그대로 싣지 않는다. 이 배열은 `gen_estimate`의 **200 성공 본문**으로
-      // 브라우저까지 나가는데(심사 M1), 저장소 정책은 경로 원문을 금지한다(AC-1.7).
-      // 오류 경로에만 있던 절대경로가 이 커밋으로 성공 경로까지 넓어졌던 것을 여기서 닫는다.
-      skipped.push({ assetId: asset.id, failureClass: err.failureClass, reason: toHomeRelative(err.message, home.ctkHome) });
+      // ⚠️ 경로를 싣지 않는다. 이 배열은 `gen_estimate`의 **200 성공 본문**으로 브라우저까지
+      // 나가는데(심사 M1), 홈 밖 프로젝트 스킬이면 홈 상대화로도 가려지지 않아 디렉터리
+      // 구조가 그대로 노출된다(심사 L-b). 위생 에러는 메시지에 경로를 넣지 않고, 여기서는
+      // 그것이 지켜졌는지 마지막으로 한 번 더 훑는다(새 에러 타입이 어겨도 새지 않게).
+      skipped.push({ assetId: asset.id, failureClass: err.failureClass, reason: scrubPaths(err.message) });
       continue;
     }
     if (resolved.empty) {

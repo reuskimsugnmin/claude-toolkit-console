@@ -209,4 +209,80 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     expect(result.skipped[0]?.failureClass).toBe("asset_source_too_large");
     expect(result.targets.map((t) => t.asset.id)).toEqual(["normal-a"]);
   });
+
+  // ── H2 결합 불변식: 승인 총액이 실제 상한과 같으려면 **두 조건이 함께** 성립해야 한다 ──
+  //
+  // ⓐ 호출당 예산 = 총액 / max(호출수, 1)  ⓑ 실행 시 maxAssets = min(승인 maxAssets, 승인 호출수)
+  //
+  // 호출수가 0이면 ⓐ만으로는 안전하지 않다 — 분모 가드가 총액을 그대로 돌려주므로 호출당
+  // 상한이 총액과 같아진다. 0원이 되는 진짜 이유는 ⓑ가 `maxAssets: 0`을 주고 planGenTargets가
+  // 첫 자산에서 즉시 break하기 때문이다. 재심(H2)이 지적한 대로 이 결합에는 주석만 있고
+  // 테스트가 없었다 — 리팩터가 ⓑ를 지우면 호출당 총액이 무제한 자산에 걸린다.
+
+  it("maxAssets가 0이면 대상이 0건이다 — H2 안전성이 이 성질에 달려 있다", () => {
+    init();
+    setupSkill("a", "A");
+    setupSkill("b", "B");
+    const result = planGenTargets({
+      home,
+      assets: [skillAsset("a"), skillAsset("b")],
+      index: { schema_version: 1, assets: [] },
+      maxAssets: 0,
+    });
+    expect(result.targets).toHaveLength(0);
+  });
+
+  it("maxAssets가 양수면 그만큼만 대상이 된다 — 위 케이스가 '항상 0건'과 구분됨을 보인다", () => {
+    init();
+    setupSkill("a", "A");
+    setupSkill("b", "B");
+    const result = planGenTargets({
+      home,
+      assets: [skillAsset("a"), skillAsset("b")],
+      index: { schema_version: 1, assets: [] },
+      maxAssets: 1,
+    });
+    expect(result.targets).toHaveLength(1);
+  });
+
+  // ── L-b 회귀: 건너뛴 이유에 절대경로가 섞이지 않는다 ────────────────────────────────
+  it("홈 **밖** 프로젝트 스킬이 거부돼도 이유에 경로가 실리지 않는다", () => {
+    init();
+    // 홈 상대화로는 가려지지 않는 위치를 일부러 고른다 — 이 경우가 심사 L-b의 사례다.
+    const outside = path.join(ctkHome, "..", `ctk-outside-${path.basename(ctkHome)}`, "Clients", "Acme-secret");
+    mkdirSync(outside, { recursive: true });
+    const realFile = path.join(outside, "SKILL.md");
+    writeFileSync(realFile, "---\nname: proj-skill\n---\n본문\n");
+    const skillDir = path.join(home.ctkConfigDir, "skills", "proj-skill");
+    mkdirSync(skillDir, { recursive: true });
+    symlinkSync(realFile, path.join(skillDir, "SKILL.md"));
+
+    const result = planGenTargets({
+      home,
+      assets: [skillAsset("proj-skill")],
+      index: { schema_version: 1, assets: [] },
+    });
+    rmSync(path.dirname(path.dirname(outside)), { recursive: true, force: true });
+
+    expect(result.skipped).toHaveLength(1);
+    const reason = result.skipped[0]?.reason ?? "";
+    expect(reason).not.toContain("Acme-secret");
+    expect(reason).not.toMatch(/\/[A-Za-z]/); // 절대경로 조각이 남지 않는다
+    expect(reason).toContain("심볼릭 링크");   // 그러면서 이유는 여전히 말해준다
+  });
+
+  it("크기 초과 이유는 경로 없이 크기만 알려준다 — 무엇을 줄여야 하는지는 남긴다", () => {
+    init();
+    const skillDir = path.join(home.ctkConfigDir, "skills", "huge2");
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(path.join(skillDir, "SKILL.md"), `---\nname: huge2\ndescription: x\n---\n${"가".repeat(120_000)}`);
+    const result = planGenTargets({
+      home,
+      assets: [skillAsset("huge2")],
+      index: { schema_version: 1, assets: [] },
+    });
+    const reason = result.skipped[0]?.reason ?? "";
+    expect(reason).toContain("바이트");
+    expect(reason).not.toMatch(/\/[A-Za-z]/);
+  });
 });

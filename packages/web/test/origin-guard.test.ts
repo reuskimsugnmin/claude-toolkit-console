@@ -145,3 +145,38 @@ describe("timingSafeEqualString", () => {
     );
   });
 });
+
+describe("기본 포트(80) — 거부에 빠져나갈 길이 있어야 한다 (심사 L-a)", () => {
+  const ON_80 = { sessionToken: EXPECTED.sessionToken, port: 80 };
+
+  it("포트 80에서는 Host의 포트 생략을 받는다 — 브라우저가 기본 포트를 붙이지 않기 때문이다", () => {
+    expect(
+      checkActionRequest(
+        { host: "127.0.0.1", origin: "http://127.0.0.1", "x-ctk-session": EXPECTED.sessionToken },
+        ON_80,
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  it("포트 80이 아니면 포트 생략은 여전히 거부한다 — 예외가 규칙을 삼키지 않는다", () => {
+    expect(checkActionRequest(headers({ host: "127.0.0.1" }), EXPECTED).reason).toBe("bad_host");
+  });
+
+  it("포트 80이어도 다른 호스트명은 거부한다", () => {
+    expect(
+      checkActionRequest(
+        { host: "evil.example", origin: "http://evil.example", "x-ctk-session": EXPECTED.sessionToken },
+        ON_80,
+      ).ok,
+    ).toBe(false);
+  });
+
+  it("포트 80이어도 명시된 다른 포트는 거부한다", () => {
+    expect(
+      checkActionRequest(
+        { host: "127.0.0.1:9999", origin: "http://127.0.0.1", "x-ctk-session": EXPECTED.sessionToken },
+        ON_80,
+      ).reason,
+    ).toBe("bad_host");
+  });
+});

@@ -153,7 +153,10 @@ export function handleReadonlyRequest(req: IncomingMessage, res: ServerResponse,
     }
     // 클라이언트가 조기 절단하면 `send()`가 던질 수 있다 — unhandled rejection은 Node 15+에서
     // 프로세스를 죽인다. 관문 통과 전에도 발생 가능하므로 토큰 없이도 시도할 수 있다(심사 L3).
-    void handleActionRequest(req, res, deps.actions).catch((err: unknown) => {
+    // 포트의 출처를 하나로 유지한다(심사 L-f) — 바깥 게이트가 요청 시점에 해소한 값을
+    // 그대로 넘긴다. 생성 시점 값과 따로 두면 둘이 갈릴 여지가 남는다.
+    const actionDeps = { ...deps.actions, guard: { ...deps.actions.guard, port: deps.port } };
+    void handleActionRequest(req, res, actionDeps).catch((err: unknown) => {
       console.error("[action_route_failed]", err);
       if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
       res.end(`${JSON.stringify({ ok: false, code: "action_failed" })}\n`);

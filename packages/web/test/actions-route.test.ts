@@ -307,3 +307,28 @@ describe("실패를 성공으로 삼키지 않는다", () => {
     expect((await res.json()) as { ok: boolean }).toMatchObject({ ok: false, code: "action_failed" });
   });
 });
+
+describe("총액 하한 — 지수 표기가 argv로 흘러들지 않는다 (심사 L-e)", () => {
+  it("하한 미만의 총액은 400이고 핸들러가 호출되지 않는다", async () => {
+    const handlers = makeHandlers();
+    const server = await startBoundActions(handlers);
+    const res = await fetch(`${server.url}/api/actions`, {
+      method: "POST",
+      headers: actionHeaders(server),
+      body: JSON.stringify({ action: "gen_estimate", max_total_usd: 1e-7 }),
+    });
+    expect(res.status).toBe(400);
+    expect(handlers.genEstimate).not.toHaveBeenCalled();
+  });
+
+  it("하한값 자체는 통과한다 — 위 케이스가 '전부 거부'와 구분됨을 보인다", async () => {
+    const handlers = makeHandlers();
+    const server = await startBoundActions(handlers);
+    const res = await fetch(`${server.url}/api/actions`, {
+      method: "POST",
+      headers: actionHeaders(server),
+      body: JSON.stringify({ action: "gen_estimate", max_total_usd: 0.01 }),
+    });
+    expect(res.status).toBe(200);
+  });
+});

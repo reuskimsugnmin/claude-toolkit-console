@@ -29,12 +29,18 @@ export const DEFAULT_MAX_ASSET_SOURCE_BYTES = 200_000;
  */
 export abstract class FileHygieneError extends Error {
   abstract readonly failureClass: string;
+  /**
+   * 거부된 파일의 절대경로. **메시지에는 넣지 않는다** — 이 값은 `gen_estimate`의 성공 본문을
+   * 타고 브라우저까지 나가고(심사 M1), 홈 밖 프로젝트 스킬이면 홈 상대화로도 가려지지 않아
+   * 디렉터리 구조가 그대로 노출된다(심사 L-b). 로컬 디버깅용으로 필드에만 둔다.
+   */
+  abstract readonly targetPath: string;
 }
 
 export class SymlinkAssetSourceRejectedError extends FileHygieneError {
   readonly failureClass = "path_traversal_detected" as const;
   constructor(readonly targetPath: string) {
-    super(`자산 원본 파일이 심볼릭 링크다 — 링크를 따라가지 않고 거부한다: ${targetPath}`);
+    super("자산 원본 파일이 심볼릭 링크다 — 링크를 따라가지 않고 거부한다");
     this.name = "SymlinkAssetSourceRejectedError";
   }
 }
@@ -46,7 +52,8 @@ export class AssetSourceTooLargeError extends FileHygieneError {
     readonly sizeBytes: number,
     readonly maxBytes: number,
   ) {
-    super(`자산 원본 파일이 크기 상한을 초과한다(${sizeBytes} > ${maxBytes}): ${targetPath}`);
+    // 크기는 경로가 아니므로 남긴다 — 사용자가 무엇을 줄여야 하는지 알아야 한다.
+    super(`자산 원본 파일이 크기 상한을 초과한다(${sizeBytes} > ${maxBytes}바이트)`);
     this.name = "AssetSourceTooLargeError";
   }
 }
@@ -91,13 +98,34 @@ export function assertWithinSizeLimit(absPath: string, maxBytes: number = DEFAUL
  * 자산 원본 파일 하나를 안전하게 읽는다 — 심볼릭 링크 거부 → realpath 루트 검사 → 크기 상한
  * → 읽기. 이 함수를 거치지 않고 `gen`이 자산 원본을 읽지 않는다(단일 관문).
  */
+/**
+ * `existsSync` 확인과 실제 읽기 사이에 파일이 사라졌다 — 경합·마운트 변경·깨진 링크.
+ *
+ * ⚠️ **위생 계층 안에서 분류한다.** 예전에는 `plan.ts`가 `resolveAssetSource` **전체**의
+ * ENOENT를 잡았는데, 그러면 설정 디렉터리 읽기 실패 같은 진짜 결함까지 "자산 1건 건너뜀"으로
+ * 묻힌다(심사 L-c) — 바로 그 파일의 주석이 경계한 broadening이다. 여기서 던지면 이미 만든
+ * `FileHygieneError` 계층이 그 일을 대신하고 포획 범위가 이 함수로 좁혀진다.
+ */
+export class AssetSourceMissingError extends FileHygieneError {
+  readonly failureClass = "asset_source_missing" as const;
+  constructor(readonly targetPath: string) {
+    super("원문 파일이 읽는 시점에 사라졌다");
+    this.name = "AssetSourceMissingError";
+  }
+}
+
 export function readAssetSourceFileSafely(
   absPath: string,
   expectedRootAbs: string,
   maxBytes: number = DEFAULT_MAX_ASSET_SOURCE_BYTES,
 ): string {
-  assertNotSymlink(absPath);
-  assertRealpathWithinRoot(absPath, expectedRootAbs);
-  assertWithinSizeLimit(absPath, maxBytes);
-  return readFileSync(absPath, "utf8");
+  try {
+    assertNotSymlink(absPath);
+    assertRealpathWithinRoot(absPath, expectedRootAbs);
+    assertWithinSizeLimit(absPath, maxBytes);
+    return readFileSync(absPath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | undefined)?.code === "ENOENT") throw new AssetSourceMissingError(absPath);
+    throw err;
+  }
 }

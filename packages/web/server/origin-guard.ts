@@ -42,6 +42,9 @@ export interface ActionGuardExpectation {
 /** 루프백을 가리키는 호스트명만 허용한다. `localhost`는 브라우저가 흔히 쓰므로 함께 받는다. */
 const ALLOWED_HOSTNAMES = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
 
+/** 브라우저가 Host·Origin에서 생략하는 포트. */
+const HTTP_DEFAULT_PORT = 80;
+
 function splitHostPort(value: string): { hostname: string; port: string | null } | null {
   const trimmed = value.trim();
   if (trimmed.length === 0) return null;
@@ -98,9 +101,17 @@ export function checkLoopbackHost(
   if (host === undefined) return { ok: false, reason: "missing_host" };
   const parsedHost = splitHostPort(host);
   if (parsedHost === null || !ALLOWED_HOSTNAMES.has(parsedHost.hostname)) return { ok: false, reason: "bad_host" };
-  // 포트 부재도 거부한다 — 이 모듈은 "판정할 수 없으면 통과시키지 않는다"를 원칙으로 삼는데
-  // 포트만 예외로 두면 그 축이 반쯤 사라진다(심사 L2). 브라우저는 비표준 포트를 항상 붙인다.
-  if (parsedHost.port !== String(expected.port)) return { ok: false, reason: "bad_host" };
+  // 포트 부재는 원칙적으로 거부한다 — "판정할 수 없으면 통과시키지 않는다"(심사 L2).
+  //
+  // **단 기본 포트(80)는 예외다.** 브라우저는 기본 포트를 Host에 붙이지 않으므로, 이 예외가
+  // 없으면 `ctk web --port 80`이 전 요청 403이 되고 사용자는 `bad_host`만 보고 원인을 알 수
+  // 없다(심사 L-a) — 거부에 빠져나갈 길이 없는 바로 그 형태다(안전 원칙 6).
+  const expectedPort = String(expected.port);
+  if (parsedHost.port === null) {
+    if (expected.port !== HTTP_DEFAULT_PORT) return { ok: false, reason: "bad_host" };
+  } else if (parsedHost.port !== expectedPort) {
+    return { ok: false, reason: "bad_host" };
+  }
   return { ok: true };
 }
 
@@ -124,7 +135,12 @@ export function checkActionRequest(
     const url = new URL(origin);
     if (url.protocol !== "http:") return { ok: false, reason: "bad_origin" };
     originHost = url.hostname;
-    if (url.port !== String(expected.port)) return { ok: false, reason: "bad_origin" };
+    // Origin도 같은 이유로 기본 포트를 생략한다(`new URL`의 `port`가 빈 문자열이 된다).
+    if (url.port === "") {
+      if (expected.port !== HTTP_DEFAULT_PORT) return { ok: false, reason: "bad_origin" };
+    } else if (url.port !== String(expected.port)) {
+      return { ok: false, reason: "bad_origin" };
+    }
   } catch {
     return { ok: false, reason: "bad_origin" };
   }

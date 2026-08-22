@@ -13,6 +13,13 @@ import { InstallScopeSchema } from "./installation.js";
  * 조용히 무시되는 대신 400이 된다.
  */
 
+/**
+ * 총액 하한. 이보다 작으면 호출당 예산이 지수 표기(`3.9e-9`)가 되어 `--max-budget-usd`에
+ * 그대로 실린다 — `claude -p`가 그 표기를 받는지 확인되지 않았고, 거부되면 사용자는 이유를
+ * 알 수 없다(심사 L-e). 애초에 이 값 아래로는 아무 자산도 생성되지 않는다.
+ */
+export const WEB_GEN_MIN_TOTAL_USD = 0.01;
+
 /** v1 웹에서 실행 가능한 액션. 이 목록 밖은 존재하지 않는다(F6). */
 export const WebActionNameSchema = z.enum(["scan", "rollback", "move", "gen_estimate", "gen_execute"]);
 export type WebActionName = z.infer<typeof WebActionNameSchema>;
@@ -55,7 +62,7 @@ const GenParamsShape = {
    * 뜨는데 자산 25건이면 실제 상한은 $50이었다(보안 심사 H2). 이름을 총액으로 바꾸고
    * 호출당 값은 여기서 나눠 계산한다 — 사용자가 승인하는 숫자와 실제 상한이 같아야 한다.
    */
-  max_total_usd: z.number().positive(),
+  max_total_usd: z.number().min(WEB_GEN_MIN_TOTAL_USD),
 } as const;
 
 const GenEstimateActionSchema = z.object({ action: z.literal("gen_estimate"), ...GenParamsShape }).strict();
