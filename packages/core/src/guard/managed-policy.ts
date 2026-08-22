@@ -50,17 +50,28 @@ export interface ManagedPolicyGateOptions {
   interactive: boolean;
   /** `--allow-managed-policy` 명시 옵트인. */
   allowManagedPolicy: boolean;
+  /**
+   * managed 정책 파일이 **존재하는데 파싱하지 못했으면** `true`.
+   *
+   * ⚠️ 이것을 빼면 `readManagedPolicies()`의 파싱 실패가 빈 배열로 흘러들어와
+   * `hasRisk: false`가 되고, **깨진 정책 파일이 "정책 없음"과 같은 판정을 받는다.**
+   * 위험이 없는 것이 아니라 **위험을 판정할 수 없는 것**이다(안전 원칙 7).
+   */
+  unreadablePolicyPresent?: boolean;
 }
 
 /**
- * §7.2 `managed_policy_blocked` 판정 — 위험 키가 있고, 비대화형이며, 옵트인이 없으면 거부한다.
- * 대화형은 경고 후 진행(이 분류를 쓰지 않는다) — 사용자가 그 자리에서 직접 판단할 수 있다.
+ * §7.2 `managed_policy_blocked` 판정 — 위험 키가 있거나 **판정 불가**이고, 비대화형이며,
+ * 옵트인이 없으면 거부한다. 대화형은 경고 후 진행(이 분류를 쓰지 않는다) — 사용자가 그 자리에서
+ * 직접 판단할 수 있다.
  */
 export function decideManagedPolicyGate(
   grade: ManagedPolicyGrade,
   options: ManagedPolicyGateOptions,
 ): ManagedPolicyDecision {
-  if (!grade.hasRisk) return "allowed";
+  // 판정 불가를 "위험 없음"과 같이 취급하지 않는다 — 깨진 정책 파일이 게이트를 여는 열쇠가 된다.
+  const needsGate = grade.hasRisk || options.unreadablePolicyPresent === true;
+  if (!needsGate) return "allowed";
   if (options.interactive) return "allowed";
   if (options.allowManagedPolicy) return "allowed";
   return "blocked";

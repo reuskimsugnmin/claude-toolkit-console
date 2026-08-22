@@ -105,7 +105,9 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
     const index = readCatalogIndex(catalogPath);
     const plan = planGenTargets({ home, assets, index, maxAssets: options.maxAssets });
 
-    const managedPolicies = options.noLlm === true ? [] : readManagedPolicies().policies;
+    // ⚠️ `.policies`만 꺼내면 파싱 실패가 빈 배열로 흘러 "정책 없음"과 같아진다(안전 원칙 7).
+    const managed = options.noLlm === true ? { policies: [], parseFailures: [] } : readManagedPolicies();
+    const managedPolicies = managed.policies;
     const interactive = process.stdin.isTTY === true && process.stdout.isTTY === true;
 
     if (!options.noLlm) {
@@ -135,6 +137,10 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
       const grade = gradeManagedPolicy(managedPolicies);
       if (grade.hasRisk) {
         console.log(`  ⚠️ managed 정책 위험 키 감지: ${grade.keysPresent.join(", ")}`);
+      }
+      // 경로만 알린다 — 정책 **내용**은 어떤 로그에도 옮기지 않는다(§7.1).
+      if (managed.parseFailures.length > 0) {
+        console.log(`  ⚠️ managed 정책 파일을 읽지 못했다(위험 판정 불가): ${managed.parseFailures.join(", ")}`);
       }
 
       if (options.yes !== true) {
@@ -166,6 +172,7 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
       interactive,
       allowManagedPolicy: options.allowManagedPolicy === true,
       managedPolicies,
+      managedPolicyParseFailures: managed.parseFailures,
     });
 
     const finishedAt = new Date();

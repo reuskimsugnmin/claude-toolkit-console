@@ -59,3 +59,10 @@ jobs:
       # B3 — "런타임 의존성 0개 유지" 방향을 검증 가능한 형태로 고정한다.
       - name: Assert zero runtime dependencies
         run: pnpm ls -r --prod --json | node scripts/assert-zero-runtime-deps.mjs
+
+      # R15 — managed 정책 탐지가 **조회 경로에 배선돼 있는지**를 지킨다. 러너에는 managed
+      # 정책이 없으므로 여기서의 통과는 "이 러너가 깨끗하다"일 뿐 개발자 머신에 대한 판정이
+      # 아니다 — 이 스텝의 값어치는 배선 회귀를 막는 것이다(탐지기는 있는데 doctor에 안 붙어
+      # 있던 것이 이번에 발견됐다). 실제 강제는 gen의 자체 게이트가 한다.
+      - name: Managed policy detection wiring (R15)
+        run: pnpm gate:managed-policy

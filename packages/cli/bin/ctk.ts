@@ -15,6 +15,9 @@ import {
   runDoctorDrift,
   runDoctorInterruptedRestores,
   runDoctorSubagentAttribution,
+  runDoctorManagedPolicy,
+  formatManagedPolicyReport,
+  managedPolicyExitCode,
   formatInterruptedRestoreAlert,
   NoSnapshotsError,
 } from "../src/commands/doctor.js";
@@ -79,6 +82,14 @@ async function main(): Promise<void> {
           );
           console.error("");
         }
+        if (rest.includes("--managed-policy")) {
+          const report = runDoctorManagedPolicy();
+          console.log(formatManagedPolicyReport(report));
+          // 판정 불가·위험 키는 **종료 코드로도** 드러낸다 — 릴리스 게이트가 사람 눈에만
+          // 기대면 CI에서 아무것도 막지 못한다("실패가 아무것도 막지 않으면 신호가 아니다").
+          process.exitCode = managedPolicyExitCode(report);
+          return;
+        }
         if (rest.includes("--drift")) {
           const drift = runDoctorDrift();
           console.log(`드리프트 (${drift.fromSnapshot} → ${drift.toSnapshot})`);
@@ -87,7 +98,7 @@ async function main(): Promise<void> {
           console.log(`  무변경: ${drift.unchangedCount}건`);
           return;
         }
-        console.error("사용법: ctk doctor --drift");
+        console.error("사용법: ctk doctor --drift | --managed-policy");
         process.exitCode = 1;
         return;
       }
@@ -155,7 +166,15 @@ async function main(): Promise<void> {
           const sig = report.result.signals;
           console.log(`ctk verify seal — 검증 ${report.previousVerifiedVersion} → 실제 ${report.actualVersion}`);
           console.log(`  양성 대조군(탐지 가능한가): ${sig.positiveControlDetected ? "통과" : "실패"}`);
-          console.log(`  (i) 훅 마커 미생성: ${sig.hookMarkerAbsent ? "통과" : "실패"}`);
+          // (i)은 3상태다 — "미측정"을 "통과"로 쓰면 아무것도 증명하지 않은 신호가 통과에 섞인다.
+          const HOOK_MARKER_TEXT = {
+            confirmed_absent: "통과 (대조군 확인됨)",
+            present: "실패 — 봉인 세션에서 훅이 발화했다",
+            unmeasured:
+              "미측정 — settings.json의 SessionStart 훅이 마커 경로를 쓰지 않는다. " +
+              "그 훅을 배선해야 이 축을 잴 수 있다",
+          } as const;
+          console.log(`  (i) 훅 마커 미생성: ${HOOK_MARKER_TEXT[sig.hookMarker]}`);
           console.log(`  (ii) CLAUDE.md 미로드: ${sig.claudeMdStringAbsent ? "통과" : "실패"}`);
           console.log(`  (iii) 플러그인 커맨드 미인식: ${sig.installedPluginCommandUnrecognized ? "통과" : "실패"}`);
           if (report.updated) {

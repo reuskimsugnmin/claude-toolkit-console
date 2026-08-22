@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { runSealLiveTest, type SealLiveTestResult } from "@ctk/gen";
 import { resolveHomeContext } from "@ctk/probe";
@@ -23,6 +23,9 @@ import { ensureSealedLiveCwd } from "../sealed-cwd.js";
  * 기록만 갱신되면 그 뒤의 모든 실행이 근거 없이 통과한다.
  */
 
+/** (i) 대조군용 마커 파일 이름. `settings.json`의 훅 명령이 이 절대경로를 그대로 써야 한다. */
+export const HOOK_MARKER_FILENAME = ".ctk-seal-hook-marker";
+
 export interface RunVerifySealOptions {
   maxBudgetUsd?: number;
   timeoutSec?: number;
@@ -45,6 +48,40 @@ export class MissingClaudeMdError extends Error {
     );
     this.name = "MissingClaudeMdError";
   }
+}
+
+/**
+ * (i)의 양성 대조군 — 실제 `settings.json`의 **SessionStart** 훅 중에 이 마커 경로를 만드는
+ * 것이 배선돼 있는가.
+ *
+ * ⚠️ 이 확인이 없으면 (i)은 아무것도 증명하지 않는다. 마커 부재가 "훅이 발화하지 않았다"인지
+ * "애초에 만들 것이 없었다"인지 구분되지 않기 때문이다 — 실측(2026-08-23) 결과 사용자
+ * settings에 이 경로를 쓰는 훅이 0건이었고, 그래서 `hookMarkerAbsent`는 봉인 여부와 무관하게
+ * 항상 true였다.
+ *
+ * **SessionStart 이벤트만 본다.** 다른 이벤트(PreToolUse 등)에 배선돼 있으면 `-p` 세션에서
+ * 발화 시점이 달라 대조군이 성립하지 않는다.
+ */
+export function hookMarkerControlConfirmed(settingsPath: string, markerPath: string): boolean {
+  if (!existsSync(settingsPath)) return false;
+  let settings: unknown;
+  try {
+    settings = JSON.parse(readFileSync(settingsPath, "utf8")) as unknown;
+  } catch {
+    return false; // 읽지 못한 것은 "배선됐다"가 아니다.
+  }
+  if (typeof settings !== "object" || settings === null) return false;
+  const hooks = (settings as { hooks?: unknown }).hooks;
+  if (typeof hooks !== "object" || hooks === null) return false;
+  const sessionStart = (hooks as { SessionStart?: unknown }).SessionStart;
+  if (!Array.isArray(sessionStart)) return false;
+  // 그룹 → 훅 → command 문자열에 마커 경로가 등장하는지만 본다(명령을 실행하지 않는다).
+  return sessionStart.some((group) => {
+    const inner = (group as { hooks?: unknown })?.hooks;
+    if (!Array.isArray(inner)) return false;
+    return inner.some((h) => typeof (h as { command?: unknown })?.command === "string"
+      && ((h as { command: string }).command).includes(markerPath));
+  });
 }
 
 /** 실제 `~/.claude/CLAUDE.md`에서 (ii) 신호용 고유 문자열을 뽑는다. */
@@ -78,6 +115,14 @@ export async function runVerifySeal(options: RunVerifySealOptions): Promise<Veri
   const claudeMdPath = path.join(home.ctkConfigDir, "CLAUDE.md");
   if (!existsSync(claudeMdPath)) throw new MissingClaudeMdError(claudeMdPath);
 
+  const hookMarkerPath = path.join(cwd, HOOK_MARKER_FILENAME);
+  // 이전 실행이 남긴 마커가 있으면 이번 판정이 그것 때문에 실패한다 — cwd는 고정 경로라 남는다.
+  rmSync(hookMarkerPath, { force: true });
+  const controlConfirmed = hookMarkerControlConfirmed(
+    path.join(home.ctkConfigDir, "settings.json"),
+    hookMarkerPath,
+  );
+
   const result = await runSealLiveTest({
     home,
     cwd,
@@ -85,7 +130,8 @@ export async function runVerifySeal(options: RunVerifySealOptions): Promise<Veri
     maxBudgetUsd: options.maxBudgetUsd,
     verifiedCliVersion: catalogConfig.verified_cli_version,
     // 훅 마커는 이 시점에 존재하지 않아야 한다 — 세션이 만들면 (i) 실패다.
-    hookMarkerPath: path.join(cwd, ".ctk-seal-hook-marker"),
+    hookMarkerPath,
+    hookMarkerControlConfirmed: controlConfirmed,
     claudeMdMarkerString: pickClaudeMdMarker(claudeMdPath),
     installedPluginCommand: options.installedPluginCommand,
   });
