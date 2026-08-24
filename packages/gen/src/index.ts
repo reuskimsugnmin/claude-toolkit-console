@@ -65,9 +65,18 @@ export class SealedLiveConfigDirAuditViolationError extends Error {
     readonly assetId: string,
     readonly audit: SealedLiveAuditResult,
   ) {
+    // ⚠️ **감사가 아는 것 이상을 말하지 않는다.** 이 판정은 "창(window) 동안 config dir이
+    // 바뀌었다"이지 "봉인 세션이 바꿨다"가 아니다 — 다른 살아 있는 세션도 같은 디렉터리에
+    // 쓴다(2026-08-24 실측). 귀속 불가로 알려진 경로는 판정 전에 걷어냈고 그 건수를 함께
+    // 싣는다: 제외가 0건인데 위반이 남았다면 자식일 가능성이 높고, 제외가 많다면 아직
+    // 걷어내지 못한 다른 세션 경로가 있을 수 있다는 단서다.
     super(
-      `자산 ${assetId} 생성 중 sealed-live 세션이 config dir을 허용목록 밖에서 변경했다 — ` +
-        `실행을 중단한다: ${JSON.stringify(audit.verdict.violations)}`,
+      `자산 ${assetId} 생성 중 config dir이 허용목록 밖에서 변경됐다(귀속 불가 경로 ` +
+        `${audit.sessionOwnedExcluded.length}건 제외 후) — 실행을 중단한다: ` +
+        `${JSON.stringify(audit.verdict.violations)}` +
+        (audit.incompleteObservationReasons.length > 0
+          ? ` · 관측 불완전: ${audit.incompleteObservationReasons.join(", ")}`
+          : ""),
     );
     this.name = "SealedLiveConfigDirAuditViolationError";
   }
@@ -94,6 +103,19 @@ export interface RunGenSummary {
   /** true면 --max-budget-usd 초과로 조기 종료됐다 — 남은 대상은 전부 pending이다. */
   stoppedEarly: boolean;
   injectionFindingsTotal: InjectionFindingsSummary;
+  /**
+   * 봉인 config 감사 집계 — **통과한 실행에서도** 남긴다.
+   *
+   * ⚠️ 보안 재심 M3: `sessionOwnedExcluded`가 위반 에러 메시지 한 곳에서만 읽히고 있었다.
+   * 즉 통과하는 실행에서는 제외가 몇 건이었는지 아무도 모르는 상태였고, 그건 주석이 피하겠다고
+   * 선언한 "조용히 지움"이 정상 경로에서 그대로 일어난 것이다(안전 원칙 5).
+   */
+  sealAudit: {
+    /** 다른 세션 소유로 판정해 제외한 **변경된** 경로 수(전 자산 합). */
+    sessionOwnedExcluded: number;
+    /** `--allow-concurrent-sessions`로 위반을 눈감은 자산 수. 0이 아니면 그 실행의 config 감사는 무력했다. */
+    concurrencyOverrides: number;
+  };
   indexPath: string;
 }
 
@@ -111,6 +133,12 @@ export interface RunGenOptions {
   /** `--no-llm` — claude -p를 전혀 띄우지 않는다. */
   noLlm: boolean;
   verifiedCliVersion: string;
+  /**
+   * `--allow-concurrent-sessions` — 살아 있는 다른 Claude Code 세션의 config dir churn을
+   * 위반으로 보지 않는다. **이번 실행의 config 감사는 사실상 무력해진다**(tree-audit.ts).
+   * 기본값 없음(호출자가 항상 명시) — 기본값을 두면 어느 경로가 무엇을 넘겼는지 흐려진다.
+   */
+  allowConcurrentSessions: boolean;
   routingProbeCommand?: string;
   /** 고정 sealed-live cwd(B3) — 호출자가 이미 만들어 넘긴다. */
   sealedCwd: string;
@@ -178,6 +206,9 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
   const injectionFindingsTotal: InjectionFindingsSummary = { directive: 0, executable: 0, url: 0, length: 0 };
   let stoppedEarly = false;
   let treeCache: Parameters<typeof captureConfigDirSnapshot>[1];
+  // 통과한 실행에서도 남긴다(보안 재심 M3) — 제외가 몇 건이었는지 로그가 볼 수 있어야 한다.
+  let sessionOwnedExcludedTotal = 0;
+  let concurrencyOverridesTotal = 0;
 
   for (let i = 0; i < plan.targets.length; i++) {
     const target = plan.targets[i];
@@ -204,7 +235,19 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
         });
         const after = captureConfigDirSnapshot(home.ctkConfigDir, before.cache);
         treeCache = after.cache;
-        const audit = auditSealedLiveConfigDir(home.ctkConfigDir, before, after, claudeJsonBefore);
+        const audit = auditSealedLiveConfigDir(home.ctkConfigDir, before, after, claudeJsonBefore, {
+          allowConcurrentSessions: options.allowConcurrentSessions,
+        });
+        sessionOwnedExcludedTotal += audit.sessionOwnedExcluded.length;
+        if (audit.concurrencyOverrideApplied) {
+          concurrencyOverridesTotal += 1;
+          // 크게 알린다 — 조용히 낮추면 사용자는 감사가 돌았다고 믿는다.
+          console.warn(
+            `⚠️  --allow-concurrent-sessions: 자산 ${target.asset.id}에서 config dir 변경 ` +
+              `${audit.verdict.violations.length}건을 위반으로 보지 않았다. ` +
+              `이번 실행에서 "자식이 config를 바꿨나"는 검증되지 않았다.`,
+          );
+        }
         if (!sealedLiveAuditPassed(audit)) {
           throw new SealedLiveConfigDirAuditViolationError(target.asset.id, audit);
         }
@@ -216,6 +259,26 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
         setAssetGenState(catalogRoot, target.asset.id, "pending");
         stoppedEarly = true;
         break;
+      }
+      if (err instanceof ClaudePCallFailedError) {
+        // ⚠️ **범위 축소(2026-08-24).** 예산 실패가 아닌 `claude -p` 실패도 전체를 중단시키고
+        // 있었다. E5.12가 위생 실패에 대해 이미 내린 판단과 같다 — "거부는 옳지만 **범위가
+        // 틀렸다**: 그 자산만 빼고 나머지는 처리한다".
+        //
+        // `stale` 재시도 규칙과 맞물리면 **영구 차단**이 된다: 한 번 실패한 자산은 `stale`로
+        // 기록돼 다음 실행에서도 항상 1순위로 잡히고, 그 자산이 계속 실패하면 뒤의 자산은
+        // 영영 처리되지 않는다. 실측에서 자산 하나가 큐를 통째로 막았다.
+        //
+        // **삼키지 않는다**(안전 원칙 7): 사유와 진단을 결과에 남기고, `stale`로 기록해 다음
+        // 실행이 다시 시도하며, 호출자는 `results`의 실패 건수로 종료 코드를 정한다.
+        results.push({
+          assetId: target.asset.id,
+          outcome: "stale",
+          reason: "call_failed",
+          detail: [err.message.slice(0, 500)],
+        });
+        setAssetGenState(catalogRoot, target.asset.id, "stale");
+        continue;
       }
       throw err; // SealedLiveConfigDirAuditViolationError·SealUnverifiedCliError 등은 즉시 전체 중단.
     }
@@ -287,7 +350,17 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
   // 중단 모두 포함).
   const { path: indexPath } = rebuildCatalogIndex(catalogRoot);
 
-  return { plan, results, stoppedEarly, injectionFindingsTotal, indexPath };
+  return {
+    plan,
+    results,
+    stoppedEarly,
+    injectionFindingsTotal,
+    sealAudit: {
+      sessionOwnedExcluded: sessionOwnedExcludedTotal,
+      concurrencyOverrides: concurrencyOverridesTotal,
+    },
+    indexPath,
+  };
 }
 
 export type { GenPlanTarget };

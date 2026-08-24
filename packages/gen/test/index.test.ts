@@ -336,4 +336,52 @@ describe("gen/index — runGen 전체 배선 (plan → 생성 → citation-check
     });
     expect(summary.indexPath).toBe(path.join(catalogRoot, "catalog", "index.json"));
   });
+
+  it("한 자산의 claude -p 실패가 **뒤 자산을 막지 않는다** — 그러나 삼키지도 않는다 (2026-08-24)", async () => {
+    // ⚠️ 실측: `analyze-jd` 하나가 `is_error`로 죽으면서 전체 실행이 중단됐고, 그 자산은
+    // `stale`로 남아 **다음 실행에서도 항상 1순위**로 잡혀 큐를 영구히 막았다.
+    // E5.12가 위생 실패에 대해 내린 판단("거부는 옳지만 범위가 틀렸다")과 같은 문제다.
+    init();
+    setupSkill("aaa-fails", "실패하는 자산");
+    setupSkill("bbb-works", "성공하는 자산");
+    seedCatalog(skillAsset("aaa-fails"));
+    seedCatalog(skillAsset("bbb-works"));
+
+    let call = 0;
+    const spawnFn = async () => {
+      call += 1;
+      // 첫 자산만 실패시킨다(exitCode 1). 예산 실패가 아니므로 예전에는 전체가 중단됐다.
+      if (call === 1) return { exitCode: 1, stdout: '{"is_error":true}', stderr: "", timedOut: false };
+      return { exitCode: 0, stdout: VALID_LLM_STDOUT, stderr: "", timedOut: false };
+    };
+
+    const summary = await runGen({
+      home,
+      catalogRoot,
+      assets: [skillAsset("aaa-fails"), skillAsset("bbb-works")],
+      maxBudgetUsd: 0.2,
+      timeoutSec: 30,
+      noLlm: false,
+      verifiedCliVersion: "2.1.238",
+      sealedCwd,
+      interactive: true,
+      allowManagedPolicy: false,
+      allowConcurrentSessions: false,
+      spawnFn: spawnFn as never,
+    });
+
+    // ① 뒤 자산이 처리됐다 — 큐가 막히지 않는다.
+    expect(call, "첫 자산 실패 후에도 두 번째를 시도해야 한다").toBe(2);
+
+    // ② 실패를 삼키지 않는다 — 사유·진단이 남고 stale로 기록된다.
+    const failed = summary.results.find((r) => r.assetId === "aaa-fails");
+    expect(failed?.reason).toBe("call_failed");
+    expect(failed?.outcome).toBe("stale");
+    expect(failed?.detail?.[0], "왜 실패했는지가 남아야 다음 사람이 안 막힌다").toContain("exitCode=1");
+    expect(readCatalogIndex(catalogRoot).assets.find((e) => e.id === "aaa-fails")?.gen_state).toBe("stale");
+
+    // ③ 조기 종료가 아니다 — 예산 초과와 구분된다.
+    expect(summary.stoppedEarly).toBe(false);
+  });
+
 });

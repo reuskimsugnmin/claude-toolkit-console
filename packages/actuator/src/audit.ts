@@ -136,9 +136,15 @@ export interface RootAuditResult {
   verdict: TreeDiffVerdict;
   /** config 루트에서 `.claude.json`이 churn으로 잡혔을 때만 채워진다. 그 외에는 null. */
   claudeJsonSemantic: ClaudeJsonSemanticVerdict | null;
-  /** M3 — before/after 수집 중 하나라도 읽기 실패가 있었거나 심볼릭 링크·빈 디렉터리 개수가
-   * 달라졌으면 true. 파일 목록만으로는 안 보이는 변경이 있었을 수 있다는 뜻이라 `auditPassed`가
-   * 무조건 실패로 취급한다(fail-closed). */
+  /** M3 — before/after 수집 중 **읽기 실패**가 있었으면 true. `auditPassed`가 무조건 실패로
+   * 취급한다(fail-closed).
+   *
+   * ⚠️ **심볼릭 링크·빈 디렉터리 개수는 여기 포함하지 않는다(2026-08-24 주석 정정).** 이 주석은
+   * 한때 포함한다고 적었으나 구현은 처음부터 제외했고, 그 제외가 의도된 설계다 — `actuator`는
+   * 스킬 디렉터리 이동처럼 **정상 조치가** 디렉터리를 만들고 지우므로 개수 델타가 오탐이 된다
+   * (아래 구현부 주석). 개수는 `RootAuditSnapshot`으로 반환만 하고 호출자가 판단한다.
+   * `gen`은 config dir에 의도적으로 쓰는 파일이 없어 같은 신호를 fail-closed로 쓴다 —
+   * 계층이 다르면 같은 신호의 의미도 다르다(gen/src/tree-audit.ts). */
   incompleteObservation: boolean;
 }
 

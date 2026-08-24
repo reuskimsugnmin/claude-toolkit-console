@@ -118,3 +118,66 @@ export const TIER2_CHURN_ALLOWLIST_KNOWN_UNMEASURED: readonly AllowlistRule[] = 
   { pattern: /^todos\//, note: "다른 명령에서 알려짐 (미실측, 병기 유지)" },
   { pattern: /^plugins\/repos\//, note: "다른 명령에서 알려짐 (미실측, 병기 유지) — 플러그인 코드 트리 자체이므로 실제 조치 감사에 절대 포함하지 않는다" },
 ];
+
+/**
+ * **다른 Claude Code 세션이 소유한 경로 — 봉인된 자식에게 귀속할 수 없다.**
+ *
+ * ⚠️ **이것은 허용목록이 아니다.** `TIER2_CHURN_ALLOWLIST_SEALED_LIVE`는 "봉인된 자식이
+ * 실제로 일으킨 churn(AC-0.11 실측)"이라는 뜻이고, 여기 있는 경로는 **자식이 일으킨 것이
+ * 아니다.** 같은 목록에 넣으면 "실측된 자식 churn"이라는 의미가 오염되고, 다음 사람이 그
+ * 목록을 근거로 판단할 때 틀린다(안전 원칙 7 — 다른 상태를 뭉개지 않는다).
+ *
+ * **왜 필요한가 (2026-08-24 실측).** 트리 감사는 `CLAUDE_CONFIG_DIR` 전체를 창(window) 전후로
+ * 비교하는데, 그 디렉터리는 **봉인된 자식만의 것이 아니다** — 동시에 살아 있는 어떤 Claude
+ * Code 세션이든 자기 트랜스크립트와 훅 상태를 계속 쓴다. 그래서 감사는 "봉인 세션이 바꿨다"고
+ * 보고하지만 실제로 아는 것은 "누군가 바꿨다"뿐이다. **범위는 충분한데 축이 어긋난다.**
+ *
+ * 서로 다른 두 경로에서 두 번 확인했다:
+ * - Claude Code 세션 **안**에서 `gen` 실행 → `hooks/state/<부모 세션 uuid>.start` 위반
+ * - Claude Code 세션 **밖**에서 실행하되 대화를 계속함 → `projects/<프로젝트>/<부모 세션
+ *   uuid>.jsonl` 위반. 부모를 완전히 종료하자 둘 다 사라졌다
+ *
+ * **⚠️ 이 목록만으로는 부족하다 — 반드시 "before에 이미 있던 세션"에만 적용한다.**
+ * 보안 재심(2026-08-24) 지적: 경로 **모양**만 보고 제외하면 그 모양의 파일이 **새로 생겨도**
+ * 사라진다. 그런데 봉인 안에서 `hooks/state/<uuid>.start`가 **새로 생기는 것**은 세션 상태가
+ * 아니라 **훅이 실행됐다는 증거**이고, `projects/<봉인 cwd>/<uuid>.jsonl`이 새로 생기는 것은
+ * 자식이 세션을 영속했다는 증거다 — 둘 다 봉인 파손의 1차 신호다. 그래서 판정은
+ * `gen/tree-audit.ts`가 **before에서 관측된 세션 uuid 집합**으로 좁히고, 신규 uuid는 위반으로
+ * 남긴다. 이 목록은 "어떤 경로가 세션 이름 공간에 속하는가"만 정의한다.
+ *
+ * **잔여 위험(정정).** 트랜스크립트는 비활성 로그가 아니라 **`ctk measure`의 신뢰되지 않은
+ * 입력**이다 — 위조되면 ① tool_result 원문이 `count_tokens`로 오프머신 전송되고
+ * ② `assertNoRawPathLeaks`를 유발해 이후 모든 `measure`를 중단시킬 수 있으며(fail-closed DoS)
+ * ③ 사용량 집계를 오염시킨다(안전 원칙 8). 처음에 "대화 로그라 위협도가 낮다"고 적었던 것은
+ * 낙관적이었다. 신규 생성이 다시 잡히므로 위험의 대부분은 닫히고, 남는 것은 **기존 파일
+ * 덮어쓰기**이며 그것은 append 단조성 검사가 담당한다.
+ *
+ * **범위를 UUID 모양까지 고정한다.** `^projects/` 같은 넓은 패턴을 쓰면 그 아래 무엇이 바뀌어도
+ * 통과하고, 그때부터 이 축은 아무것도 막지 못한다(Pre-mortem H — 허용목록의 반사적 확장).
+ */
+const SESSION_UUID = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+
+export const SESSION_OWNED_NOT_ATTRIBUTABLE: readonly AllowlistRule[] = [
+  {
+    // projects/<프로젝트 디렉터리 1단>/<세션 uuid>.jsonl — 다른 세션의 트랜스크립트.
+    pattern: new RegExp(`^projects/-[^/]*/${SESSION_UUID}\\.jsonl$`),
+    note: "2026-08-24 실측 — 살아 있는 다른 Claude Code 세션이 갱신하는 트랜스크립트. 자식은 --no-session-persistence로 쓰지 않는다",
+  },
+  {
+    // projects/<프로젝트>/<세션 uuid>/** — 그 세션의 서브에이전트 트랜스크립트가 여기 산다
+    // (E0.6 실측: 서브에이전트는 메인 세션 파일이 아니라 subagents/agent-*.jsonl에 따로 쌓인다).
+    // ⚠️ 디렉터리 이름이 **세션 uuid**여야만 매치한다 — `^projects/`로 넓히면 그 아래 무엇이
+    // 바뀌어도 통과한다. 자식은 세션을 영속하지 않으므로 이 이름 공간에 참여하지 않는다.
+    pattern: new RegExp(`^projects/-[^/]*/${SESSION_UUID}/`),
+    note: "2026-08-24 실측 — 다른 세션의 서브에이전트 트랜스크립트(subagents/agent-*.jsonl · .meta.json)",
+  },
+  {
+    exact: ".session-stats.json",
+    note: "2026-08-24 실측 — 하네스가 세션 uuid를 키로 갱신하는 세션 통계. 설정이 아니다",
+  },
+  {
+    // hooks/state/<세션 uuid>.start — 세션별 훅 상태(정의가 아니다).
+    pattern: new RegExp(`^hooks/state/${SESSION_UUID}\\.start$`),
+    note: "2026-08-24 실측 — 하네스가 세션별로 쓰고 지우는 훅 **상태** 파일(그 디렉터리 167개 전부 .start 하나뿐이었다). 훅 정의(settings.json)는 그대로 감시된다",
+  },
+];

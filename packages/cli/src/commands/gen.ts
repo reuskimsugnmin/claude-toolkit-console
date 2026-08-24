@@ -29,6 +29,8 @@ export interface RunGenCliOptions {
   checkCitations?: boolean; // 예약 — v1은 runGen 내부에서 항상 인용 검사를 돈다.
   maxAssets?: number;
   maxBudgetUsd?: number;
+  /** `--allow-concurrent-sessions` — 봉인 config 감사에서 다른 세션 churn을 위반으로 보지 않는다. */
+  allowConcurrentSessions?: boolean;
   timeoutSec?: number;
   resume?: boolean;
   noLlm?: boolean;
@@ -152,6 +154,7 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
             results: [],
             stoppedEarly: false,
             injectionFindingsTotal: { directive: 0, executable: 0, url: 0, length: 0 },
+            sealAudit: { sessionOwnedExcluded: 0, concurrencyOverrides: 0 },
             indexPath: "",
           };
         }
@@ -164,6 +167,7 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
       assets,
       maxAssets: options.maxAssets,
       maxBudgetUsd: options.maxBudgetUsd,
+      allowConcurrentSessions: options.allowConcurrentSessions === true,
       timeoutSec: options.timeoutSec,
       noLlm: options.noLlm === true,
       verifiedCliVersion: catalogConfig.verified_cli_version,
@@ -188,6 +192,10 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
           stale: summary.results.filter((r) => r.outcome === "stale").length,
         },
         no_llm: options.noLlm === true,
+        // 통과한 실행에서도 감사 집계를 남긴다(보안 재심 M3) — "조용히 지움"을 정상 경로에서도 막는다.
+        session_owned_excluded: summary.sealAudit.sessionOwnedExcluded,
+        concurrency_overrides: summary.sealAudit.concurrencyOverrides,
+        allow_concurrent_sessions: options.allowConcurrentSessions === true,
       },
       machine_id: machine.machine_id,
       started_at: startedAt.toISOString(),
