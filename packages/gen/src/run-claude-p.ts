@@ -38,13 +38,34 @@ function withLineNumbers(content: string): string {
     .join("\n");
 }
 
+/**
+ * 진단 문자열에서 절대경로를 **제거**한다(상대화가 아니다 — 홈 밖 경로는 상대화로 가려지지
+ * 않는다). 실패 진단은 로그·화면으로 나가므로 디렉터리 구조를 흘리지 않는다.
+ */
+function scrubPathsForDiagnostics(text: string): string {
+  return text.replace(/(?:^|\s)(\/[^\s:]+)/g, " <경로 생략>");
+}
+
 export class ClaudePCallFailedError extends Error {
   constructor(
     readonly assetId: string,
     readonly exitCode: number | null,
     readonly stderr: string,
+    /**
+     * ⚠️ **stdout도 진단에 싣는다(2026-08-24).** `sealed-live`는 `--output-format json`을 쓰므로
+     * 실패 사유가 **stdout에 오고 stderr는 비는** 경우가 있다. 실제로 `exitCode=1`에 빈 stderr만
+     * 남아 **왜 실패했는지 알 수 없어 검증이 멈춘 일**이 있었다 — 진단은 있으면 좋은 것이 아니라
+     * 없으면 다음 사람이 막힌다(안전 원칙 6).
+     */
+    readonly stdout: string = "",
   ) {
-    super(`claude -p 호출이 실패했다(asset=${assetId}, exitCode=${exitCode}): ${stderr.slice(0, 500)}`);
+    const parts = [`claude -p 호출이 실패했다(asset=${assetId}, exitCode=${exitCode})`];
+    const err = scrubPathsForDiagnostics(stderr).trim();
+    const out = scrubPathsForDiagnostics(stdout).trim();
+    // "비어 있음"을 명시한다 — 아무것도 안 적으면 "안 실었다"와 "실을 게 없었다"가 구분되지 않는다.
+    parts.push(`stderr: ${err.length > 0 ? err.slice(0, 500) : "(비어 있음)"}`);
+    parts.push(`stdout: ${out.length > 0 ? out.slice(0, 500) : "(비어 있음)"}`);
+    super(parts.join(" · "));
     this.name = "ClaudePCallFailedError";
   }
 }
@@ -99,7 +120,7 @@ export async function runClaudePForTarget(options: RunClaudePOptions): Promise<R
   });
 
   if (result.exitCode !== 0) {
-    throw new ClaudePCallFailedError(target.asset.id, result.exitCode, result.stderr);
+    throw new ClaudePCallFailedError(target.asset.id, result.exitCode, result.stderr, result.stdout);
   }
 
   // 봉투 해석(하네스 소유·passthrough) → 페이로드 검증(우리 소유·strict)로 분리한다.

@@ -346,6 +346,7 @@ async function main(): Promise<void> {
           resume: rest.includes("--resume"),
           noLlm: rest.includes("--no-llm"),
           allowManagedPolicy: rest.includes("--allow-managed-policy"),
+          allowConcurrentSessions: rest.includes("--allow-concurrent-sessions"),
           yes: rest.includes("--yes"),
         });
         const fresh = summary.results.filter((r) => r.outcome === "fresh").length;
@@ -365,6 +366,16 @@ async function main(): Promise<void> {
           `  인젝션 후검증 — 지시문 ${inj.directive} · 실행명령 ${inj.executable} · URL ${inj.url} · 길이 ${inj.length}`,
         );
         console.log(`  인덱스: ${summary.indexPath}`);
+        // ⚠️ **실패를 삼키지 않는다(안전 원칙 7).** 자산별 skip으로 범위를 좁혔다는 것이
+        // "실패가 없었다"는 뜻은 아니다 — 한 건이라도 call_failed면 종료 코드로 드러낸다.
+        // 그러지 않으면 배치 스크립트와 CI가 "전부 성공"으로 읽는다.
+        const callFailed = summary.results.filter((r) => r.reason === "call_failed").length;
+        if (callFailed > 0) {
+          console.error(
+            `  ❌ claude -p 호출 실패 ${callFailed}건 — 위 사유를 보라. 해당 자산은 stale로 남아 다음 실행이 다시 시도한다.`,
+          );
+          process.exitCode = 1;
+        }
         return;
       }
       case "agent-probe": {

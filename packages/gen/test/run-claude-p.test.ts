@@ -148,3 +148,25 @@ describe("gen/run-claude-p — sealed-live 프로파일로 claude -p를 띄워 A
     expect(result.docPage.catalog_relative_path).toBe("catalog/assets/skill/demo-skill/usage.md");
   });
 });
+
+describe("ClaudePCallFailedError — 실패 진단 (2026-08-24)", () => {
+  it("stderr가 비어도 stdout을 실어 사유를 알 수 있게 한다", () => {
+    const e = new ClaudePCallFailedError("demo", 1, "", '{"type":"error","message":"usage limit"}');
+    expect(e.message).toContain("stderr: (비어 있음)");
+    expect(e.message).toContain("usage limit");
+  });
+
+  it("둘 다 비면 '비어 있음'을 명시한다 — '안 실었다'와 '실을 게 없었다'를 구분한다", () => {
+    const e = new ClaudePCallFailedError("demo", 1, "", "");
+    expect(e.message).toContain("stderr: (비어 있음)");
+    expect(e.message).toContain("stdout: (비어 있음)");
+  });
+
+  it("절대경로는 제거된다 — 진단이 디렉터리 구조를 흘리지 않는다", () => {
+    // 픽스처에 macOS 홈 경로 모양을 쓰지 않는다 — 위생 게이트가 추적 파일에서
+    // 그 패턴을 금지하고, 실제로 이 테스트를 처음 썼을 때 거기 걸렸다(규칙이 막았다).
+    const e = new ClaudePCallFailedError("demo", 1, "failed at /opt/synthetic/secret/x.md", "");
+    expect(e.message).not.toContain("/opt/synthetic");
+    expect(e.message).toContain("<경로 생략>");
+  });
+});
