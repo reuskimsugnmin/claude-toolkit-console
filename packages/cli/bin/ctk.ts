@@ -25,7 +25,7 @@ import { runVerifyAc1, NotYetScannedError } from "../src/commands/verify-ac1.js"
 import { runVerifyAc3, SkillSourceNotFoundError } from "../src/commands/verify-ac3.js";
 import { runMove, AssetNotFoundError, NoOpMoveError, ProjectIndexOutOfRangeError } from "../src/commands/move.js";
 import { runRollback, NoRollbackTargetError } from "../src/commands/rollback.js";
-import { runMeasure } from "../src/commands/measure.js";
+import { measurementFailureHint, runMeasure } from "../src/commands/measure.js";
 import { runUsage, NoMeasurementError } from "../src/commands/usage.js";
 import { browserOpenTokenNotice, runExportViewModel, runWebServe } from "../src/commands/web.js";
 import { openInBrowser } from "../src/open-browser.js";
@@ -310,7 +310,12 @@ async function main(): Promise<void> {
           `  R17 대조(이번 실행 범위) — Agent tool_use: ${summary.agentToolUseCountThisRun}건 vs 신규 subagent 파일: ${summary.newSubagentFilesThisRun}건` +
             (summary.subagentAttributionGap ? " ⚠️ 괴리" : " 일치"),
         );
-        console.log(`  크레덴셜(ANTHROPIC_API_KEY): ${summary.credentialsAvailable ? "있음" : "없음(unmeasured로 열화)"}`);
+        // 라벨에 특정 env 이름을 박지 않는다 — 크레덴셜은 SDK 체인(env·`ant` 프로파일·WIF) 어디서든
+        // 올 수 있고, 이름을 박으면 프로파일로 측정한 사용자에게 거짓을 표시한다(2026-08-24 정정).
+        console.log(`  count_tokens 크레덴셜: ${summary.credentialsAvailable ? "해석됨" : "없음(unmeasured로 열화)"}`);
+        if (summary.credentialProbeFailureKind !== null) {
+          console.log(`  ⚠️  측정 실패(${summary.credentialProbeFailureKind}) — ${measurementFailureHint(summary.credentialProbeFailureKind)}`);
+        }
         return;
       }
       case "gen": {

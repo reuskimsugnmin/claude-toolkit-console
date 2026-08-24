@@ -7,6 +7,7 @@ import {
   type AssetKind,
   type AttributionSource,
   type Occupancy,
+  type OccupancyFailureKind,
   type OccupancyValue,
   type SessionUsage,
   type UsageMetric,
@@ -16,6 +17,7 @@ import {
   countTokensMeasured,
   createMapOffsetCacheStore,
   createMapTokenCacheStore,
+  createNullTokenCacheStore,
   extractRow,
   fetchPluginDetails,
   findSkillDirsById,
@@ -70,16 +72,56 @@ import { CatalogNotInitializedError } from "./scan.js";
 export interface RunMeasureOptions {
   transcriptsDir?: string;
   noCredentialsOk?: boolean;
+  /**
+   * 테스트 주입용. 기본값은 실제 `countTokensMeasured`다.
+   *
+   * ⚠️ **주입 시드가 없으면 이 테스트들은 실행 머신의 크레덴셜 상태에 좌우된다.** 게이트가
+   * SDK 해석 체인에 위임하게 된 이상 "env를 지웠으니 크레덴셜이 없다"가 더는 성립하지 않는다 —
+   * `ant` 프로파일이 있는 머신에서는 같은 테스트가 다른 결과를 낸다. 크레덴셜 부재를 재현하려면
+   * env 조작이 아니라 이 시드로 고정한다.
+   */
+  countTokensFn?: typeof countTokensMeasured;
 }
+
+/**
+ * 크레덴셜 가용성 판정에 쓰는 최소 탐침 텍스트. 내용은 무의미하고 **호출이 성립하는지**만 본다.
+ * 캐시에 넣지 않는다(실제 자산 측정값과 섞이면 안 된다 — null 캐시로 호출한다).
+ */
+const CREDENTIAL_PROBE_TEXT = "ctk credential probe";
 
 export class CredentialMissingError extends Error {
   readonly failureClass = "credential_missing" as const;
   constructor() {
     super(
-      "count_tokens 크레덴셜(ANTHROPIC_API_KEY)이 없다 — occupancy를 unmeasured로 기록하려면 " +
-        "--no-credentials-ok를 명시해야 한다(AC-4.5, 조용한 성공으로 바꾸지 않는다).",
+      "count_tokens 크레덴셜이 어느 경로로도 해석되지 않았다 — SDK는 ANTHROPIC_API_KEY → " +
+        "ANTHROPIC_AUTH_TOKEN → `ant auth login` 프로파일 → Workload Identity 순으로 찾는다. " +
+        "occupancy를 unmeasured로 기록하려면 --no-credentials-ok를 명시해야 한다" +
+        "(AC-4.5, 조용한 성공으로 바꾸지 않는다).",
     );
     this.name = "CredentialMissingError";
+  }
+}
+
+/**
+ * `measurement_failed` 원인 분류별 복구 안내(안전 원칙 6 — 가드에는 빠져나갈 길을 함께 준다).
+ * 분류를 못 한 경우까지 포함해 **모든 분기가 한 줄을 돌려준다** — 안내가 비면 사용자는 화면에
+ * "실패"만 남은 상태로 되돌아간다.
+ */
+export function measurementFailureHint(kind: OccupancyFailureKind): string {
+  switch (kind) {
+    case "tls_chain_untrusted":
+      return (
+        "TLS 체인 검증 실패 — 가로채기 프록시의 루트 CA가 Node 신뢰 저장소에 없다. " +
+        "해당 루트 CA를 PEM으로 내보내 NODE_EXTRA_CA_CERTS로 지정한다(TLS 검증을 끄지 않는다)."
+      );
+    case "network_unreachable":
+      return "네트워크 도달 실패 — 오프라인·DNS·방화벽·프록시 설정을 확인한다.";
+    case "rate_limited":
+      return "레이트리밋(429) — 잠시 후 재실행한다. 토큰 캐시가 있어 재실행은 이미 측정된 자산을 다시 호출하지 않는다.";
+    case "api_error":
+      return "API가 오류 상태로 응답했다 — 조직 권한·워크스페이스 설정을 확인한다.";
+    case "unclassified":
+      return "원인을 분류하지 못했다 — 같은 조건에서 재현되면 ctk 이슈로 남긴다(분류를 추측해 채우지 않는다).";
   }
 }
 
@@ -99,6 +141,8 @@ export interface MeasureSummary {
   newSubagentFilesThisRun: number;
   subagentAttributionGap: boolean;
   credentialsAvailable: boolean;
+  /** 크레덴셜 탐침이 `measurement_failed`였을 때의 원인 분류. 그 외에는 null. */
+  credentialProbeFailureKind: OccupancyFailureKind | null;
   durationMs: number;
 }
 
@@ -145,9 +189,38 @@ export async function runMeasure(options: RunMeasureOptions = {}): Promise<Measu
   if (catalogConfig === null) throw new CatalogNotInitializedError();
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  const credentialsAvailable = apiKey !== undefined && apiKey.length > 0;
+  const countTokensFn = options.countTokensFn ?? countTokensMeasured;
+
+  // 크레덴셜 가용성은 **SDK가 판정한다.** env 하나를 직접 보던 옛 게이트는 `ant auth login`
+  // 프로파일로 측정 가능한 사용자를 credential_missing으로 거부했다(2026-08-24 실측) —
+  // count-tokens.ts는 이미 전체 체인에 위임하도록 고쳐져 있었는데 이 게이트만 배선이 빠져 있었다.
+  // 판정 주체를 하나로 두면 SDK가 체인을 바꿔도 여기가 따라 틀리지 않는다(안전 원칙 7 — 판정할
+  // 수 없는 것을 흉내 내 그럴듯한 값을 만들지 않는다).
+  //
+  // 락 획득 **이전에** 탐침한다 — 네트워크 왕복 동안 카탈로그 락을 쥐고 있을 이유가 없다.
+  const credentialProbe = await countTokensFn({
+    text: CREDENTIAL_PROBE_TEXT,
+    tokenizerModel: catalogConfig.tokenizer_model,
+    cache: createNullTokenCacheStore(),
+    apiKey,
+  });
+  // "크레덴셜 없음"과 "크레덴셜은 있는데 측정 실패"는 다른 상태다(안전 원칙 7). 후자는 게이트를
+  // 통과시키고 결과를 정직하게 unmeasured(measurement_failed)로 남긴다 — 여기서 막아버리면
+  // 사용자는 있지도 않은 크레덴셜 문제를 찾게 된다.
+  const credentialsAvailable = !(
+    credentialProbe.state === "unmeasured" && credentialProbe.reason === "credential_missing"
+  );
   if (!credentialsAvailable && options.noCredentialsOk !== true) {
     throw new CredentialMissingError();
+  }
+  const credentialProbeFailureKind =
+    credentialProbe.state === "unmeasured" && credentialProbe.reason === "measurement_failed"
+      ? (credentialProbe.failure_kind ?? "unclassified")
+      : null;
+  if (credentialProbeFailureKind !== null) {
+    console.warn(
+      `WARN measurement_failed(${credentialProbeFailureKind}): ${measurementFailureHint(credentialProbeFailureKind)}`,
+    );
   }
 
   const lock = acquireLock(catalogPath, {
@@ -239,7 +312,11 @@ export async function runMeasure(options: RunMeasureOptions = {}): Promise<Measu
           if (toolResult.toolUseId === undefined) continue; // 레거시 폼(짝 없음) — 귀속 불가, 정직하게 건너뜀
           const key = pendingToolUses.get(toolResult.toolUseId);
           if (key === undefined) continue; // 오프셋 재개 경계를 넘어 짝이 이 실행 범위 밖에 있음
-          const measured = await countTokensMeasured({
+          // ⚠️ **세 번째 호출 경로다.** `token_sum`(AC-4.3)은 occupancy와 별개로 tool_result
+          // 페이로드를 잰다 — 게이트·occupancy만 주입에 배선하고 여기를 빠뜨리면 테스트가
+          // 크레덴셜 부재를 주입해 놓고도 **실제 네트워크를 탄다**(실측: 같은 테스트가 회선
+          // 상태에 따라 token_sum 0 또는 17을 냈다). 호출 지점을 늘릴 때는 세어서 전부 배선한다.
+          const measured = await countTokensFn({
             text: toolResult.text,
             tokenizerModel: catalogConfig.tokenizer_model,
             cache: tokenStore,
@@ -330,7 +407,7 @@ export async function runMeasure(options: RunMeasureOptions = {}): Promise<Measu
     const tmpCwd = catalogPath; // plugin details 호출용 cwd — 구조적 서브커맨드라 프로젝트 설정 유입 위험 없음(spawn-claude.ts가 어차피 argv를 전량 구성)
 
     for (const asset of assets) {
-      const { idle, loaded } = await computeOccupancy(asset, home, tokenStore, catalogConfig.tokenizer_model, apiKey);
+      const { idle, loaded } = await computeOccupancy(asset, home, tokenStore, catalogConfig.tokenizer_model, apiKey, countTokensFn);
 
       let harnessAlwayson: Occupancy["harness_alwayson"] = { state: "unmeasured", value_tokens: null, reason: "not_a_plugin" };
       if (asset.kind === "plugin") {
@@ -424,6 +501,7 @@ export async function runMeasure(options: RunMeasureOptions = {}): Promise<Measu
       newSubagentFilesThisRun,
       subagentAttributionGap,
       credentialsAvailable,
+      credentialProbeFailureKind,
       durationMs: finishedAt.getTime() - startedAt.getTime(),
     };
   } finally {
@@ -445,6 +523,9 @@ async function computeOccupancy(
   tokenStore: ReturnType<typeof createMapTokenCacheStore>,
   tokenizerModel: string,
   apiKey: string | undefined,
+  /** 게이트와 **같은 함수**를 쓴다 — 탐침과 실측이 다른 경로를 타면 게이트가 통과시킨 조건이
+   * 실제 측정에서 재현되지 않는다(테스트에서도 마찬가지다). */
+  countTokensFn: typeof countTokensMeasured,
 ): Promise<{ idle: OccupancyValue; loaded: OccupancyValue }> {
   if (asset.kind === "mcp" || asset.kind === "cli") {
     const zero: OccupancyValue = {
@@ -457,7 +538,7 @@ async function computeOccupancy(
   }
 
   const idleText = `${asset.name}\n${asset.description ?? ""}`;
-  const idle = await countTokensMeasured({ text: idleText, tokenizerModel, cache: tokenStore, apiKey });
+  const idle = await countTokensFn({ text: idleText, tokenizerModel, cache: tokenStore, apiKey });
 
   if (asset.kind === "plugin") {
     // 산하 스킬·에이전트 전문 합산은 범위 밖(파일 상단 주석) — "측정 안 함"이지 "0"이 아니므로
@@ -476,6 +557,6 @@ async function computeOccupancy(
   } catch {
     return { idle, loaded: { state: "unmeasured", value_tokens: null, reason: "measurement_failed" } };
   }
-  const loaded = await countTokensMeasured({ text: body, tokenizerModel, cache: tokenStore, apiKey });
+  const loaded = await countTokensFn({ text: body, tokenizerModel, cache: tokenStore, apiKey });
   return { idle, loaded };
 }

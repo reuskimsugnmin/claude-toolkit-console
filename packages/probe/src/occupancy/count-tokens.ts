@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
-import type { OccupancyValue } from "@ctk/core";
+import type { OccupancyFailureKind, OccupancyValue } from "@ctk/core";
 import type { TokenCacheStore } from "../cache/cache-store.js";
 
 /**
@@ -12,9 +12,12 @@ import type { TokenCacheStore } from "../cache/cache-store.js";
  * 불변식에 이 패키지를 새 승인 항목으로 추가한다 — probe 하나에만 존재하고, 크레덴셜이 없으면
  * (이 환경) 호출 자체를 시도하지 않고 `unmeasured`로 열화한다(AC-4.5).
  *
- * **크레덴셜 감지는 `ANTHROPIC_API_KEY` 환경변수 존재 여부로만 판단한다.** OAuth/키체인 인증은
- * `claude` CLI 서브프로세스 전용이며(docs/harness-facts.md), `@anthropic-ai/sdk`는 그 인증을
- * 공유하지 않는다 — API 키가 따로 필요하다(이 환경엔 없다, §4 Step 3 지시사항과 일치).
+ * **크레덴셜 감지를 `ANTHROPIC_API_KEY` 유무로 판단하지 않는다(2026-08-24 정정).** 이 파일은
+ * 한때 "env 하나만 본다"고 적혀 있었고 `measure` 커맨드의 게이트가 그 옛 가정에 배선돼 있었다 —
+ * 그 결과 `ant auth login` 프로파일로 **측정 가능한 사용자가 `credential_missing`으로 거부**됐다.
+ * 아래 `countTokensMeasured`가 SDK의 전체 해석 체인에 위임하고, 게이트도 그 결과로 판정한다
+ * (cli/commands/measure.ts). `claude` CLI의 구독 OAuth는 여전히 별개 표면이다 —
+ * `@anthropic-ai/sdk`는 그 키체인 인증을 공유하지 않는다(docs/harness-facts.md).
  */
 
 export interface CountTokensOptions {
@@ -77,12 +80,78 @@ export async function countTokensMeasured(options: CountTokensOptions): Promise<
       measured_at: new Date().toISOString(),
     };
   } catch (err) {
+    if (isCredentialAbsence(err)) {
+      return { state: "unmeasured", value_tokens: null, reason: "credential_missing" };
+    }
     return {
       state: "unmeasured",
       value_tokens: null,
-      reason: isCredentialAbsence(err) ? "credential_missing" : "measurement_failed",
+      reason: "measurement_failed",
+      failure_kind: classifyMeasurementFailure(err),
     };
   }
+}
+
+/** TLS 체인 검증 실패로 판정하는 OpenSSL 오류 코드 — Node가 번들 CA로 검증에 실패할 때 나온다. */
+const TLS_CHAIN_ERROR_CODES = new Set([
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "UNABLE_TO_GET_ISSUER_CERT",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "CERT_UNTRUSTED",
+]);
+
+/** 연결 자체가 성립하지 않은 경우 — 오프라인·DNS 실패·방화벽. */
+const NETWORK_ERROR_CODES = new Set([
+  "ENOTFOUND",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+/**
+ * 오류 객체의 `cause` 사슬을 끝까지 걸어 `code` 문자열을 모은다.
+ *
+ * ⚠️ **한 겹만 봐서는 못 잡는다.** 실측(2026-08-24): SDK가 던진 `APIConnectionError`의
+ * `.message`는 `"Connection error."`, `.cause`는 `TypeError("fetch failed")`였고, 실제 원인
+ * 코드(`SELF_SIGNED_CERT_IN_CHAIN`)는 **그 아래 한 겹 더**에 있었다. `err.cause.code`만
+ * 확인하는 구현은 이 케이스를 조용히 `unclassified`로 떨어뜨린다.
+ *
+ * 순환 참조가 있어도 멈추도록 방문 집합과 깊이 상한을 둔다.
+ */
+function collectErrorCodes(err: unknown): string[] {
+  const codes: string[] = [];
+  const seen = new Set<unknown>();
+  let current: unknown = err;
+  for (let depth = 0; depth < 8 && current !== null && current !== undefined; depth += 1) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === "string") codes.push(code);
+    current = (current as { cause?: unknown }).cause;
+  }
+  return codes;
+}
+
+/**
+ * `measurement_failed`의 원인을 분류한다(안전 원칙 6 — 진단 없는 fail-closed는 사용자를
+ * 가드 우회로 몰아간다). **판정할 수 없으면 `unclassified`이며, 그럴듯한 분류를 만들지 않는다.**
+ *
+ * 반환값은 분류 열거값뿐이다 — 오류 원문은 URL·헤더 조각을 품을 수 있어 카탈로그에 넣지 않는다.
+ */
+export function classifyMeasurementFailure(err: unknown): OccupancyFailureKind {
+  if (err instanceof Anthropic.RateLimitError) return "rate_limited";
+  const codes = collectErrorCodes(err);
+  if (codes.some((c) => TLS_CHAIN_ERROR_CODES.has(c))) return "tls_chain_untrusted";
+  if (codes.some((c) => NETWORK_ERROR_CODES.has(c))) return "network_unreachable";
+  if (err instanceof Anthropic.APIConnectionError) return "network_unreachable";
+  if (err instanceof Anthropic.APIError) return "api_error";
+  return "unclassified";
 }
 
 /**
