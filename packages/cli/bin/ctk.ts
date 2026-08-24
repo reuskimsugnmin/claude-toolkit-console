@@ -22,6 +22,9 @@ import {
   runDoctorInterruptedRestores,
   runDoctorSubagentAttribution,
   runDoctorManagedPolicy,
+  runDoctorUnlock,
+  formatUnlockReport,
+  unlockExitCode,
   formatManagedPolicyReport,
   managedPolicyExitCode,
   formatInterruptedRestoreAlert,
@@ -89,6 +92,14 @@ async function main(): Promise<void> {
           );
           console.error("");
         }
+        if (rest.includes("--unlock")) {
+          // stale 락의 **수동 회수**. 살아 있는 보유자는 거부하고, 판정 불가(다른 머신)는
+          // --force를 요구한다 — 확인 없이 부수는 도구가 아니다.
+          const report = runDoctorUnlock({ force: rest.includes("--force") });
+          console.log(formatUnlockReport(report));
+          process.exitCode = unlockExitCode(report);
+          return;
+        }
         if (rest.includes("--managed-policy")) {
           const report = runDoctorManagedPolicy();
           console.log(formatManagedPolicyReport(report));
@@ -105,7 +116,7 @@ async function main(): Promise<void> {
           console.log(`  무변경: ${drift.unchangedCount}건`);
           return;
         }
-        console.error("사용법: ctk doctor --drift | --managed-policy");
+        console.error("사용법: ctk doctor --drift | --managed-policy | --unlock [--force]");
         process.exitCode = 1;
         return;
       }
