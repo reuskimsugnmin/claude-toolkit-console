@@ -17,6 +17,27 @@ export const OccupancyReasonSchema = z.enum([
 ]);
 export type OccupancyReason = z.infer<typeof OccupancyReasonSchema>;
 
+/**
+ * `measurement_failed`의 **원인 분류**(안전 원칙 6 — fail-closed 가드에는 복구 경로와 진단을
+ * 함께 만든다). `measurement_failed`만으로는 사용자가 무엇을 고쳐야 하는지 알 수 없다 — 실제로
+ * TLS 가로채기 프록시가 있는 회선에서 크레덴셜은 멀쩡한데 Node의 번들 CA가 체인을 검증하지 못해
+ * 전 자산이 `measurement_failed`로 떨어지는 사례가 관측됐다(2026-08-24). 그때 화면이 알려준
+ * 것은 "실패"뿐이었고 원인(`SELF_SIGNED_CERT_IN_CHAIN`)은 직접 파헤쳐야 나왔다.
+ *
+ * ⚠️ **분류만 싣고 원문 메시지·값은 절대 싣지 않는다.** 오류 메시지에는 URL·헤더·토큰 조각이
+ * 섞일 수 있다(env-whitelist의 `leakedKeys`가 키 이름만 담는 것과 동형의 설계).
+ *
+ * ⚠️ **분류할 수 없으면 `unclassified`다.** 그럴듯한 분류를 지어내지 않는다(안전 원칙 7).
+ */
+export const OccupancyFailureKindSchema = z.enum([
+  "tls_chain_untrusted", // 체인 검증 실패 — 가로채기 프록시의 루트 CA가 Node 신뢰 저장소에 없음
+  "network_unreachable", // DNS/연결 실패 — 오프라인·방화벽·프록시 미도달
+  "rate_limited", // 429
+  "api_error", // 그 밖의 API 상태 코드 응답(4xx/5xx)
+  "unclassified", // 위 어디에도 해당한다고 판정할 수 없음
+]);
+export type OccupancyFailureKind = z.infer<typeof OccupancyFailureKindSchema>;
+
 const MeasuredValueSchema = z
   .object({
     state: z.literal("measured"),
@@ -31,6 +52,12 @@ const UnmeasuredValueSchema = z
     state: z.literal("unmeasured"),
     value_tokens: z.null(),
     reason: OccupancyReasonSchema,
+    /**
+     * `reason === "measurement_failed"`일 때만 채운다 — 그 외 사유는 원인이 사유 자체로 이미
+     * 확정돼 있다. **선택 필드다**: 이 필드가 생기기 전에 쌓인 스냅샷은 append-only로 남아 있고
+     * 그대로 파싱돼야 한다(옛 레코드에 없다고 해서 파싱 실패로 뒤집으면 기록이 소급 손상된다).
+     */
+    failure_kind: OccupancyFailureKindSchema.optional(),
   })
   .strict();
 

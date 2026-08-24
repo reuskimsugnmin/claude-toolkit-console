@@ -2,11 +2,12 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runInit } from "../src/commands/init.js";
 import { runScan } from "../src/commands/scan.js";
-import { runMeasure } from "../src/commands/measure.js";
-import { assessRankingQuality } from "@ctk/core";
+import { measurementFailureHint, runMeasure } from "../src/commands/measure.js";
+import { assessRankingQuality, type OccupancyValue } from "@ctk/core";
 import { runUsage } from "../src/commands/usage.js";
 import { runDoctorSubagentAttribution } from "../src/commands/doctor.js";
 import { readLocalConfig } from "../src/local-config.js";
@@ -21,8 +22,22 @@ import { resolveHomeContext, type SpawnClaudeResult } from "@ctk/probe";
  * **이 환경(테스트)에는 ANTHROPIC_API_KEY가 없다** — 실행 환경과 동일한 조건이므로
  * `--no-credentials-ok`로 실행해 AC-4.5의 3상태 열화 경로를 그대로 검증한다.
  */
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
 async function emptyPluginList(): Promise<SpawnClaudeResult> {
   return { exitCode: 0, stdout: "[]", stderr: "", timedOut: false };
+}
+
+/**
+ * 크레덴셜 부재 시드.
+ *
+ * ⚠️ **`delete process.env.ANTHROPIC_API_KEY`만으로는 더 이상 크레덴셜 부재가 재현되지 않는다.**
+ * 게이트가 SDK의 전체 해석 체인(env → `ant auth login` 프로파일 → WIF)에 위임하도록 고쳐졌으므로,
+ * `ant` 프로파일이 있는 머신에서는 env를 지워도 크레덴셜이 **있다**. env 조작에 기대면 이 테스트는
+ * 실행 머신마다 다른 결과를 내는 비결정 테스트가 된다 — 부재를 단언하려면 부재를 주입해야 한다.
+ */
+async function noCredentials(): Promise<OccupancyValue> {
+  return { state: "unmeasured", value_tokens: null, reason: "credential_missing" };
 }
 
 describe("cli — ctk measure / ctk usage 왕복 (Step 3)", () => {
@@ -136,7 +151,7 @@ describe("cli — ctk measure / ctk usage 왕복 (Step 3)", () => {
   });
 
   it("크레덴셜 없이 --no-credentials-ok로 실행하면 exit 0으로 끝나고 3상태가 unmeasured로 정직하게 남는다(AC-4.5)", async () => {
-    const summary = await runMeasure({ noCredentialsOk: true });
+    const summary = await runMeasure({ noCredentialsOk: true, countTokensFn: noCredentials });
 
     expect(summary.credentialsAvailable).toBe(false);
     expect(summary.transcriptFilesParsed).toBe(1);
@@ -197,7 +212,7 @@ describe("cli — ctk measure / ctk usage 왕복 (Step 3)", () => {
   });
 
   it("ctk usage — 크레덴셜 없는 환경에서는 순위가 비고 미측정 자산으로 노출된다(추정치로 채우지 않음)", async () => {
-    await runMeasure({ noCredentialsOk: true });
+    await runMeasure({ noCredentialsOk: true, countTokensFn: noCredentials });
     const report = runUsage({ unusedExpensive: 5 });
 
     expect(report.rows).toHaveLength(0);
@@ -211,7 +226,7 @@ describe("cli — ctk measure / ctk usage 왕복 (Step 3)", () => {
      * 남는다** — 개별 숫자는 다 맞는데 "안 쓰는데 비싼 툴"이라는 질문에는 거짓이 된다.
      * 실측(2026-08-23): 상위 3건이 전부 0토큰이고 미측정이 177건이었다.
      */
-    await runMeasure({ noCredentialsOk: true });
+    await runMeasure({ noCredentialsOk: true, countTokensFn: noCredentials });
     const report = runUsage({ unusedExpensive: 5 });
 
     expect(report.rankingQuality.is_meaningful, "측정된 자산이 없으면 순위는 결론이 아니다").toBe(false);
@@ -221,7 +236,7 @@ describe("cli — ctk measure / ctk usage 왕복 (Step 3)", () => {
   });
 
   it("판정기는 `core`의 것을 그대로 쓴다 — 두 경로가 각자 판정하면 어긋난다", async () => {
-    await runMeasure({ noCredentialsOk: true });
+    await runMeasure({ noCredentialsOk: true, countTokensFn: noCredentials });
     const report = runUsage({ unusedExpensive: 5 });
     // web 경로(`buildConsoleViewModel`)와 같은 함수를 통과한 값이어야 한다.
     expect(report.rankingQuality).toEqual(
@@ -233,11 +248,80 @@ describe("cli — ctk measure / ctk usage 왕복 (Step 3)", () => {
   });
 
   it("credential_missing 사유 없이 크레덴셜 부재 상태로 실행하면(--no-credentials-ok 없이) 거부된다(AC-4.5)", async () => {
-    await expect(runMeasure({})).rejects.toThrow(/credential/i);
+    await expect(runMeasure({ countTokensFn: noCredentials })).rejects.toThrow(/credential/i);
+  });
+
+
+  it("env에 API 키가 없어도 SDK 체인이 크레덴셜을 해석하면 게이트를 통과한다(회귀: ant 프로파일 사용자 거부)", async () => {
+    // 결함 재현: 옛 게이트는 process.env.ANTHROPIC_API_KEY만 봤다. beforeEach가 그 env를
+    // 지워 두었으므로, 체인이 해석에 성공한(=measured를 돌려주는) 시드로도 옛 게이트는 거부한다.
+    expect(process.env.ANTHROPIC_API_KEY).toBeUndefined();
+    const chainResolved = async (): Promise<OccupancyValue> => ({
+      state: "measured",
+      value_tokens: 7,
+      tokenizer_model: "claude-sonnet-5",
+      measured_at: new Date().toISOString(),
+    });
+
+    const summary = await runMeasure({ countTokensFn: chainResolved });
+
+    expect(summary.credentialsAvailable).toBe(true);
+    expect(summary.credentialProbeFailureKind).toBeNull();
+  });
+
+  it("크레덴셜은 있는데 측정이 실패하면 거부하지 않고 원인 분류를 실어 통과시킨다(안전 원칙 7 — 없음 vs 실패)", async () => {
+    const tlsFailure = async (): Promise<OccupancyValue> => ({
+      state: "unmeasured",
+      value_tokens: null,
+      reason: "measurement_failed",
+      failure_kind: "tls_chain_untrusted",
+    });
+
+    // --no-credentials-ok 없이도 거부되지 않아야 한다 — 크레덴셜 부재가 아니기 때문이다.
+    const summary = await runMeasure({ countTokensFn: tlsFailure });
+
+    expect(summary.credentialsAvailable).toBe(true);
+    expect(summary.credentialProbeFailureKind).toBe("tls_chain_untrusted");
+  });
+
+  it("진단 안내는 모든 분류에 대해 비어 있지 않다(복구 경로 없는 fail-closed 방지)", () => {
+    const kinds = ["tls_chain_untrusted", "network_unreachable", "rate_limited", "api_error", "unclassified"] as const;
+    for (const kind of kinds) {
+      expect(measurementFailureHint(kind).length).toBeGreaterThan(10);
+    }
+  });
+
+
+  it("measure의 count_tokens 호출은 전부 주입 시드를 탄다(배선 누락 회귀 — 소스 단위 게이트)", () => {
+    // 항목이 아니라 **범위**로 닫는다(안전 원칙 5). 이 게이트가 없으면 새 측정 경로가 추가될 때
+    // 또 한 자리가 빠지고, 그 테스트는 크레덴셜을 주입해 놓고도 조용히 실제 네트워크를 탄다.
+    // 실제로 그렇게 새어 있었다: token_sum(AC-4.3) 경로가 배선에서 빠져 같은 테스트가 회선
+    // 상태에 따라 0 또는 17을 냈다.
+    const src = readFileSync(
+      path.join(repoRoot, "packages", "cli", "src", "commands", "measure.ts"),
+      "utf8",
+    );
+    // `countTokensMeasured`가 등장해도 되는 곳은 import·타입 위치·기본값 지정뿐이다.
+    const allowed = [
+      'import {',
+      "countTokensFn?: typeof countTokensMeasured;",
+      "countTokensFn: typeof countTokensMeasured,",
+      "options.countTokensFn ?? countTokensMeasured;",
+      "기본값은 실제 `countTokensMeasured`다",
+    ];
+    const offending = src
+      .split("\n")
+      .map((line, i) => ({ line: line.trim(), no: i + 1 }))
+      .filter(({ line }) => line.includes("countTokensMeasured"))
+      .filter(({ line }) => !allowed.some((a) => line.includes(a)))
+      // import 블록의 나열 줄(`  countTokensMeasured,`)은 허용한다.
+      .filter(({ line }) => line !== "countTokensMeasured,");
+
+    expect(offending).toEqual([]);
   });
 
   it("ctk doctor — R17 괴리가 있으면 run-log를 읽어 노출한다(수용 기준: subagent_attribution:unresolved + doctor 노출)", async () => {
-    await runMeasure({ noCredentialsOk: true });
+    await runMeasure({ noCredentialsOk: true, countTokensFn: noCredentials });
     const report = runDoctorSubagentAttribution();
     expect(report).not.toBeNull();
     expect(report?.agentToolUseCount).toBe(1);

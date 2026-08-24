@@ -1,9 +1,15 @@
 ---
 name: toolkit-search
-description: 이 로컬에 설치된 Claude Code 툴(플러그인·스킬·MCP·CLI) 중 지금 상황에 맞는 것을 찾고 그 사용법과 스폰 방법을 확인할 때 사용한다.
+description: Find installed Claude Code tools (plugins, skills, MCP, CLI) for the current task and how to invoke them.
 ---
 
 # 툴 카탈로그 검색
+
+> **왜 `description`만 영어인가**(2026-08-24 실측 결정). 이 한 줄은 **모든 세션에 상시 로드**되는
+> 유일한 부분이라 AC-3.1이 토큰 상한(60)을 건다. 같은 내용을 한국어로 쓰면 **89토큰**이고
+> 영어로 쓰면 **36토큰**이다 — 문자당 약 2.9배 차이라 한국어로는 상한 안에서 유형 열거
+> (플러그인·스킬·MCP·CLI)까지 담을 수 없었다. 본문은 상시 로드되지 않으므로 한국어를 유지한다.
+> **되돌리기 전에 `ctk verify ac3`으로 상한을 다시 재라.**
 
 `ctk`가 만든 로컬 카탈로그에서 지금 작업에 맞는 툴을 찾고, 그 툴을 실제로 부르는 법까지
 확인한다. 카탈로그는 마크다운과 JSON이므로 **Read와 Grep으로 직접 읽는다** — 별도의 도구나
