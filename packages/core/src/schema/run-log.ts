@@ -71,6 +71,25 @@ export const GenCostSchema = z
   .strict();
 export type GenCost = z.infer<typeof GenCostSchema>;
 
+/**
+ * 허용 도메인 밖 링크를 **제거한** 집계(보안 심사 M1). 거부에서 제거로 바꾸면서 만들었다.
+ *
+ * ⚠️ **`injection_findings.url`과 다른 축이다.** 제거를 도입한 뒤로 통과한 문서의
+ * `injection_findings.url`은 **구조적으로 항상 0**이다(URL 규칙이 제거본만 보므로). 그 필드만
+ * 남기면 "URL 문제가 사라졌다"로 읽히고 실제로 무엇을 몇 건 지웠는지는 어디에도 없다 —
+ * 이 저장소가 반복해서 경계한 "조용히 지움"과 "항상 같은 값인 신호는 신호가 아니다"가 겹친다.
+ *
+ * 제거를 도입하면서 제거 기록을 안 남기면 **다음에 이 결정을 재검토할 근거 자체가 없어진다.**
+ * `hosts`는 호스트만 담는다 — 전체 URL은 경로에 토큰이 섞일 수 있어 담지 않는다.
+ */
+export const UrlScrubSchema = z
+  .object({
+    removed: z.number().int().nonnegative(),
+    hosts: z.array(z.string().min(1)),
+  })
+  .strict();
+export type UrlScrub = z.infer<typeof UrlScrubSchema>;
+
 export const RunLogEntrySchema = z
   .object({
     schema_version: schemaVersion,
@@ -94,6 +113,8 @@ export const RunLogEntrySchema = z
     injection_findings: InjectionFindingsSchema.optional(),
     /** 실측 비용 (gen 실행에만 존재). 다음 실행의 견적이 이 값을 근거로 범위를 보여준다. */
     gen_cost: GenCostSchema.optional(),
+    /** 제거한 링크 집계 (gen 실행에만 존재). `injection_findings.url`과 **다른 축**이다. */
+    url_scrub: UrlScrubSchema.optional(),
   })
   .strict();
 

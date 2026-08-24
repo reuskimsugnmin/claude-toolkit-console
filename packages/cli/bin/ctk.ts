@@ -369,6 +369,14 @@ async function main(): Promise<void> {
         console.log(
           `  인젝션 후검증 — 지시문 ${inj.directive} · 실행명령 ${inj.executable} · URL ${inj.url} · 길이 ${inj.length}`,
         );
+        // 제거한 링크를 요약에도 남긴다 — 자산별 경고는 스크롤에 묻힌다.
+        if (summary.urlScrub.removed > 0) {
+          // 개수가 아니라 **호스트를 보여준다**(심사 M1) — 개수만으로는 사용자가 판단할 수 없다.
+          console.log(
+            `  ℹ️ 허용 도메인 밖 링크 ${summary.urlScrub.removed}건 제거 — 문서는 저장됐고 링크만 빠졌다`,
+          );
+          console.log(`     호스트: ${summary.urlScrub.hosts.join(", ")}`);
+        }
         // 실제로 나간 돈을 남긴다 — 지난 배치는 끝나고도 실지출을 알 수 없었다(견적만 있었다).
         console.log(`  ${describeActualCost(summary.cost)}`);
         console.log(`  인덱스: ${summary.indexPath}`);
