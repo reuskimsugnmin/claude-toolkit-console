@@ -166,7 +166,15 @@ export interface UrlScrubResult {
   text: string;
   /** 제거한 URL 수(중복 포함). 0이면 원문 그대로다. */
   removed: number;
-  /** 제거한 URL의 **호스트**만 중복 없이. 전체 URL은 담지 않는다 — 경로에 토큰이 섞일 수 있다. */
+  /**
+   * 제거한 URL의 **호스트**만 중복 없이. 전체 URL은 담지 않는다 — 경로에 토큰이 섞일 수 있다.
+   *
+   * 보고용으로 **후행 점을 떼고 소문자화**한다. 문장 끝 마침표가 호스트에 빨려 들어가
+   * `x.example`과 `x.example.`이 서로 다른 호스트로 두 번 실리는 것이 실측됐다(2026-08-24).
+   * ⚠️ **정규화는 표시에만 적용하고 허용목록 판정에는 쓰지 않는다** — 판정 쪽을 건드리면
+   * 방금 보안 심사를 통과한 fail-closed 동작이 바뀐다. 남은 코퍼스에 후행 점 호스트가 0건이라
+   * 판정을 느슨하게 할 이유도 없다(재보고 판단했다).
+   */
   removedHosts: string[];
 }
 
@@ -198,7 +206,8 @@ export function scrubOutOfWhitelistUrls(
   const scrubbed = text.replace(URL_PATTERN, (url, host: unknown) => {
     if (typeof host !== "string" || isDomainAllowed(host, allowedDomains)) return url;
     removed += 1;
-    removedHosts.add(host.toLowerCase());
+    // 판정은 원래 호스트로 이미 끝났다(`isDomainAllowed`). 여기서는 **표시용**으로만 다듬는다.
+    removedHosts.add(host.toLowerCase().replace(/\.+$/, ""));
     return REMOVED_URL_MARKER;
   });
   return { text: scrubbed, removed, removedHosts: [...removedHosts] };

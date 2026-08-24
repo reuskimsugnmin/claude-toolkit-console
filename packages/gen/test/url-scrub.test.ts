@@ -129,6 +129,21 @@ describe("URL 패턴이 닫은 세 구멍 — 전부 카탈로그에 남으면 �
     expect((r.text.match(/`/g) ?? []).length, "백틱 짝이 깨졌다").toBe(2);
   });
 
+  it("문장 끝 마침표가 호스트를 둘로 갈라놓지 않는다 (표시용 정규화)", () => {
+    const r = scrubOutOfWhitelistUrls("문서는 https://x.example. 참고, 또 https://x.example 참고");
+    expect(r.removed).toBe(2);
+    expect(r.removedHosts, "같은 호스트가 두 번 실렸다").toEqual(["x.example"]);
+  });
+
+  it("⚠️ 정규화는 표시에만 쓴다 — 허용목록 판정은 그대로다(심사 통과 동작 유지)", () => {
+    // `github.com.`은 여전히 제거 대상이다. 판정을 느슨하게 하지 않았다.
+    expect(scrubOutOfWhitelistUrls("링크: https://github.com.").removed).toBe(1);
+    // 접미 위장은 당연히 제거 대상이다.
+    expect(scrubOutOfWhitelistUrls("링크: https://github.com.evil.tld/a").removed).toBe(1);
+    // 점 없는 허용 도메인은 그대로 남는다.
+    expect(scrubOutOfWhitelistUrls("링크: https://github.com/a").removed).toBe(0);
+  });
+
   it("허용 도메인은 세 형태 모두에서 그대로 남는다 — 강화가 오탐이 되면 안 된다", () => {
     for (const t of ["https://github.com/a", "HTTPS://GITHUB.COM/a", "https://user@github.com/a"]) {
       expect(scrubOutOfWhitelistUrls(t).removed, t).toBe(0);
