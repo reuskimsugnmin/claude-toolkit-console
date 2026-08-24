@@ -520,3 +520,78 @@ P5(인용 강제)를 위반한다.** 즉 이 설계는 완전성 대신 검증�
 **스킬 경로**(자연어 트리거로 발동하는 자산)는 재지 않았다. 플러그인 스킬이 이미 로드된
 세션에서는 컨텍스트가 섞여 판정이 흐려지기 때문이다 — 새 세션에서 별도로 재야 한다.
 AC-3.5는 **플러그인 경로에서만 통과**했다고 적는다(안전 원칙 7).
+
+---
+
+## count_tokens 크레덴셜은 `ANTHROPIC_API_KEY`가 아니다 (2026-08-24 실측)
+
+`@anthropic-ai/sdk`는 크레덴셜을 **네 단계로 해석**한다 — `ANTHROPIC_API_KEY` →
+`ANTHROPIC_AUTH_TOKEN` → `ant auth login` 프로파일 → Workload Identity Federation.
+따라서 **env 하나만 보고 "크레덴셜 없음"으로 판정하면 틀린다.**
+
+`claude` CLI의 구독(claude.ai) OAuth와는 **별개 표면이다.** 실측 확인:
+
+| | 인증 주체 | 표면 |
+|---|---|---|
+| `ctk measure` (Node SDK) | env · `ant` 프로파일 · WIF | `platform.claude.com` (Console API) |
+| `ctk gen` (`claude -p`) | macOS 키체인 OAuth | `claude.ai` 구독 |
+
+### `ant auth login`은 `claude`의 인증을 빼앗지 않았다
+
+공식 문서는 "Claude Code may warn about an auth conflict"라고 경고하지만, **이 조합에서는
+재현되지 않았다.** `ant auth login --profile <name>`이 활성 프로파일로 승격된 뒤에도
+`claude auth status --json`은 4개 필드가 전부 그대로였다(`loggedIn` · `authMethod:"claude.ai"` ·
+`apiProvider:"firstParty"` · `subscriptionType`), org id도 구독 조직 그대로였다.
+
+**관측 방법**: 로그인 **전에** `claude auth status --json`으로 베이스라인을 뜨고 로그인 직후
+대조한다. 대조군 없이는 "바뀌지 않았다"를 말할 수 없다.
+
+### 커밋 없이 계정을 탐침하는 법
+
+`ant auth login --no-browser`는 authorize URL을 출력하고 코드를 기다린다. **코드를 되돌려주기
+전까지 로컬에 아무것도 쓰지 않는다** — 실측으로 `~/.config/anthropic`에 파일 0건을 확인했다.
+"Creating profile" 메시지가 떠도 영속되지 않는다. 계정에 API 조직이 있는지만 확인하고 싶을 때
+쓸 수 있다.
+
+⚠️ `ant auth status`는 **로그인 전에는 계정을 볼 수 없다** — Organization이 "Derived from
+credential (server-side)"로 나온다. 로컬 프로파일 설정 상태만 보고하므로 "이 계정에 API 접근이
+있나"의 판정 근거가 되지 못한다(**가드와 그 가드가 검사할 값이 다른 축이었던 사례**).
+
+### macOS 설치 함정
+
+`brew install anthropics/tap/ant` 직후 실행하면 Gatekeeper 격리로 **SIGKILL(exit 137)** 이
+나고 stdout·stderr 모두 비어 있다. `xattr -d com.apple.quarantine <caskroom 실경로>`가 필요하다
+(공식 설치 절차에 포함). **출력이 전혀 없으면 종료 코드부터 본다** — 137은 "명령이 조용히
+실패"가 아니라 "커널이 죽였다"다.
+
+## TLS 가로채기 회선에서 Node SDK가 실패한다 (2026-08-24 실측)
+
+기업 네트워크의 TLS 가로채기 프록시가 있는 회선에서 `@anthropic-ai/sdk` 호출이
+`APIConnectionError: Connection error.`로 실패한다. 원인은 `SELF_SIGNED_CERT_IN_CHAIN`이다 —
+프록시의 루트 CA는 **macOS 키체인에 있지만 Node의 번들 CA 저장소에는 없다.**
+
+**Go로 작성된 `ant` CLI는 같은 회선에서 정상 동작한다**(시스템 신뢰 저장소를 쓴다).
+따라서 "`ant`는 되는데 `ctk measure`는 안 된다"가 크레덴셜 문제로 오독되기 쉽다.
+
+- **판별**: `openssl s_client -connect api.anthropic.com:443` 의 발급자(`i:`)가 공인 CA가
+  아니면 가로채기 회선이다. `curl`도 exit 60으로 함께 실패한다
+- **해결**: 루트 CA를 PEM으로 내보내 `NODE_EXTRA_CA_CERTS`로 지정한다.
+  **`NODE_TLS_REJECT_UNAUTHORIZED=0`을 쓰지 않는다** — 검증을 끄는 것과 신뢰 CA를 하나
+  추가하는 것은 다르다
+- **오류 형태**: 원인 코드는 `err.cause.code`가 아니라 **두 겹 아래**에 있다 —
+  `APIConnectionError("Connection error.")` → `TypeError("fetch failed")` → `{code}`.
+  한 겹만 보는 분류기는 이 케이스를 조용히 놓친다
+
+## 한국어 텍스트의 토큰 단가 (2026-08-24 실측, `claude-sonnet-4-5-20250929`)
+
+| 텍스트 | 문자 | 토큰 | 문자당 |
+|---|---|---|---|
+| 한국어 설명문 | 84자 | 89 | 1.06 |
+| 같은 뜻의 영어 | 105자 | 36 | 0.34 |
+
+**한국어가 문자당 약 3배의 토큰을 쓴다.** 상시 로드되는 텍스트(스킬 `description`,
+에이전트 지시문)에 토큰 상한이 걸려 있으면 **언어 선택이 곧 예산 문제**가 된다 —
+`toolkit-search`의 AC-3.1(상한 60)이 한국어로는 물리적으로 빠듯했고 영어로 바꾸자
+89 → 36으로 떨어지면서 정보량은 오히려 늘었다.
+
+**본문에는 해당하지 않는다** — 상시 로드되지 않는 텍스트는 이 제약을 받지 않는다.
