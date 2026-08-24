@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { ConsoleViewModel } from "@ctk/core";
+import { describeAssetDocState } from "@ctk/core";
+import type { AssetDocState, ConsoleViewModel } from "@ctk/core";
 import { buildUiPage } from "./ui-page.js";
 import { handleActionRequest, type ActionRouteDeps } from "./routes/actions.js";
 import { checkLoopbackHost } from "./origin-guard.js";
@@ -29,6 +30,14 @@ export interface ReadonlyRouteDeps {
   /** 자산 문서 본문. 자산이 없거나 문서가 없으면 `null` — 빈 문자열과 구분한다. */
   getAssetDoc: (assetId: string, which: AssetDocKind) => string | null;
   /**
+   * "문서가 왜 없는가"의 판정. 자산 자체가 없으면 `null`.
+   *
+   * ⚠️ **선택 필드로 두지 않는다.** 선택이면 배선을 빠뜨려도 컴파일이 통과하고 화면은 조용히
+   * 옛 "문서가 아직 생성되지 않았다" 한 문장으로 되돌아간다 — 이 저장소에서 반복해 나온
+   * 배선 누락이 정확히 그렇게 생겼다. 필수로 두면 새 호출자가 **컴파일 단계에서** 걸린다.
+   */
+  getAssetDocState: (assetId: string) => AssetDocState | null;
+  /**
    * 액션 모드에서만 채워진다. **`undefined`면 `/actions`는 라우트로 존재하지 않는다** —
    * 조회 모드에서 "핸들러가 없으니 403"이 아니라 **경로 자체가 없어야** 6a의 전제
    * (쓰기 경로가 하나도 없다 ⇒ 토큰·CSRF 불요)가 구조적으로 유지된다.
@@ -49,7 +58,7 @@ export function isAllowedMethod(method: string | undefined): boolean {
 }
 
 interface RouteMatch {
-  kind: "ui" | "view-model" | "assets" | "usage" | "health" | "asset-doc" | "actions" | "not-found";
+  kind: "ui" | "view-model" | "assets" | "usage" | "health" | "asset-doc" | "asset-doc-state" | "actions" | "not-found";
   assetId?: string;
   doc?: AssetDocKind;
 }
@@ -83,6 +92,18 @@ export function matchRoute(pathname: string): RouteMatch {
     }
     if (assetId.length === 0) return { kind: "not-found" };
     return { kind: "asset-doc", assetId, doc: which };
+  }
+
+  // /api/assets/<assetId>/doc-state
+  if (rest.length === 3 && rest[0] === "assets" && rest[2] === "doc-state") {
+    let assetId: string;
+    try {
+      assetId = decodeURIComponent(rest[1] ?? "");
+    } catch {
+      return { kind: "not-found" };
+    }
+    if (assetId.length === 0) return { kind: "not-found" };
+    return { kind: "asset-doc-state", assetId };
   }
 
   return { kind: "not-found" };
@@ -199,6 +220,17 @@ export function handleReadonlyRequest(req: IncomingMessage, res: ServerResponse,
         return;
       }
       sendText(res, 200, body, isHead);
+      return;
+    }
+    case "asset-doc-state": {
+      const state = deps.getAssetDocState(route.assetId ?? "");
+      if (state === null) {
+        sendJson(res, 404, { error: "not_found" }, isHead);
+        return;
+      }
+      // 표시 문구도 **서버가** 만든다. 브라우저 스크립트가 사유별 문구를 따로 조립하면
+      // 판정이 둘로 갈리고, 그 드리프트는 화면에서만 보인다(테스트가 못 잡는 자리다).
+      sendJson(res, 200, { state, display: describeAssetDocState(state) }, isHead);
       return;
     }
     case "actions":

@@ -42,18 +42,20 @@ function makeHandlers(overrides: Partial<ActionHandlers> = {}): ActionHandlers {
 }
 
 async function startReadonly(): Promise<ListeningServer> {
-  running = await startReadonlyServer({ getViewModel: () => VIEW_MODEL, getAssetDoc: () => null });
+  running = await startReadonlyServer({ getViewModel: () => VIEW_MODEL, getAssetDoc: () => null, getAssetDocState: () => null });
   return running;
 }
 
 /** 액션 모드 서버는 포트를 알아야 관문을 만들 수 있다 — 포트를 먼저 잡고 다시 만든다. */
 async function startBoundActions(handlers: ActionHandlers = makeHandlers()): Promise<ListeningServer> {
-  const probe = await startReadonlyServer({ getViewModel: () => VIEW_MODEL, getAssetDoc: () => null, port: 0 });
+  const probe = await startReadonlyServer({ getViewModel: () => VIEW_MODEL, getAssetDoc: () => null,
+      getAssetDocState: () => null, port: 0 });
   const port = probe.port;
   await probe.close();
   running = await startReadonlyServer({
     getViewModel: () => VIEW_MODEL,
     getAssetDoc: () => null,
+      getAssetDocState: () => null,
     port,
     actions: { guard: { sessionToken: TOKEN, port }, handlers },
   });
