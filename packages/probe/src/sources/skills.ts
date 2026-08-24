@@ -76,11 +76,37 @@ function readSkillDir(skillsRootAbs: string, scope: "user" | "project", projectP
  * (추정으로 채우지 않는다, CLAUDE.md 안전 원칙과 동형).
  */
 export function findSkillDirsById(home: HomeContext, assetId: string): DiscoveredSkill[] {
-  const discovered: DiscoveredSkill[] = [...readSkillDir(path.join(home.ctkConfigDir, "skills"), "user", null)];
-  for (const projectPath of listKnownProjectPaths(home)) {
-    discovered.push(...readSkillDir(path.join(projectPath, ".claude", "skills"), "project", projectPath));
+  const discovered: DiscoveredSkill[] = [];
+  for (const root of skillsRoots(home)) {
+    discovered.push(...readSkillDir(root.path, root.scope, root.projectPath));
   }
   return discovered.filter((d) => d.id === assetId);
+}
+
+/**
+ * 스킬을 **발견하는 루트 전부**. 이 목록이 유일한 출처다.
+ *
+ * ⚠️ **발견 루트와 봉쇄 루트는 같은 목록에서 나와야 한다**(보안 심사 M-4). `gen`이 심볼릭 링크를
+ * 조건부로 허용할 때 쓰는 봉쇄 루트가 이 목록과 어긋나면 두 결과 중 하나가 난다 — 발견은 되는데
+ * 링크가 거부되거나(가용성 손실), 봉쇄가 발견 범위를 넘어선다(경계 손실). 실제로 봉쇄를 처음
+ * 넣을 때 user 스코프 하나만 배선해 **프로젝트 스코프 스킬의 링크가 전부 거부됐다.**
+ * 여기서 루트를 늘리면 봉쇄도 자동으로 따라온다.
+ */
+export interface SkillsRoot {
+  path: string;
+  scope: "user" | "project";
+  projectPath: string | null;
+}
+
+export function skillsRoots(home: HomeContext): SkillsRoot[] {
+  return [
+    { path: path.join(home.ctkConfigDir, "skills"), scope: "user", projectPath: null },
+    ...listKnownProjectPaths(home).map((projectPath) => ({
+      path: path.join(projectPath, ".claude", "skills"),
+      scope: "project" as const,
+      projectPath,
+    })),
+  ];
 }
 
 export interface CollectSkillsOptions {
@@ -91,11 +117,9 @@ export interface CollectSkillsOptions {
 export function collectSkills(options: CollectSkillsOptions): SkillSourceResult {
   const { home, machineId } = options;
 
-  const discovered: DiscoveredSkill[] = [
-    ...readSkillDir(path.join(home.ctkConfigDir, "skills"), "user", null),
-  ];
-  for (const projectPath of listKnownProjectPaths(home)) {
-    discovered.push(...readSkillDir(path.join(projectPath, ".claude", "skills"), "project", projectPath));
+  const discovered: DiscoveredSkill[] = [];
+  for (const root of skillsRoots(home)) {
+    discovered.push(...readSkillDir(root.path, root.scope, root.projectPath));
   }
 
   const assetById = new Map<string, Asset>();

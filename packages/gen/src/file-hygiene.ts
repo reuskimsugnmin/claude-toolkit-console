@@ -114,14 +114,99 @@ export class AssetSourceMissingError extends FileHygieneError {
   }
 }
 
+/**
+ * 심볼릭 링크를 **조건부로** 허용하기 위한 봉쇄 루트.
+ *
+ * ⚠️ **화이트리스트가 아니라 봉쇄 조건이다.** `realpathSync`가 `..`·중첩 링크를 모두 해소한
+ * **뒤에** 판정하므로 그 축의 경로 조작으로는 빠져나갈 수 없다. 루트를 지정하지 않으면
+ * 심볼릭 링크는 **전부 거부**된다(기존 동작).
+ *
+ * ⚠️ **막지 못하는 것을 정확히 적는다**(보안 심사 M-1·M-3):
+ * - **TOCTOU** — 검사(`lstat`·`realpath`·`stat`)와 `readFileSync`가 경로를 각각 해소하므로
+ *   그 사이에 링크가 바뀌면 검사와 다른 파일을 읽는다. 실측 우회율 **11%**(선재 결함이지만
+ *   링크를 허용하면서 창이 넓어졌다). 닫으려면 fd를 한 번 열어 `fstat`+`fd 읽기`로 묶어야 한다.
+ * - **하드 링크** — `realpathSync`는 하드 링크를 되짚지 않는다. 봉쇄 안에 만든 하드 링크는
+ *   대상이 밖이어도 통과한다. 이것은 봉쇄 도입 **이전에도** 통과하던 경로다.
+ *
+ * 즉 "원래 우려가 완전히 막힌다"는 **심볼릭 링크에 한해서만** 참이다.
+ *
+ * **왜 필요한가**(2026-08-24 실측). 이 환경의 위생 거부 54건이 전부 스킬이었고, 링크 대상이
+ * **100% `<configDir>/skills/` 안**이었다 — 툴 하나가 자기 스킬 81개를 한 디렉터리에 두고 각각을
+ * 최상위로 링크하는 설치 방식이었다. 링크를 일률 거부하니 **자산의 30%가 영영 문서를 못 만들었다.**
+ *
+ * ⚠️ **봉쇄 루트를 넓히지 마라.** `<configDir>` 전체로 넓히면 `.credentials.json`·`settings.json`
+ * 이 사정권에 들어온다. 실측상 필요도 없다 — 54건 전부 `skills/` 안이다.
+ */
+export interface AssetSourceHygieneOptions {
+  /**
+   * 지정하면 realpath가 **이 루트들 중 하나** 안에 있고 **파일명이 같은** 심볼릭 링크만 따라간다.
+   * 미지정이거나 빈 배열이면 링크는 전부 거부된다(fail-closed).
+   *
+   * ⚠️ **목록이어야 한다**(심사 M-2). 스킬 발견 루트는 user 스코프 하나가 아니라 프로젝트마다
+   * 하나씩 더 있다. 처음엔 user 루트 하나만 넘겨 **프로젝트 스코프 스킬의 링크가 전부 거부**됐다.
+   */
+  symlinkContainmentRoots?: readonly string[];
+}
+
+/**
+ * 심볼릭 링크를 봉쇄 루트 안으로 한정해 허용한다. **두 축을 함께 본다.**
+ *
+ * ① **위치** — 해소된 realpath가 봉쇄 루트 중 하나 안이어야 한다.
+ * ② **이름** — 해소된 대상의 파일명이 링크 자신의 파일명과 같아야 한다(심사 H-1).
+ *
+ * ⚠️ **②가 없으면 봉쇄 루트 안의 아무 파일이나 읽힌다.** 실증: `skills/evil/SKILL.md`를
+ * `skills/victim/.env`나 `skills/.git/config`로 링크하면 그 내용이 카탈로그 문서에 박혀 저장소로
+ * 동기화됐다. 도트파일 관리자가 `skills/`를 git 저장소로 심는 배치는 흔하고, 그 `.git/config`의
+ * remote URL에는 토큰이 들어 있을 수 있다. 링크를 허용하기 **전에는 공집합**이던 위험이다.
+ *
+ * ②의 대가는 실측으로 0이다 — 이 환경의 심볼릭 링크 SKILL.md **55건의 대상 basename이 100%
+ * `SKILL.md`**였다. 허용하려는 설치 방식은 "같은 이름의 파일을 다른 자리에 심는" 것뿐이다.
+ *
+ * ⚠️ **봉쇄 루트가 없으면 거부한다(fail-closed).** 루트의 ENOENT를 원문의 ENOENT와 섞으면
+ * 가드 실패가 "원문이 사라졌다"로 오분류돼 사용자가 있지도 않은 드리프트를 조사하게 된다
+ * (심사 M-2b, 안전 원칙 7).
+ */
+function assertSymlinkWithinContainment(absPath: string, roots: readonly string[]): void {
+  if (path.basename(realpathSync(absPath)) !== path.basename(absPath)) {
+    throw new SymlinkAssetSourceRejectedError(absPath);
+  }
+  const real = realpathSync(absPath);
+  for (const root of roots) {
+    let realRoot: string;
+    try {
+      realRoot = realpathSync(root);
+    } catch {
+      continue; // 그 루트는 이 머신에 없다 — 판정 재료가 아니지 "원문 없음"이 아니다.
+    }
+    if (real === realRoot || real.startsWith(realRoot + path.sep)) return;
+  }
+  throw new SymlinkAssetSourceRejectedError(absPath);
+}
+
 export function readAssetSourceFileSafely(
   absPath: string,
   expectedRootAbs: string,
   maxBytes: number = DEFAULT_MAX_ASSET_SOURCE_BYTES,
+  options: AssetSourceHygieneOptions = {},
 ): string {
   try {
-    assertNotSymlink(absPath);
-    assertRealpathWithinRoot(absPath, expectedRootAbs);
+    const containment = options.symlinkContainmentRoots;
+    // ⚠️ **봉쇄는 교체가 아니라 추가다.** 처음엔 봉쇄 모드에서 판정 기준을 자산 루트 대신 봉쇄
+    // 루트로 **바꿨는데**, 그러자 프로젝트 스코프 스킬(`<프로젝트>/.claude/skills/...`)이 전부
+    // 걸렸다 — 그것들은 `<configDir>/skills/` 안에 있지 않다. 이미 문서가 있던 **22건이 새로
+    // 차단**되는 회귀였고, 단위 테스트 1085개가 전부 통과하는 동안 **실환경 dry-run이 잡았다**
+    // (픽스처가 전부 `skills/` 안이라 그 축이 표본에 없었다).
+    //
+    // 링크가 아닌 파일은 스코프와 무관하게 **원래 규칙 그대로**(자산 루트 안)이고, 봉쇄 루트는
+    // **링크일 때만** 추가로 열어주는 문이다.
+    if (lstatSync(absPath).isSymbolicLink()) {
+      if (containment === undefined || containment.length === 0) {
+        throw new SymlinkAssetSourceRejectedError(absPath);
+      }
+      assertSymlinkWithinContainment(absPath, containment);
+    } else {
+      assertRealpathWithinRoot(absPath, expectedRootAbs);
+    }
     assertWithinSizeLimit(absPath, maxBytes);
     return readFileSync(absPath, "utf8");
   } catch (err) {

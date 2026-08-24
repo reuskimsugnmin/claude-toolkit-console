@@ -2,8 +2,20 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import type { Asset, UnresolvedSourceReason } from "@ctk/core";
-import { findPluginInstallPath, findSkillDirsById, type HomeContext } from "@ctk/probe";
-import { readAssetSourceFileSafely } from "./file-hygiene.js";
+import { findPluginInstallPath, findSkillDirsById, skillsRoots, type HomeContext } from "@ctk/probe";
+import { DEFAULT_MAX_ASSET_SOURCE_BYTES, readAssetSourceFileSafely } from "./file-hygiene.js";
+
+/**
+ * 스킬 원본 링크의 **봉쇄 루트 목록** — `probe`의 `skillsRoots()`를 그대로 쓴다.
+ *
+ * ⚠️ **발견 루트와 봉쇄 루트가 같은 출처에서 나와야 한다**(보안 심사 M-2·M-4). 여기서 경로를
+ * 다시 조립하면 `probe`가 발견 루트를 늘렸을 때 봉쇄가 조용히 그 축을 놓친다 — 실제로 처음엔
+ * user 스코프 하나만 조립해 **프로젝트 스코프 스킬의 링크가 전부 거부**됐다. 이 함수는 조립하지
+ * 않고 **받아쓰기만** 한다.
+ */
+function skillSymlinkContainmentRoots(home: HomeContext): string[] {
+  return skillsRoots(home).map((r) => r.path);
+}
 import { type PromptEnvelopeSection } from "./prompt-envelope.js";
 
 /**
@@ -67,7 +79,13 @@ function skillSource(home: HomeContext, asset: Asset): ResolvedAssetSource {
   for (const dir of dirs) {
     const skillMdAbs = path.join(dir.absPath, "SKILL.md");
     if (!existsSync(skillMdAbs)) continue;
-    contents.push(readAssetSourceFileSafely(skillMdAbs, dir.absPath));
+    // 스킬 원본에만 봉쇄 루트를 준다 — 링크로 심는 설치 방식이 흔하고(실측 54건), 대상이
+    // 전부 이 루트 안이었다. **플러그인 경로에는 주지 않는다**(필요가 관측되지 않았다).
+    contents.push(
+      readAssetSourceFileSafely(skillMdAbs, dir.absPath, DEFAULT_MAX_ASSET_SOURCE_BYTES, {
+        symlinkContainmentRoots: skillSymlinkContainmentRoots(home),
+      }),
+    );
   }
   const first = contents[0];
   if (first === undefined) return { resolved: false, reason: "source_missing" };

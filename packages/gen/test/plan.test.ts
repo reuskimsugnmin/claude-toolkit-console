@@ -296,6 +296,115 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     expect(reason).not.toMatch(/\/[A-Za-z]/);
   });
 
+  describe("스킬 링크의 봉쇄 루트는 skills/ 하나다 — 넓히면 민감 파일이 사정권에 든다", () => {
+    /**
+     * ⚠️ **이 테스트가 막는 것은 "넓히는 변경"이다.** 파괴 실험에서 봉쇄 루트를 `<configDir>`
+     * 전체로 넓혀도 아무 테스트가 깨지지 않았다 — 그 방향이 바로 위험한 쪽인데도.
+     * `<configDir>` 안에는 `.credentials.json`·`settings.json`이 있고, 그리로 링크된 SKILL.md가
+     * 카탈로그 문서에 박혀 저장소로 동기화된다. 실측상 넓힐 필요도 없다(54건 전부 skills/ 안).
+     */
+    it("configDir 안이지만 skills/ 밖을 가리키는 링크는 거부된다", () => {
+      init();
+      // configDir 바로 아래의 민감 파일을 흉내낸다.
+      writeFileSync(path.join(home.ctkConfigDir, "credentials.json"), '{"token":"SECRET"}');
+      const dir = path.join(home.ctkConfigDir, "skills", "leaky");
+      mkdirSync(dir, { recursive: true });
+      symlinkSync(path.join(home.ctkConfigDir, "credentials.json"), path.join(dir, "SKILL.md"));
+
+      const result = planGenTargets({
+        home,
+        assets: [skillAsset("leaky")],
+        index: { schema_version: 1, assets: [] },
+      });
+      expect(result.targets, "민감 파일이 생성 대상이 됐다").toEqual([]);
+      expect(result.skipped.map((s) => s.assetId)).toEqual(["leaky"]);
+      expect(result.skipped[0]?.failureClass).toBe("path_traversal_detected");
+    });
+
+    /**
+     * ⚠️ **디렉터리 링크 축.** 위생 검사는 `SKILL.md` **파일 하나**만 본다. 스킬 디렉터리
+     * 자체가 링크이고 대상이 봉쇄 밖이면 어떻게 되는가 — 이 축을 직접 실증했다.
+     *
+     * 결과: `readSkillDir`의 `readdirSync(withFileTypes)`가 심볼릭 링크를 `isDirectory()`로
+     * 보지 않으므로(lstat 의미) `probe`가 **아예 발견하지 못한다.** 봉쇄 검사에 도달하기 전에
+     * 닫혀 있는 셈이다. 그 성질에 기대고 있으므로 여기서 고정한다 — `readSkillDir`이 나중에
+     * 링크를 따라가게 바뀌면 이 테스트가 깨져 봉쇄 검사를 디렉터리 축까지 넓혀야 함을 알린다.
+     */
+    it("스킬 디렉터리 자체가 봉쇄 밖으로 링크돼 있으면 발견되지 않는다", () => {
+      init();
+      mkdirSync(path.join(home.ctkConfigDir, "skills"), { recursive: true }); // init()은 skills/를 만들지 않는다
+      const outside = path.join(ctkHome, "outside-bundle");
+      mkdirSync(outside, { recursive: true });
+      writeFileSync(path.join(outside, "SKILL.md"), "---\nname: dirlink\ndescription: d\n---\n\n봉쇄 밖 본문\n");
+      symlinkSync(outside, path.join(home.ctkConfigDir, "skills", "dirlink"));
+
+      const result = planGenTargets({
+        home,
+        assets: [skillAsset("dirlink")],
+        index: { schema_version: 1, assets: [] },
+      });
+      expect(result.targets, "봉쇄 밖 내용이 생성 대상이 됐다").toEqual([]);
+      // 발견 자체가 안 되므로 `blocked`가 아니라 `source_missing`이다 — 두 상태의 의미가 다르다.
+      expect(result.unresolved).toEqual([{ assetId: "dirlink", reason: "source_missing" }]);
+    });
+
+    /**
+     * ⚠️ **보안 심사 M-4.** 봉쇄는 **스킬 경로에만** 준다 — 플러그인 원문(README·plugin.json)이
+     * 링크면 지금도 거부된다. 그 성질이 코드에만 있고 게이트에 없으면, 나중에 플러그인 호출에
+     * 봉쇄를 붙이는 변경이 **아무 테스트도 깨지 않고** 들어온다("가드는 호출자만큼만 강하다").
+     */
+    it("플러그인 원문이 링크면 봉쇄와 무관하게 거부된다 — 봉쇄는 스킬 경로에만 준다", () => {
+      init();
+      const installPath = path.join(ctkHome, "plugins", "demo-plugin");
+      mkdirSync(path.join(installPath, ".claude-plugin"), { recursive: true });
+      writeFileSync(path.join(installPath, ".claude-plugin", "plugin.json"), '{"name":"demo-plugin"}');
+      // README를 <configDir>/skills 안(= 스킬 봉쇄 루트 안)의 파일로 링크한다.
+      const inSkills = path.join(home.ctkConfigDir, "skills", "bait");
+      mkdirSync(inSkills, { recursive: true });
+      writeFileSync(path.join(inSkills, "README.md"), "봉쇄 안이지만 플러그인 경로다");
+      symlinkSync(path.join(inSkills, "README.md"), path.join(installPath, "README.md"));
+      // installed_plugins.json에 등재해 findPluginInstallPath가 찾게 한다.
+      mkdirSync(path.join(home.ctkConfigDir, "plugins"), { recursive: true });
+      writeFileSync(
+        path.join(home.ctkConfigDir, "plugins", "installed_plugins.json"),
+        JSON.stringify({
+          plugins: {
+            "demo-plugin": [
+              { scope: "user", installPath, version: "1.0.0", installedAt: "2026-08-24T00:00:00Z", lastUpdated: "2026-08-24T00:00:00Z" },
+            ],
+          },
+        }),
+      );
+
+      const asset: Asset = {
+        schema_version: 1, _scope: "machine_independent", id: "demo-plugin", kind: "plugin", name: "demo-plugin",
+      };
+      const result = planGenTargets({ home, assets: [asset], index: { schema_version: 1, assets: [] } });
+      expect(result.skipped.map((sk) => sk.assetId), "플러그인 링크가 통과했다").toEqual(["demo-plugin"]);
+      expect(result.skipped[0]?.failureClass).toBe("path_traversal_detected");
+    });
+
+    it("skills/ 안의 다른 스킬을 가리키는 링크는 허용된다 — 실측 54건이 이 모양이다", () => {
+      init();
+      setupSkillAt("bundle-inner", "linked-skill", "번들 본문");
+      const dir = path.join(home.ctkConfigDir, "skills", "linked-skill");
+      mkdirSync(dir, { recursive: true });
+      symlinkSync(
+        path.join(home.ctkConfigDir, "skills", "bundle-inner", "SKILL.md"),
+        path.join(dir, "SKILL.md"),
+      );
+
+      const result = planGenTargets({
+        home,
+        assets: [skillAsset("linked-skill")],
+        index: { schema_version: 1, assets: [] },
+      });
+      expect(result.skipped, "봉쇄 안의 링크가 거부됐다").toEqual([]);
+      expect(result.targets.map((t) => t.asset.id)).toEqual(["linked-skill"]);
+      expect(result.targets[0]?.sections[0]?.content).toContain("번들 본문");
+    });
+  });
+
   describe("원문을 못 구한 사유를 뭉개지 않는다 — 처방이 서로 다르다", () => {
     /**
      * ⚠️ **이것이 이 수정의 핵심이다.** `findSkillDirsById`가 2건 이상을 거부하는 근거(H6)는
