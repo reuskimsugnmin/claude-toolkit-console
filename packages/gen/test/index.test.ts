@@ -17,11 +17,12 @@ function skillAsset(id: string): Asset {
  * 픽스처가 페이로드를 그대로 stdout에 두면 프로덕션 파서를 전혀 거치지 않는 테스트가 된다 —
  * 실제로 그 상태였고, 봉투 해석 버그를 테스트가 잡지 못했다.
  */
-function envelope(payload: unknown): string {
+function envelope(payload: unknown, totalCostUsd?: number): string {
   return JSON.stringify({
     type: "result",
     subtype: "success",
     is_error: false,
+    ...(totalCostUsd === undefined ? {} : { total_cost_usd: totalCostUsd }),
     structured_output: payload,
     result: JSON.stringify(payload),
     session_id: "test-session",
@@ -30,14 +31,17 @@ function envelope(payload: unknown): string {
   });
 }
 
-const VALID_LLM_STDOUT = envelope({
+const PAYLOAD = {
   role: "문서 변환 도구 [[cite:SKILL.md#L1-L2]]",
   purpose: "PDF를 마크다운으로 바꾼다 [[cite:SKILL.md#L1-L2]]",
   when_to_use: "PDF 파일을 다뤄야 할 때 [[cite:SKILL.md#L1-L2]]",
   usage_title: "사용법",
   usage_body: "이 스킬은 PDF를 처리한다 [[cite:SKILL.md#L1-L2]]",
   citations: [{ source_ref: "SKILL.md", line_start: 1, line_end: 2 }],
-});
+};
+
+const VALID_LLM_STDOUT = envelope(PAYLOAD);
+
 
 describe("gen/index — runGen 전체 배선 (plan → 생성 → citation-check → output-verify → sync)", () => {
   let ctkHome: string;
@@ -384,4 +388,97 @@ describe("gen/index — runGen 전체 배선 (plan → 생성 → citation-check
     expect(summary.stoppedEarly).toBe(false);
   });
 
+  /**
+   * ⚠️ **집계 함수만 테스트하면 배선 결함을 못 잡는다.** `summarizeGenCost`에는 테스트가 있었는데
+   * 그것에 값을 **먹여주는 `recordCost`** 는 어느 테스트도 지나가지 않았다 — 미보고를 0으로
+   * 삼키도록 주입해도 전부 통과했다(파괴 실험으로 발견, 2026-08-24). "실행 테스트가 있다"와
+   * "이 경로가 실행된다"는 다르다(CLAUDE.md). 그래서 여기서는 `runGen`을 실제로 돌린다.
+   */
+  describe("실측 비용 집계가 runGen 배선을 타고 요약까지 도달한다", () => {
+    it("봉투에 total_cost_usd가 있으면 보고로 집계된다", async () => {
+      init();
+      setupSkill("demo-skill", "PDF를 마크다운으로 바꾼다");
+      seedCatalog(skillAsset("demo-skill"));
+      const spawnFn = async () => ({
+        exitCode: 0,
+        stdout: envelope(PAYLOAD, 0.184),
+        stderr: "",
+        timedOut: false,
+        preflightVersionMatch: "match" as const,
+      });
+
+      const summary = await runGen({
+        home, catalogRoot, assets: [skillAsset("demo-skill")], maxBudgetUsd: 0.5, timeoutSec: 30,
+        noLlm: false, verifiedCliVersion: "2.1.238", sealedCwd, interactive: true,
+        allowManagedPolicy: false, spawnFn: spawnFn as never,
+      });
+
+      expect(summary.cost.calls_reported).toBe(1);
+      expect(summary.cost.calls_unreported).toBe(0);
+      expect(summary.cost.reported_total_usd).toBeCloseTo(0.184, 10);
+      expect(summary.cost.median_usd).toBeCloseTo(0.184, 10);
+    });
+
+    it("봉투에 비용이 없으면 **미보고**로 센다 — 0원으로 더하지 않는다", async () => {
+      init();
+      setupSkill("demo-skill", "PDF를 마크다운으로 바꾼다");
+      seedCatalog(skillAsset("demo-skill"));
+      const spawnFn = async () => ({
+        exitCode: 0,
+        stdout: envelope(PAYLOAD), // total_cost_usd 없음
+        stderr: "",
+        timedOut: false,
+        preflightVersionMatch: "match" as const,
+      });
+
+      const summary = await runGen({
+        home, catalogRoot, assets: [skillAsset("demo-skill")], maxBudgetUsd: 0.5, timeoutSec: 30,
+        noLlm: false, verifiedCliVersion: "2.1.238", sealedCwd, interactive: true,
+        allowManagedPolicy: false, spawnFn: spawnFn as never,
+      });
+
+      // ⚠️ 이 두 줄이 파괴 실험 ①(미보고를 0으로 삼킴)을 잡는 자리다.
+      expect(summary.cost.calls_reported).toBe(0);
+      expect(summary.cost.calls_unreported).toBe(1);
+      expect(summary.cost.median_usd).toBeNull();
+    });
+
+    it("실패한 호출의 비용도 집계된다 — 실패에 든 돈도 실지출이다", async () => {
+      init();
+      setupSkill("demo-skill", "PDF를 마크다운으로 바꾼다");
+      seedCatalog(skillAsset("demo-skill"));
+      // 실측 형태: exitCode=1 · stderr 비어 있음 · stdout에 is_error와 비용이 실려 온다.
+      const spawnFn = async () => ({
+        exitCode: 1,
+        stdout: JSON.stringify({ is_error: true, total_cost_usd: 0.406, stop_reason: "tool_use" }),
+        stderr: "",
+        timedOut: false,
+        preflightVersionMatch: "match" as const,
+      });
+
+      const summary = await runGen({
+        home, catalogRoot, assets: [skillAsset("demo-skill")], maxBudgetUsd: 0.5, timeoutSec: 30,
+        noLlm: false, verifiedCliVersion: "2.1.238", sealedCwd, interactive: true,
+        allowManagedPolicy: false, spawnFn: spawnFn as never,
+      });
+
+      expect(summary.results[0]?.reason).toBe("call_failed");
+      expect(summary.cost.calls_reported).toBe(1);
+      expect(summary.cost.reported_total_usd).toBeCloseTo(0.406, 10);
+    });
+
+    it("--no-llm은 호출이 없으므로 보고도 미보고도 0이다", async () => {
+      init();
+      setupSkill("demo-skill", "PDF를 마크다운으로 바꾼다");
+      seedCatalog(skillAsset("demo-skill"));
+      const summary = await runGen({
+        home, catalogRoot, assets: [skillAsset("demo-skill")], maxBudgetUsd: 0.5, timeoutSec: 30,
+        noLlm: true, verifiedCliVersion: "2.1.238", sealedCwd, interactive: true,
+        allowManagedPolicy: false, spawnFn: (async () => ({ exitCode: 0, stdout: "{}", stderr: "", timedOut: false })) as never,
+      });
+      expect(summary.cost).toEqual({
+        calls_reported: 0, calls_unreported: 0, reported_total_usd: 0, median_usd: null, max_usd: null,
+      });
+    });
+  });
 });

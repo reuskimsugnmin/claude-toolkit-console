@@ -9,6 +9,7 @@ import {
   decideManagedPolicyGate,
   type Asset,
   type ManagedPolicyGrade,
+  type GenCost,
 } from "@ctk/core";
 import { spawnClaude, type HomeContext } from "@ctk/probe";
 import {
@@ -116,7 +117,29 @@ export interface RunGenSummary {
     /** `--allow-concurrent-sessions`로 위반을 눈감은 자산 수. 0이 아니면 그 실행의 config 감사는 무력했다. */
     concurrencyOverrides: number;
   };
+  /**
+   * **실측 비용.** 사전 견적으로는 알 수 없다 — 견적은 입력 토큰만 계산해 실제의 약 1/20을
+   * 표시하고 있었고(2026-08-24 실측), 그 숫자 위에서 승인이 이뤄졌다. 다음 실행의 견적이
+   * 이 값을 근거로 범위를 보여준다.
+   *
+   * ⚠️ `callsUnreported > 0`이면 `reportedTotalUsd`는 총액이 아니라 **하한**이다.
+   */
+  cost: GenCost;
   indexPath: string;
+}
+
+/** 보고된 호출 비용들로 `GenCost`를 만든다. **보고가 0건이면 중앙값·최대값은 null이다.** */
+export function summarizeGenCost(reportedUsd: readonly number[], unreportedCalls: number): GenCost {
+  const sorted = [...reportedUsd].sort((a, b) => a - b);
+  const mid = sorted[Math.floor(sorted.length / 2)];
+  const max = sorted[sorted.length - 1];
+  return {
+    calls_reported: sorted.length,
+    calls_unreported: unreportedCalls,
+    reported_total_usd: sorted.reduce((sum, v) => sum + v, 0),
+    median_usd: mid ?? null,
+    max_usd: max ?? null,
+  };
 }
 
 export interface RunGenOptions {
@@ -207,6 +230,13 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
   let stoppedEarly = false;
   let treeCache: Parameters<typeof captureConfigDirSnapshot>[1];
   // 통과한 실행에서도 남긴다(보안 재심 M3) — 제외가 몇 건이었는지 로그가 볼 수 있어야 한다.
+  // 실측 비용 집계. **보고된 값만 모은다** — 미보고를 0으로 더하면 총액이 조용히 낮아진다.
+  const reportedCostsUsd: number[] = [];
+  let costUnreportedCalls = 0;
+  const recordCost = (usd: number | null): void => {
+    if (usd === null) costUnreportedCalls += 1;
+    else reportedCostsUsd.push(usd);
+  };
   let sessionOwnedExcludedTotal = 0;
   let concurrencyOverridesTotal = 0;
 
@@ -233,6 +263,7 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
           now,
           spawnFn,
         });
+        recordCost(llmResult.reportedCostUsd);
         const after = captureConfigDirSnapshot(home.ctkConfigDir, before.cache);
         treeCache = after.cache;
         const audit = auditSealedLiveConfigDir(home.ctkConfigDir, before, after, claudeJsonBefore, {
@@ -261,6 +292,8 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
         break;
       }
       if (err instanceof ClaudePCallFailedError) {
+        // 실패한 호출에 든 돈도 실지출이다 — 빼면 보고 총액이 실제보다 낮아진다.
+        recordCost(err.reportedCostUsd);
         // ⚠️ **범위 축소(2026-08-24).** 예산 실패가 아닌 `claude -p` 실패도 전체를 중단시키고
         // 있었다. E5.12가 위생 실패에 대해 이미 내린 판단과 같다 — "거부는 옳지만 **범위가
         // 틀렸다**: 그 자산만 빼고 나머지는 처리한다".
@@ -355,6 +388,7 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
     results,
     stoppedEarly,
     injectionFindingsTotal,
+    cost: summarizeGenCost(reportedCostsUsd, costUnreportedCalls),
     sealAudit: {
       sessionOwnedExcluded: sessionOwnedExcludedTotal,
       concurrencyOverrides: concurrencyOverridesTotal,

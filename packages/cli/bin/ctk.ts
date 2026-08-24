@@ -8,7 +8,13 @@
 
 import { runInit } from "../src/commands/init.js";
 import { runScan, CatalogNotInitializedError } from "../src/commands/scan.js";
-import { runGenCli, runGenDryRun, summarizeUnresolved, MissingRequiredFlagError } from "../src/commands/gen.js";
+import {
+  runGenCli,
+  runGenDryRun,
+  summarizeUnresolved,
+  describeActualCost,
+  MissingRequiredFlagError,
+} from "../src/commands/gen.js";
 import { runAgentProbeCli } from "../src/commands/agent-probe.js";
 import { runVerifySeal } from "../src/commands/verify-seal.js";
 import {
@@ -363,6 +369,8 @@ async function main(): Promise<void> {
         console.log(
           `  인젝션 후검증 — 지시문 ${inj.directive} · 실행명령 ${inj.executable} · URL ${inj.url} · 길이 ${inj.length}`,
         );
+        // 실제로 나간 돈을 남긴다 — 지난 배치는 끝나고도 실지출을 알 수 없었다(견적만 있었다).
+        console.log(`  ${describeActualCost(summary.cost)}`);
         console.log(`  인덱스: ${summary.indexPath}`);
         // ⚠️ **실패를 삼키지 않는다(안전 원칙 7).** 자산별 skip으로 범위를 좁혔다는 것이
         // "실패가 없었다"는 뜻은 아니다 — 한 건이라도 call_failed면 종료 코드로 드러낸다.

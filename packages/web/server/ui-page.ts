@@ -363,6 +363,27 @@ async function runGenTwoPhase() {
     ["이 세션 잔여 한도", "$" + d.session_remaining_usd],
   ];
   if (d.clamped) rows.push(["참고", "서버 상한에 걸려 요청보다 줄었다"]);
+  // 실측 단가 — **상한만 보여주면 그 상한이 현실적인지 알 수 없다.** 실측(2026-08-24) 자산당
+  // 중앙값이 기본 총액÷호출수보다 커서 대부분의 호출이 하네스에 사전 거부됐다. 실측이 없으면
+  // 없다고 말한다(그럴듯한 값을 지어내지 않는다).
+  if (d.observed_cost && d.observed_cost.calls_reported > 0 && d.observed_cost.median_usd !== null) {
+    var oc = d.observed_cost;
+    rows.push([
+      "실측 단가(지난 실행 " + oc.calls_reported + "건)",
+      "자산당 중앙값 $" + oc.median_usd.toFixed(3) + " · 최대 $" + (oc.max_usd || 0).toFixed(3) +
+        " → 이번 " + d.call_count + "건 예상 약 $" + (oc.median_usd * d.call_count).toFixed(2) +
+        (oc.calls_unreported > 0 ? " (일부 미보고, 표본 불완전)" : ""),
+    ]);
+    if (Number(d.per_call_budget_usd) < oc.median_usd) {
+      rows.push([
+        "⚠️ 상한 경고",
+        "호출당 상한($" + Number(d.per_call_budget_usd).toFixed(4) + ")이 실측 중앙값보다 낮다 — " +
+          "상당수가 사전 거부된다. 총액을 올려야 한다",
+      ]);
+    }
+  } else {
+    rows.push(["실측 단가", "없음 — 이 머신의 지난 gen 실행 기록이 없다"]);
+  }
   if (d.skipped && d.skipped.length > 0) rows.push(["건너뜀", d.skipped.length + "건 (위생 검사 거부)"]);
   // 사유별로 갈라 보여준다 — 합치면 "드리프트를 조사하라"가 조사할 것 없는 자산에도 붙는다.
   if (d.unresolved && d.unresolved.length > 0) {

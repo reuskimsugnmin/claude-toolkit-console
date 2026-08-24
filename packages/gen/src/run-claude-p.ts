@@ -2,7 +2,7 @@ import { spawnClaude, type HomeContext } from "@ctk/probe";
 import { usageMdPath, type Annotation, type DocPage } from "@ctk/core";
 import type { PreflightVersionMatch } from "@ctk/core";
 import { buildPromptEnvelope } from "./prompt-envelope.js";
-import { buildGenOutputJsonSchema, parseGenEnvelope } from "./output-schema.js";
+import { buildGenOutputJsonSchema, parseGenEnvelope, readEnvelopeCostUsd } from "./output-schema.js";
 import { determineSourceTrust } from "./source-trust.js";
 import type { GenPlanTarget } from "./plan.js";
 
@@ -47,6 +47,9 @@ function scrubPathsForDiagnostics(text: string): string {
 }
 
 export class ClaudePCallFailedError extends Error {
+  /** 하네스가 보고한 이 실패 호출의 비용. 못 읽었으면 `null`(= 0원이 아니라 **미보고**). */
+  readonly reportedCostUsd: number | null;
+
   constructor(
     readonly assetId: string,
     readonly exitCode: number | null,
@@ -67,6 +70,8 @@ export class ClaudePCallFailedError extends Error {
     parts.push(`stdout: ${out.length > 0 ? out.slice(0, 500) : "(비어 있음)"}`);
     super(parts.join(" · "));
     this.name = "ClaudePCallFailedError";
+    // 실패한 호출에도 비용이 실려 온다(실측). 실패분을 빼면 보고 총액이 실제보다 낮아진다.
+    this.reportedCostUsd = readEnvelopeCostUsd(stdout);
   }
 }
 
@@ -88,6 +93,11 @@ export interface RunClaudePResult {
   annotation: Annotation;
   docPage: DocPage;
   preflightVersionMatch: PreflightVersionMatch;
+  /**
+   * 하네스가 보고한 이 호출의 실비용. **`null`은 0원이 아니라 "미보고"다** — 호출자는 합계에
+   * 0을 더하지 말고 미보고 건수로 센다(안전 원칙 7). 필수 필드로 둬 호출자가 빠뜨릴 수 없게 한다.
+   */
+  reportedCostUsd: number | null;
 }
 
 export async function runClaudePForTarget(options: RunClaudePOptions): Promise<RunClaudePResult> {
@@ -153,5 +163,10 @@ export async function runClaudePForTarget(options: RunClaudePOptions): Promise<R
     generated_at: generatedAt,
   };
 
-  return { annotation, docPage, preflightVersionMatch: result.preflightVersionMatch ?? "match" };
+  return {
+    annotation,
+    docPage,
+    preflightVersionMatch: result.preflightVersionMatch ?? "match",
+    reportedCostUsd: readEnvelopeCostUsd(result.stdout),
+  };
 }

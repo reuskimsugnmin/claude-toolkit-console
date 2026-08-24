@@ -86,14 +86,19 @@ const VIEW_MODEL = JSON.parse(
 ) as unknown;
 
 /** 서버의 `gen_estimate` 응답 `data`가 실제로 갖는 모양 그대로 만든다. */
-function estimateData(unresolved: { assetId: string; reason: string; locationCount?: number }[]) {
+function estimateData(
+  unresolved: { assetId: string; reason: string; locationCount?: number }[],
+  observedCost: unknown = null,
+  perCallBudgetUsd = 0.1,
+) {
   return {
+    observed_cost: observedCost,
     assetCount: 3,
     approxBytes: 100,
     skipped: [],
     unresolved,
     call_count: 3,
-    per_call_budget_usd: 0.1,
+    per_call_budget_usd: perCallBudgetUsd,
     max_total_usd: 2,
     max_assets: 3,
     session_remaining_usd: 5,
@@ -103,6 +108,8 @@ function estimateData(unresolved: { assetId: string; reason: string; locationCou
 
 async function bootAndEstimate(
   unresolved: { assetId: string; reason: string; locationCount?: number }[],
+  observedCost: unknown = null,
+  perCallBudgetUsd = 0.1,
 ): Promise<El> {
   const byId = new Map<string, El>();
   const el = (id: string): El => {
@@ -117,7 +124,7 @@ async function bootAndEstimate(
         return Promise.resolve({
           ok: true,
           status: 200,
-          json: () => Promise.resolve({ ok: true, data: estimateData(unresolved) }),
+          json: () => Promise.resolve({ ok: true, data: estimateData(unresolved, observedCost, perCallBudgetUsd) }),
         });
       }
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, data: {} }) });
@@ -175,5 +182,45 @@ describe("gen 승인 화면 — 원문을 못 구한 자산을 사유별로 보�
     expect(text).toContain("생성 대상");
     expect(text).not.toContain("원본 없음");
     expect(text).not.toContain("유형상 원문 없음");
+  });
+});
+
+/**
+ * 실측 단가 줄. **상한만 보여주면 그 상한이 현실적인지 알 수 없다** — 실측(2026-08-24)에서
+ * 자산당 중앙값이 호출당 상한보다 커서 30건 중 15건이 하네스에 **사전 거부**됐다. 화면이 그걸
+ * 미리 말해야 사용자가 총액을 올릴 수 있다.
+ */
+describe("gen 승인 화면 — 실측 단가와 상한 경고", () => {
+  const OBSERVED = { calls_reported: 19, calls_unreported: 0, reported_total_usd: 3.74, median_usd: 0.184, max_usd: 0.406 };
+
+  it("실측이 있으면 자산당 단가와 이번 실행 환산액을 보여준다", async () => {
+    const text = (await bootAndEstimate([], OBSERVED, 0.5)).textContent;
+    expect(text).toContain("중앙값 $0.184");
+    expect(text).toContain("최대 $0.406");
+    expect(text).toContain("$0.55"); // 0.184 × 3건
+  });
+
+  it("호출당 상한이 실측 중앙값보다 낮으면 경고한다 — 이번에 15건이 사전 거부된 이유다", async () => {
+    const text = (await bootAndEstimate([], OBSERVED, 0.05)).textContent;
+    expect(text).toContain("상한 경고");
+    expect(text).toContain("사전 거부");
+  });
+
+  it("상한이 충분하면 경고하지 않는다 — 항상 뜨는 경고는 신호가 아니다", async () => {
+    const text = (await bootAndEstimate([], OBSERVED, 0.5)).textContent;
+    expect(text).not.toContain("상한 경고");
+  });
+
+  it("실측이 없으면 '없음'이라고 말한다 — 그럴듯한 숫자를 지어내지 않는다", async () => {
+    const text = (await bootAndEstimate([], null, 0.5)).textContent;
+    expect(text).toContain("실측 단가");
+    expect(text).toContain("없음");
+  });
+
+  it("보고 0건인 이력은 실측으로 치지 않는다 — 중앙값 0은 '공짜'로 읽힌다", async () => {
+    const empty = { calls_reported: 0, calls_unreported: 3, reported_total_usd: 0, median_usd: null, max_usd: null };
+    const text = (await bootAndEstimate([], empty, 0.5)).textContent;
+    expect(text).toContain("없음");
+    expect(text).not.toContain("$0.000");
   });
 });

@@ -46,6 +46,31 @@ export type InjectionFindings = z.infer<typeof InjectionFindingsSchema>;
  * RunLog — 머신 종속. §7 관측 가능성의 실행 로그(`runs/<iso8601>.jsonl`, 카탈로그 결정 2).
  * 자유 문자열·경로 원문 금지 — args는 값이 아니라 이미 정규화된 키만 담아야 한다(호출자 책임).
  */
+/**
+ * `gen` 실행의 **실측 비용**(2026-08-24 추가). 사전 견적만으로는 비용을 알 수 없다는 것이
+ * 실측으로 드러나서 만들었다 — 견적은 입력 토큰만 계산해 실제의 약 1/20을 표시하고 있었고,
+ * 그 숫자 위에서 승인이 이뤄지고 있었다(이 저장소의 원칙은 "비용을 먼저 투명하게 알린다"이다).
+ *
+ * **머신 종속이다.** 자산당 실비용은 그 머신에 깔린 툴의 원문 크기에 달렸으므로 카탈로그의
+ * 머신별 영역에 쌓이고, **제품 코드에 상수로 박지 않는다**(이 저장소는 public이며 개인 사용량
+ * 수치를 담지 않는다).
+ *
+ * ⚠️ **합계를 "전부"로 읽지 않기 위해 미보고 건수를 함께 남긴다**(안전 원칙 7). 하네스가
+ * `total_cost_usd`를 싣지 않은 호출이 있으면 `reported_total_usd`는 총액이 아니라 **하한**이다.
+ */
+export const GenCostSchema = z
+  .object({
+    calls_reported: z.number().int().nonnegative(),
+    calls_unreported: z.number().int().nonnegative(),
+    /** 보고된 호출들의 합. `calls_unreported > 0`이면 하한이다. */
+    reported_total_usd: z.number().nonnegative(),
+    /** 보고된 호출당 비용의 중앙값·최대값. 보고가 0건이면 null — 0으로 대체하지 않는다. */
+    median_usd: z.number().nonnegative().nullable(),
+    max_usd: z.number().nonnegative().nullable(),
+  })
+  .strict();
+export type GenCost = z.infer<typeof GenCostSchema>;
+
 export const RunLogEntrySchema = z
   .object({
     schema_version: schemaVersion,
@@ -67,6 +92,8 @@ export const RunLogEntrySchema = z
     seal_profile: SealProfileLogSchema.optional(),
     /** iter 8 · B1-3 — 후검증에서 걸린 규칙별 건수 (gen 실행에만 존재) */
     injection_findings: InjectionFindingsSchema.optional(),
+    /** 실측 비용 (gen 실행에만 존재). 다음 실행의 견적이 이 값을 근거로 범위를 보여준다. */
+    gen_cost: GenCostSchema.optional(),
   })
   .strict();
 
