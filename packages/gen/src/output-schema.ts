@@ -124,6 +124,8 @@ const GenEnvelopeSchema = z
     is_error: z.boolean().optional(),
     result: z.unknown().optional(),
     structured_output: z.unknown().optional(),
+    /** 하네스가 싣는 이 호출의 실비용. **없을 수 있다** — 없으면 null이고 0으로 대체하지 않는다. */
+    total_cost_usd: z.number().nonnegative().optional(),
   })
   .passthrough();
 
@@ -137,6 +139,22 @@ export class GenEnvelopeError extends Error {
 function stripJsonFence(text: string): string {
   const fenced = /^\s*```(?:json)?\s*\n([\s\S]*?)\n\s*```\s*$/.exec(text);
   return fenced?.[1] ?? text;
+}
+
+/**
+ * 봉투에서 **비용만** 꺼낸다 — 실패한 호출에도 `total_cost_usd`가 실려 오므로(실측 2026-08-24)
+ * 페이로드 검증과 분리해야 실패 경로에서도 읽을 수 있다.
+ *
+ * ⚠️ **파싱 실패를 0으로 삼키지 않는다**(안전 원칙 7) — 못 읽으면 `null`이고, 호출자는 그것을
+ * "0원"이 아니라 "미보고"로 센다. 합계에 0을 더하면 총액이 조용히 낮아진다.
+ */
+export function readEnvelopeCostUsd(rawStdout: string): number | null {
+  try {
+    const parsed = GenEnvelopeSchema.safeParse(JSON.parse(rawStdout));
+    return parsed.success ? (parsed.data.total_cost_usd ?? null) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** 봉투 stdout → 엄격 검증된 페이로드. 봉투 해석과 페이로드 검증을 분리한다. */

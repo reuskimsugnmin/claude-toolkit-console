@@ -8,7 +8,13 @@
 
 import { runInit } from "../src/commands/init.js";
 import { runScan, CatalogNotInitializedError } from "../src/commands/scan.js";
-import { runGenCli, runGenDryRun, MissingRequiredFlagError } from "../src/commands/gen.js";
+import {
+  runGenCli,
+  runGenDryRun,
+  summarizeUnresolved,
+  describeActualCost,
+  MissingRequiredFlagError,
+} from "../src/commands/gen.js";
 import { runAgentProbeCli } from "../src/commands/agent-probe.js";
 import { runVerifySeal } from "../src/commands/verify-seal.js";
 import {
@@ -16,6 +22,9 @@ import {
   runDoctorInterruptedRestores,
   runDoctorSubagentAttribution,
   runDoctorManagedPolicy,
+  runDoctorUnlock,
+  formatUnlockReport,
+  unlockExitCode,
   formatManagedPolicyReport,
   managedPolicyExitCode,
   formatInterruptedRestoreAlert,
@@ -83,6 +92,14 @@ async function main(): Promise<void> {
           );
           console.error("");
         }
+        if (rest.includes("--unlock")) {
+          // stale 락의 **수동 회수**. 살아 있는 보유자는 거부하고, 판정 불가(다른 머신)는
+          // --force를 요구한다 — 확인 없이 부수는 도구가 아니다.
+          const report = runDoctorUnlock({ force: rest.includes("--force") });
+          console.log(formatUnlockReport(report));
+          process.exitCode = unlockExitCode(report);
+          return;
+        }
         if (rest.includes("--managed-policy")) {
           const report = runDoctorManagedPolicy();
           console.log(formatManagedPolicyReport(report));
@@ -99,7 +116,7 @@ async function main(): Promise<void> {
           console.log(`  무변경: ${drift.unchangedCount}건`);
           return;
         }
-        console.error("사용법: ctk doctor --drift | --managed-policy");
+        console.error("사용법: ctk doctor --drift | --managed-policy | --unlock [--force]");
         process.exitCode = 1;
         return;
       }
@@ -325,9 +342,7 @@ async function main(): Promise<void> {
           const report = runGenDryRun({ maxAssets: maxAssets !== undefined ? Number(maxAssets) : undefined });
           console.log(`ctk gen --dry-run (로컬 전용 미리보기 — 네트워크·spawn 없음)`);
           console.log(`  생성 대상: ${report.assetCount}건 · 원본 크기 합계: ${report.approxBytes} bytes`);
-          if (report.emptyAssetIds.length > 0) {
-            console.log(`  ⚠️ 원본이 비어 생성 불가: ${report.emptyAssetIds.length}건`);
-          }
+          for (const line of summarizeUnresolved(report.unresolved)) console.log(`  ⚠️ ${line}`);
           if (report.skipped.length > 0) {
             // 위생 거부는 "원본 없음"과 이유가 다르다 — 뭉치면 사용자가 무엇을 고쳐야 할지 모른다.
             const byClass = new Map<string, number>();
@@ -365,6 +380,16 @@ async function main(): Promise<void> {
         console.log(
           `  인젝션 후검증 — 지시문 ${inj.directive} · 실행명령 ${inj.executable} · URL ${inj.url} · 길이 ${inj.length}`,
         );
+        // 제거한 링크를 요약에도 남긴다 — 자산별 경고는 스크롤에 묻힌다.
+        if (summary.urlScrub.removed > 0) {
+          // 개수가 아니라 **호스트를 보여준다**(심사 M1) — 개수만으로는 사용자가 판단할 수 없다.
+          console.log(
+            `  ℹ️ 허용 도메인 밖 링크 ${summary.urlScrub.removed}건 제거 — 문서는 저장됐고 링크만 빠졌다`,
+          );
+          console.log(`     호스트: ${summary.urlScrub.hosts.join(", ")}`);
+        }
+        // 실제로 나간 돈을 남긴다 — 지난 배치는 끝나고도 실지출을 알 수 없었다(견적만 있었다).
+        console.log(`  ${describeActualCost(summary.cost)}`);
         console.log(`  인덱스: ${summary.indexPath}`);
         // ⚠️ **실패를 삼키지 않는다(안전 원칙 7).** 자산별 skip으로 범위를 좁혔다는 것이
         // "실패가 없었다"는 뜻은 아니다 — 한 건이라도 call_failed면 종료 코드로 드러낸다.

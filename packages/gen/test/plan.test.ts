@@ -25,6 +25,16 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     writeFileSync(path.join(skillDir, "SKILL.md"), `---\nname: ${name}\ndescription: ${description}\n---\n\n본문\n`);
   }
 
+  /**
+   * 디렉터리명과 frontmatter `name`을 **따로** 준다 — 실측된 중복 설치의 모양이다
+   * (`~/.claude/skills/_gstack-command`와 `.../gstack`이 둘 다 `name: gstack`을 자칭했다).
+   */
+  function setupSkillAt(dirName: string, declaredName: string, body: string): void {
+    const skillDir = path.join(home.ctkConfigDir, "skills", dirName);
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(path.join(skillDir, "SKILL.md"), `---\nname: ${declaredName}\ndescription: d\n---\n\n${body}\n`);
+  }
+
   function init(): void {
     ctkHome = mkdtempSync(path.join(tmpdir(), "ctk-plan-test-"));
     home = { ctkHome, ctkConfigDir: path.join(ctkHome, ".claude"), configDirExplicit: true };
@@ -107,7 +117,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     expect(result.targets[0]?.reason).toBe("stale");
   });
 
-  it("원본도 asset.description도 없으면 emptyAssetIds로 분류하고 대상에 넣지 않는다", () => {
+  it("원본도 asset.description도 없으면 unresolved(source_missing)로 분류하고 대상에 넣지 않는다", () => {
     init();
     const asset: Asset = { schema_version: 1, _scope: "machine_independent", id: "no-source", kind: "skill", name: "no-source" };
     const result = planGenTargets({
@@ -116,7 +126,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
       index: { schema_version: 1, assets: [] },
     });
     expect(result.targets).toHaveLength(0);
-    expect(result.emptyAssetIds).toEqual(["no-source"]);
+    expect(result.unresolved).toEqual([{ assetId: "no-source", reason: "source_missing" }]);
   });
 
   it("maxAssets로 대상 수를 제한한다", () => {
@@ -187,7 +197,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
       index: { schema_version: 1, assets: [] },
     });
     expect(result.skipped.map((s) => s.assetId)).toEqual(["linked-skill"]);
-    expect(result.emptyAssetIds).toEqual(["missing-skill"]);
+    expect(result.unresolved).toEqual([{ assetId: "missing-skill", reason: "source_missing" }]);
   });
 
   it("크기 상한 규칙도 같은 기반으로 잡힌다 — 새 위생 규칙이 다시 gen을 죽이지 않는다", () => {
@@ -286,14 +296,192 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     expect(reason).not.toMatch(/\/[A-Za-z]/);
   });
 
+  describe("스킬 링크의 봉쇄 루트는 skills/ 하나다 — 넓히면 민감 파일이 사정권에 든다", () => {
+    /**
+     * ⚠️ **이 테스트가 막는 것은 "넓히는 변경"이다.** 파괴 실험에서 봉쇄 루트를 `<configDir>`
+     * 전체로 넓혀도 아무 테스트가 깨지지 않았다 — 그 방향이 바로 위험한 쪽인데도.
+     * `<configDir>` 안에는 `.credentials.json`·`settings.json`이 있고, 그리로 링크된 SKILL.md가
+     * 카탈로그 문서에 박혀 저장소로 동기화된다. 실측상 넓힐 필요도 없다(54건 전부 skills/ 안).
+     */
+    it("configDir 안이지만 skills/ 밖을 가리키는 링크는 거부된다", () => {
+      init();
+      // configDir 바로 아래의 민감 파일을 흉내낸다.
+      writeFileSync(path.join(home.ctkConfigDir, "credentials.json"), '{"token":"SECRET"}');
+      const dir = path.join(home.ctkConfigDir, "skills", "leaky");
+      mkdirSync(dir, { recursive: true });
+      symlinkSync(path.join(home.ctkConfigDir, "credentials.json"), path.join(dir, "SKILL.md"));
+
+      const result = planGenTargets({
+        home,
+        assets: [skillAsset("leaky")],
+        index: { schema_version: 1, assets: [] },
+      });
+      expect(result.targets, "민감 파일이 생성 대상이 됐다").toEqual([]);
+      expect(result.skipped.map((s) => s.assetId)).toEqual(["leaky"]);
+      expect(result.skipped[0]?.failureClass).toBe("path_traversal_detected");
+    });
+
+    /**
+     * ⚠️ **디렉터리 링크 축.** 위생 검사는 `SKILL.md` **파일 하나**만 본다. 스킬 디렉터리
+     * 자체가 링크이고 대상이 봉쇄 밖이면 어떻게 되는가 — 이 축을 직접 실증했다.
+     *
+     * 결과: `readSkillDir`의 `readdirSync(withFileTypes)`가 심볼릭 링크를 `isDirectory()`로
+     * 보지 않으므로(lstat 의미) `probe`가 **아예 발견하지 못한다.** 봉쇄 검사에 도달하기 전에
+     * 닫혀 있는 셈이다. 그 성질에 기대고 있으므로 여기서 고정한다 — `readSkillDir`이 나중에
+     * 링크를 따라가게 바뀌면 이 테스트가 깨져 봉쇄 검사를 디렉터리 축까지 넓혀야 함을 알린다.
+     */
+    it("스킬 디렉터리 자체가 봉쇄 밖으로 링크돼 있으면 발견되지 않는다", () => {
+      init();
+      mkdirSync(path.join(home.ctkConfigDir, "skills"), { recursive: true }); // init()은 skills/를 만들지 않는다
+      const outside = path.join(ctkHome, "outside-bundle");
+      mkdirSync(outside, { recursive: true });
+      writeFileSync(path.join(outside, "SKILL.md"), "---\nname: dirlink\ndescription: d\n---\n\n봉쇄 밖 본문\n");
+      symlinkSync(outside, path.join(home.ctkConfigDir, "skills", "dirlink"));
+
+      const result = planGenTargets({
+        home,
+        assets: [skillAsset("dirlink")],
+        index: { schema_version: 1, assets: [] },
+      });
+      expect(result.targets, "봉쇄 밖 내용이 생성 대상이 됐다").toEqual([]);
+      // 발견 자체가 안 되므로 `blocked`가 아니라 `source_missing`이다 — 두 상태의 의미가 다르다.
+      expect(result.unresolved).toEqual([{ assetId: "dirlink", reason: "source_missing" }]);
+    });
+
+    /**
+     * ⚠️ **보안 심사 M-4.** 봉쇄는 **스킬 경로에만** 준다 — 플러그인 원문(README·plugin.json)이
+     * 링크면 지금도 거부된다. 그 성질이 코드에만 있고 게이트에 없으면, 나중에 플러그인 호출에
+     * 봉쇄를 붙이는 변경이 **아무 테스트도 깨지 않고** 들어온다("가드는 호출자만큼만 강하다").
+     */
+    it("플러그인 원문이 링크면 봉쇄와 무관하게 거부된다 — 봉쇄는 스킬 경로에만 준다", () => {
+      init();
+      const installPath = path.join(ctkHome, "plugins", "demo-plugin");
+      mkdirSync(path.join(installPath, ".claude-plugin"), { recursive: true });
+      writeFileSync(path.join(installPath, ".claude-plugin", "plugin.json"), '{"name":"demo-plugin"}');
+      // README를 <configDir>/skills 안(= 스킬 봉쇄 루트 안)의 파일로 링크한다.
+      const inSkills = path.join(home.ctkConfigDir, "skills", "bait");
+      mkdirSync(inSkills, { recursive: true });
+      writeFileSync(path.join(inSkills, "README.md"), "봉쇄 안이지만 플러그인 경로다");
+      symlinkSync(path.join(inSkills, "README.md"), path.join(installPath, "README.md"));
+      // installed_plugins.json에 등재해 findPluginInstallPath가 찾게 한다.
+      mkdirSync(path.join(home.ctkConfigDir, "plugins"), { recursive: true });
+      writeFileSync(
+        path.join(home.ctkConfigDir, "plugins", "installed_plugins.json"),
+        JSON.stringify({
+          plugins: {
+            "demo-plugin": [
+              { scope: "user", installPath, version: "1.0.0", installedAt: "2026-08-24T00:00:00Z", lastUpdated: "2026-08-24T00:00:00Z" },
+            ],
+          },
+        }),
+      );
+
+      const asset: Asset = {
+        schema_version: 1, _scope: "machine_independent", id: "demo-plugin", kind: "plugin", name: "demo-plugin",
+      };
+      const result = planGenTargets({ home, assets: [asset], index: { schema_version: 1, assets: [] } });
+      expect(result.skipped.map((sk) => sk.assetId), "플러그인 링크가 통과했다").toEqual(["demo-plugin"]);
+      expect(result.skipped[0]?.failureClass).toBe("path_traversal_detected");
+    });
+
+    it("skills/ 안의 다른 스킬을 가리키는 링크는 허용된다 — 실측 54건이 이 모양이다", () => {
+      init();
+      setupSkillAt("bundle-inner", "linked-skill", "번들 본문");
+      const dir = path.join(home.ctkConfigDir, "skills", "linked-skill");
+      mkdirSync(dir, { recursive: true });
+      symlinkSync(
+        path.join(home.ctkConfigDir, "skills", "bundle-inner", "SKILL.md"),
+        path.join(dir, "SKILL.md"),
+      );
+
+      const result = planGenTargets({
+        home,
+        assets: [skillAsset("linked-skill")],
+        index: { schema_version: 1, assets: [] },
+      });
+      expect(result.skipped, "봉쇄 안의 링크가 거부됐다").toEqual([]);
+      expect(result.targets.map((t) => t.asset.id)).toEqual(["linked-skill"]);
+      expect(result.targets[0]?.sections[0]?.content).toContain("번들 본문");
+    });
+  });
+
+  describe("원문을 못 구한 사유를 뭉개지 않는다 — 처방이 서로 다르다", () => {
+    /**
+     * ⚠️ **이것이 이 수정의 핵심이다.** `findSkillDirsById`가 2건 이상을 거부하는 근거(H6)는
+     * "어느 디렉터리를 **이동**시킬지 모른다"는 **쓰기 축**의 판단인데, `gen`은 읽기다.
+     * 내용이 바이트 단위로 같으면 어느 쪽을 읽어도 결과가 같으므로 읽기 축에는 모호성이 없다.
+     * 실측(2026-08-24): 이 환경의 중복 6건이 **전부** SKILL.md 해시 일치였고, 그 6건이
+     * "원본 없음"으로 잘못 분류돼 문서 생성에서 빠져 있었다.
+     */
+    it("같은 이름이 두 곳에 있어도 내용이 같으면 읽어서 대상에 넣는다", () => {
+      init();
+      setupSkillAt("dup-a", "dup", "완전히 같은 본문");
+      setupSkillAt("dup-b", "dup", "완전히 같은 본문");
+      const result = planGenTargets({ home, assets: [skillAsset("dup")], index: { schema_version: 1, assets: [] } });
+      expect(result.unresolved).toEqual([]);
+      expect(result.targets.map((t) => t.asset.id)).toEqual(["dup"]);
+      expect(result.targets[0]?.sections[0]?.content).toContain("완전히 같은 본문");
+    });
+
+    it("내용이 다르면 여전히 거부한다 — ambiguous_source이고 source_missing이 아니다", () => {
+      init();
+      setupSkillAt("dup-a", "dup", "본문 A");
+      setupSkillAt("dup-b", "dup", "본문 B");
+      const result = planGenTargets({ home, assets: [skillAsset("dup")], index: { schema_version: 1, assets: [] } });
+      expect(result.targets).toEqual([]);
+      expect(result.unresolved).toEqual([{ assetId: "dup", reason: "ambiguous_source", locationCount: 2 }]);
+    });
+
+    it("중복 중 하나가 심볼릭 링크면 위생 거부가 이긴다 — 안전 축에서는 가장 엄격한 판정을 취한다", () => {
+      init();
+      setupSkillAt("dup-a", "dup", "본문");
+      const linkedDir = path.join(home.ctkConfigDir, "skills", "dup-b");
+      mkdirSync(linkedDir, { recursive: true });
+      const outside = path.join(ctkHome, "outside.md");
+      writeFileSync(outside, "---\nname: dup\ndescription: d\n---\n\n본문\n");
+      symlinkSync(outside, path.join(linkedDir, "SKILL.md"));
+
+      const result = planGenTargets({ home, assets: [skillAsset("dup")], index: { schema_version: 1, assets: [] } });
+      // 링크가 아닌 사본을 골라 우회하지 않는다.
+      expect(result.targets).toEqual([]);
+      expect(result.skipped.map((sk) => sk.assetId)).toEqual(["dup"]);
+    });
+
+    /**
+     * 실측(2026-08-24): 이 환경의 mcp 4건·cli 2건 **전부** `description`이 비어 있다 —
+     * 유형 전체가 0%다. 이것을 `source_missing`으로 분류하면 화면이 "드리프트인지 확인하라"고
+     * 말하는데, **조사할 것이 없다.** 사라진 것이 아니라 애초에 그런 파일이 없다.
+     */
+    it("mcp·cli는 description이 없으면 no_local_source다 — 드리프트가 아니다", () => {
+      init();
+      const bare = (id: string, kind: "mcp" | "cli"): Asset => ({
+        schema_version: 1, _scope: "machine_independent", id, kind, name: id,
+      });
+      const result = planGenTargets({
+        home,
+        assets: [bare("some-server", "mcp"), bare("some-cli", "cli")],
+        index: { schema_version: 1, assets: [] },
+      });
+      expect(result.unresolved).toEqual([
+        { assetId: "some-server", reason: "no_local_source" },
+        { assetId: "some-cli", reason: "no_local_source" },
+      ]);
+    });
+  });
+
   describe("classifyAssetDocState — 단건 조회가 일괄 산출과 갈리지 않는다", () => {
     /**
      * ⚠️ **범위 게이트다.** 화면이 말하는 사유와 `gen`이 실제로 할 일이 갈리면 그 드리프트는
      * 조용하다 — 사용자는 "생성 대기"를 보고 돈을 냈는데 gen은 그 자산을 건너뛴다. 항목이
-     * 아니라 범위로 닫기 위해, **네 상태가 모두 등장하는 픽스처**를 만들고 전 자산에 대해
-     * 두 경로의 판정이 일치하는지 대조한다. 두 경로가 각자 판정하도록 되돌리면 여기서 깨진다.
+     * 아니라 범위로 닫기 위해, **판정이 낼 수 있는 값이 전부 등장하는 픽스처**를 만들고 전
+     * 자산에 대해 두 경로의 판정이 일치하는지 대조한다. 두 경로가 각자 판정하도록 되돌리면
+     * 여기서 깨진다.
+     *
+     * ⚠️ **판정값이 늘면 표본도 함께 늘린다.** 사유가 셋으로 갈리면서(source_missing ·
+     * no_local_source · ambiguous_source) 판정값이 6종에서 8종이 됐다 — 표본을 그대로 두면
+     * 이 게이트는 이름만 남고 새 두 사유의 오분류를 놓친다.
      */
-    it("네 상태가 모두 나오는 표본에서 단건 판정과 일괄 산출이 전부 일치한다", () => {
+    it("판정값 8종이 모두 나오는 표본에서 단건 판정과 일괄 산출이 전부 일치한다", () => {
       init();
 
       // ① pending(new) — 원본 있고 인덱스에 해시 없음
@@ -312,16 +500,31 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
       const outside = path.join(ctkHome, "outside.md");
       writeFileSync(outside, "---\nname: linked-skill\ndescription: x\n---\n본문\n");
       symlinkSync(outside, path.join(linkedDir, "SKILL.md"));
+      // ⑦ ambiguous_source — 같은 이름이 두 곳에 있고 내용이 **다르다**
+      setupSkillAt("dup-a", "dup-skill", "본문 A");
+      setupSkillAt("dup-b", "dup-skill", "본문 B");
 
-      const ids = ["fresh-skill", "done-skill", "moved-skill", "stale-skill", "empty-skill", "linked-skill"];
-      const assets = ids.map(skillAsset);
+      const ids = [
+        "fresh-skill", "done-skill", "moved-skill", "stale-skill", "empty-skill", "linked-skill", "dup-skill",
+      ];
+      // ⑧ no_local_source — description 없는 mcp 자산
+      const bareMcp: Asset = {
+        schema_version: 1, _scope: "machine_independent", id: "bare-mcp", kind: "mcp", name: "bare-mcp",
+      };
+      const assets = [...ids.map(skillAsset), bareMcp];
 
       // done-skill의 실제 해시를 얻어 "최신" 상태를 만든다 — 손으로 지어낸 해시는 판정을
       // 검증하지 못한다(픽스처가 결과를 지배해야 한다).
       const probe = planGenTargets({
         home,
         assets,
-        index: { schema_version: 1, assets: ids.map((id) => ({ id, kind: "skill" as const, name: id })) },
+        index: {
+          schema_version: 1,
+          assets: [
+            ...ids.map((id) => ({ id, kind: "skill" as const, name: id })),
+            { id: "bare-mcp", kind: "mcp" as const, name: "bare-mcp" },
+          ],
+        },
       });
       const doneHash = probe.targets.find((t) => t.asset.id === "done-skill")?.sourceContentSha256;
       const staleHash = probe.targets.find((t) => t.asset.id === "stale-skill")?.sourceContentSha256;
@@ -330,7 +533,8 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
 
       const index: CatalogIndex = {
         schema_version: 1,
-        assets: ids.map((id) => {
+        assets: [
+          ...ids.map((id) => {
           const base = { id, kind: "skill" as const, name: id };
           // 최신 — 실제 해시와 일치
           if (id === "done-skill") return { ...base, gen_state: "fresh" as const, gen_content_sha256: doneHash };
@@ -340,6 +544,8 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
           if (id === "stale-skill") return { ...base, gen_state: "stale" as const, gen_content_sha256: staleHash };
           return base;
         }),
+          { id: "bare-mcp", kind: "mcp" as const, name: "bare-mcp" },
+        ],
       };
 
       const bulk = planGenTargets({ home, assets, index });
@@ -348,7 +554,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
       // 일괄 산출을 자산 id → 기대 상태로 펼친다.
       const fromBulk = new Map<string, string>();
       for (const t of bulk.targets) fromBulk.set(t.asset.id, `pending_generation:${t.reason}`);
-      for (const id of bulk.emptyAssetIds) fromBulk.set(id, "source_missing");
+      for (const u of bulk.unresolved) fromBulk.set(u.assetId, u.reason);
       for (const sk of bulk.skipped) fromBulk.set(sk.assetId, "blocked");
       for (const a of assets) if (!fromBulk.has(a.id)) fromBulk.set(a.id, "generated");
 
@@ -358,8 +564,10 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
       // 범위가 아니라 **축**이 어긋난 경우다. 판정이 만들 수 있는 값 전체를 표본에 넣는다.
       expect([...fromBulk.values()].sort()).toEqual(
         [
+          "ambiguous_source",
           "blocked",
           "generated",
+          "no_local_source",
           "pending_generation:changed",
           "pending_generation:new",
           "pending_generation:stale",

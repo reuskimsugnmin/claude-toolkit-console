@@ -1,9 +1,11 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { diffById, gradeManagedPolicy, machineDir, parseInstallation, type Installation } from "@ctk/core";
 import { managedPolicyCandidatePaths, readManagedPolicies, resolveHomeContext } from "@ctk/probe";
 import { findInterruptedRestores, type InterruptedRestore } from "@ctk/actuator";
-import { readLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
+import { isProcessAlive, type LockInfo } from "@ctk/sync";
+import { readLocalConfig, readMachineIdentityOrNull, readOrCreateMachineIdentity } from "../local-config.js";
+import { CatalogNotInitializedError } from "./scan.js";
 
 export class NoSnapshotsError extends Error {
   constructor() {
@@ -232,4 +234,74 @@ export function formatManagedPolicyReport(report: DoctorManagedPolicyReport): st
           "유료 세션(gen)은 비대화형에서 --allow-managed-policy 없이는 거부된다.",
   );
   return lines.join("\n");
+}
+
+/**
+ * `ctk doctor --unlock` — **stale 락의 수동 회수.** 자동 회수(`acquireLock`)는 락을 잡은 머신이
+ * 이 머신일 때만 판정할 수 있다. 다른 머신의 pid는 여기서 의미가 없으므로 그 경우는 자동으로
+ * 풀 수 없고, 그렇다고 길이 없으면 사용자는 락 파일을 손으로 지우는 법부터 찾는다 — 그 순간
+ * 이 가드는 사라진다(안전 원칙 6).
+ *
+ * ⚠️ **보유자가 살아 있으면 거부한다.** 이 명령은 "확인 없이 부수는 도구"가 아니다 — 같은
+ * 머신에서 pid가 살아 있으면 그대로 실패하고, 사용자에게 그 프로세스를 먼저 끝내라고 말한다.
+ * 다른 머신의 락은 판정할 수 없으므로 `--force`를 함께 요구한다(모른다는 사실을 명시적으로
+ * 넘겨받는다).
+ */
+export interface UnlockReport {
+  outcome: "no_lock" | "removed" | "refused_alive" | "needs_force";
+  holder: LockInfo | null;
+  lockPath: string;
+}
+
+export function runDoctorUnlock(options: { force?: boolean } = {}): UnlockReport {
+  const home = resolveHomeContext();
+  const localConfig = readLocalConfig(home);
+  if (localConfig === null) throw new CatalogNotInitializedError();
+  const machine = readMachineIdentityOrNull(home);
+  const lockPath = path.join(localConfig.catalog_path, ".ctk.lock");
+
+  if (!existsSync(lockPath)) return { outcome: "no_lock", holder: null, lockPath };
+
+  let holder: LockInfo | null = null;
+  try {
+    holder = JSON.parse(readFileSync(lockPath, "utf8")) as LockInfo;
+  } catch {
+    holder = null; // 판독 불가 — "없음"이 아니라 "모름"이다. 아래에서 force를 요구한다.
+  }
+
+  const sameMachine = holder !== null && machine !== null && holder.machine_id === machine.machine_id;
+  if (sameMachine && holder !== null && isProcessAlive(holder.pid)) {
+    return { outcome: "refused_alive", holder, lockPath };
+  }
+  // 이 머신 + 죽은 pid면 확실하다. 그 밖(다른 머신·판독 불가)은 판정할 수 없으므로 --force가 필요하다.
+  if (!sameMachine && options.force !== true) {
+    return { outcome: "needs_force", holder, lockPath };
+  }
+  rmSync(lockPath, { force: true });
+  return { outcome: "removed", holder, lockPath };
+}
+
+export function formatUnlockReport(r: UnlockReport): string {
+  const who = r.holder === null ? "(락 내용 판독 불가)" : `${r.holder.command} · pid ${r.holder.pid} · ${r.holder.started_at}`;
+  switch (r.outcome) {
+    case "no_lock":
+      return "락이 없다 — 회수할 것이 없다.";
+    case "removed":
+      return `락을 회수했다 — 보유자: ${who}`;
+    case "refused_alive":
+      return (
+        `거부: 보유자가 **이 머신에서 살아 있다** — ${who}\n` +
+        `  → 그 프로세스를 먼저 끝내라. 살아 있는 쓰기를 죽이면 카탈로그가 깨질 수 있다.`
+      );
+    case "needs_force":
+      return (
+        `판정 불가: 이 락은 다른 머신의 것이거나 내용을 읽을 수 없다 — ${who}\n` +
+        `  → 그 머신에서 ctk가 돌고 있지 않음을 확인한 뒤 \`ctk doctor --unlock --force\`를 쓴다.`
+      );
+  }
+}
+
+/** 회수하지 못했으면 종료 코드로도 드러낸다 — 사람 눈에만 기대면 스크립트가 성공으로 읽는다. */
+export function unlockExitCode(r: UnlockReport): 0 | 1 {
+  return r.outcome === "refused_alive" || r.outcome === "needs_force" ? 1 : 0;
 }

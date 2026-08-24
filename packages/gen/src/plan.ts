@@ -3,7 +3,12 @@ import type { Asset, AssetDocState } from "@ctk/core";
 import type { HomeContext } from "@ctk/probe";
 import type { CatalogIndex, CatalogIndexEntry } from "@ctk/sync";
 import { FileHygieneError } from "./file-hygiene.js";
-import { resolveAssetSource, type ResolvedAssetSource } from "./source-resolve.js";
+import {
+  resolveAssetSource,
+  type AssetSourceSections,
+  type ResolvedAssetSource,
+  type UnresolvedSourceReason,
+} from "./source-resolve.js";
 
 /**
  * gen/src/plan.ts — 콘텐츠 해시 기반 증분 대상 산출. 각 자산의 원본 텍스트(섹션 전체)를 해시해
@@ -17,7 +22,7 @@ export type GenTargetReason = "new" | "changed" | "stale";
 export interface GenPlanTarget {
   asset: Asset;
   reason: GenTargetReason;
-  sections: ResolvedAssetSource["sections"];
+  sections: AssetSourceSections;
   sourceContentSha256: string;
 }
 
@@ -28,10 +33,24 @@ export interface GenSkippedAsset {
   reason: string;
 }
 
+/**
+ * 원문을 구하지 못해 대상에서 빠진 자산 — **사유를 함께 남긴다.**
+ *
+ * 이전 필드명은 `emptyAssetIds: string[]`였고 셋을 한 목록으로 합쳤다. 실측(2026-08-24)에서
+ * 그 12건은 드리프트 0건 · 중복 설치 6건 · 유형상 원문 부재 6건이었고 **처방이 전부 달랐다** —
+ * 목록만 보여주면 사용자는 있지도 않은 드리프트를 조사하게 된다.
+ */
+export interface GenUnresolvedAsset {
+  assetId: string;
+  reason: UnresolvedSourceReason;
+  /** `reason === "ambiguous_source"`일 때만. 이 머신에서 발견된 원문 위치 수. */
+  locationCount?: number;
+}
+
 export interface GenPlanResult {
   targets: GenPlanTarget[];
-  /** 원문도 asset.description도 없어 아예 채울 수 없는 자산 — gen이 건드리지 않는다. */
-  emptyAssetIds: string[];
+  /** 원문을 구하지 못한 자산 — gen이 건드리지 않는다. **사유별로 처방이 다르다.** */
+  unresolved: GenUnresolvedAsset[];
   /**
    * 위생 검사가 거부한 자산.
    *
@@ -54,7 +73,7 @@ function scrubPaths(message: string): string {
   return message.replace(/(?:^|\s)(\/[^\s:]+)/g, " <경로 생략>");
 }
 
-function hashSections(sections: ResolvedAssetSource["sections"]): string {
+function hashSections(sections: AssetSourceSections): string {
   const hash = createHash("sha256");
   for (const section of sections) {
     hash.update(section.label, "utf8");
@@ -79,7 +98,7 @@ export function planGenTargets(options: PlanGenTargetsOptions): GenPlanResult {
   const indexById = new Map(index.assets.map((e) => [e.id, e]));
 
   const targets: GenPlanTarget[] = [];
-  const emptyAssetIds: string[] = [];
+  const unresolved: GenUnresolvedAsset[] = [];
   const skipped: GenSkippedAsset[] = [];
   let upToDateCount = 0;
 
@@ -94,8 +113,12 @@ export function planGenTargets(options: PlanGenTargetsOptions): GenPlanResult {
       case "blocked":
         skipped.push({ assetId: asset.id, failureClass: verdict.failureClass, reason: verdict.reason });
         continue;
-      case "empty":
-        emptyAssetIds.push(asset.id);
+      case "unresolved":
+        unresolved.push({
+          assetId: asset.id,
+          reason: verdict.reason,
+          ...(verdict.locationCount === undefined ? {} : { locationCount: verdict.locationCount }),
+        });
         continue;
       case "up-to-date":
         upToDateCount++;
@@ -111,15 +134,15 @@ export function planGenTargets(options: PlanGenTargetsOptions): GenPlanResult {
     }
   }
 
-  return { targets, emptyAssetIds, skipped, upToDateCount };
+  return { targets, unresolved, skipped, upToDateCount };
 }
 
 /** `judgeAsset`의 내부 판정 결과. 일괄 산출과 단건 조회가 **둘 다 이것을** 근거로 삼는다. */
 type AssetVerdict =
   | { kind: "blocked"; failureClass: string; reason: string }
-  | { kind: "empty" }
+  | { kind: "unresolved"; reason: UnresolvedSourceReason; locationCount?: number }
   | { kind: "up-to-date" }
-  | { kind: "target"; reason: GenTargetReason; sections: ResolvedAssetSource["sections"]; sourceContentSha256: string };
+  | { kind: "target"; reason: GenTargetReason; sections: AssetSourceSections; sourceContentSha256: string };
 
 /**
  * 자산 하나의 생성 상태를 판정한다. **파일시스템을 읽지만 아무것도 쓰지 않는다.**
@@ -142,7 +165,11 @@ function judgeAsset(home: HomeContext, asset: Asset, indexEntry: CatalogIndexEnt
     // 여기서는 그것이 지켜졌는지 마지막으로 한 번 더 훑는다(새 에러 타입이 어겨도 새지 않게).
     return { kind: "blocked", failureClass: err.failureClass, reason: scrubPaths(err.message) };
   }
-  if (resolved.empty) return { kind: "empty" };
+  if (!resolved.resolved) {
+    return resolved.reason === "ambiguous_source"
+      ? { kind: "unresolved", reason: resolved.reason, locationCount: resolved.locationCount }
+      : { kind: "unresolved", reason: resolved.reason };
+  }
 
   const sourceContentSha256 = hashSections(resolved.sections);
   if (indexEntry?.gen_state === "stale") {
@@ -176,8 +203,16 @@ export function classifyAssetDocState(
   switch (verdict.kind) {
     case "blocked":
       return { kind: "blocked", failure_class: verdict.failureClass, reason: verdict.reason };
-    case "empty":
-      return { kind: "source_missing" };
+    case "unresolved":
+      switch (verdict.reason) {
+        case "source_missing":
+          return { kind: "source_missing" };
+        case "no_local_source":
+          return { kind: "no_local_source" };
+        case "ambiguous_source":
+          return { kind: "ambiguous_source", location_count: verdict.locationCount ?? 0 };
+      }
+      break;
     case "up-to-date":
       return { kind: "generated" };
     case "target":

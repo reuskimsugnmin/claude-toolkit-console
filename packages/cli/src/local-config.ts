@@ -44,6 +44,23 @@ function machineIdentityPath(home: HomeContext): string {
   return path.join(localConfigDir(home), "machine.json");
 }
 
+/**
+ * 머신 정체를 **읽기만** 한다 — 없으면 `null`이고 만들지 않는다.
+ *
+ * ⚠️ `readOrCreateMachineIdentity`는 이름 그대로 없으면 **쓴다.** 조회 경로(웹 견적 등)에서
+ * 그것을 부르면 단순 조회가 사용자 설정 디렉터리에 파일을 만든다 — 읽기와 쓰기를 한 모듈에
+ * 섞지 않는다는 이 저장소의 계층 원칙이 함수 단위에서도 그대로 적용된다.
+ */
+export function readMachineIdentityOrNull(home: HomeContext): LocalMachineIdentity | null {
+  const p = machineIdentityPath(home);
+  if (!existsSync(p)) return null;
+  try {
+    return JSON.parse(readFileSync(p, "utf8")) as LocalMachineIdentity;
+  } catch {
+    return null; // 손상된 파일 — "없음"으로 다루되 조용히 새로 만들지는 않는다.
+  }
+}
+
 export function readOrCreateMachineIdentity(home: HomeContext, defaultAlias: string): LocalMachineIdentity {
   const p = machineIdentityPath(home);
   if (existsSync(p)) {

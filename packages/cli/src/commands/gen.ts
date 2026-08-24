@@ -7,10 +7,19 @@ import {
   listAllAssets,
   readCatalogConfig,
   readCatalogIndex,
+  readLatestGenCost,
   writeRunLog,
 } from "@ctk/sync";
-import { gradeManagedPolicy } from "@ctk/core";
-import { estimateGenCost, planGenTargets, runGen, type RunGenSummary } from "@ctk/gen";
+import { gradeManagedPolicy, unresolvedReasonLabel } from "@ctk/core";
+import {
+  estimateGenCost,
+  planGenTargets,
+  runGen,
+  summarizeGenCost,
+  type EstimateResult,
+  type GenUnresolvedAsset,
+  type RunGenSummary,
+} from "@ctk/gen";
 import { readLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
 import { ensureSealedLiveCwd } from "../sealed-cwd.js";
 import { CatalogNotInitializedError } from "./scan.js";
@@ -39,6 +48,68 @@ export interface RunGenCliOptions {
   routingProbeCommand?: string;
 }
 
+/**
+ * 미해결 자산을 **사유별로** 줄 세운다. 한 목록으로 합쳐 보여주면 사용자는 있지도 않은
+ * 드리프트를 조사하러 간다(실측: 12건 중 드리프트 0건). 라벨은 `core`가 단독으로 갖는다.
+ */
+export function summarizeUnresolved(unresolved: readonly GenUnresolvedAsset[]): string[] {
+  const byReason = new Map<GenUnresolvedAsset["reason"], string[]>();
+  for (const u of unresolved) {
+    const ids = byReason.get(u.reason) ?? [];
+    ids.push(u.locationCount === undefined ? u.assetId : `${u.assetId}(${u.locationCount}곳)`);
+    byReason.set(u.reason, ids);
+  }
+  return [...byReason].map(([reason, ids]) => `${unresolvedReasonLabel(reason)} ${ids.length}건: ${ids.join(", ")}`);
+}
+
+/**
+ * 비용을 **하한·상한·실측** 세 줄로 적는다.
+ *
+ * ⚠️ 예전에는 한 줄이었고 그 값은 **입력 토큰만** 곱한 것이었다 — 실측(2026-08-24) 결과 실제
+ * 비용은 그 값의 약 20배였고, 승인은 그 20배 낮은 숫자 위에서 이뤄지고 있었다. 이 저장소의
+ * 원칙이 "비용을 먼저 투명하게 알리고 승인받는다"인데 **숫자 자체가 틀리면 승인은 정보에
+ * 근거한 것이 아니다.** 하나의 값으로 뭉칠 수 없으므로 뭉치지 않는다(안전 원칙 7).
+ */
+export function describeCostEstimate(estimate: EstimateResult, maxBudgetUsd: number): string[] {
+  const lines: string[] = [];
+  lines.push(
+    estimate.estimatedInputTokens !== null
+      ? `예상 입력 토큰: ${estimate.estimatedInputTokens}tok`
+      : `예상 입력 토큰: 측정 불가 — approx_bytes=${estimate.approxBytes} (토큰 아님, count_tokens 크레덴셜 없음)`,
+  );
+  if (estimate.costFloorUsd !== null) {
+    lines.push(`비용 하한: $${estimate.costFloorUsd.toFixed(4)} — **입력 토큰만**이다. 출력·캐시가 빠져 있어 총비용이 아니다`);
+  }
+  lines.push(
+    `비용 상한: $${estimate.costCeilingUsd.toFixed(2)} = 호출 ${estimate.callCount}회 × --max-budget-usd ${maxBudgetUsd}` +
+      ` (하네스가 호출당 상한을 넘는 요청을 사전 거부하므로 이 값을 넘지 않는다)`,
+  );
+  if (estimate.observed === null) {
+    lines.push(`실측 단가: 없음 — 이 머신의 지난 gen 실행 기록이 없다. 추정치를 지어내지 않는다`);
+  } else {
+    const partial = estimate.observed.partial ? " · 일부 호출은 비용 미보고라 표본이 불완전하다" : "";
+    lines.push(
+      `실측 단가(지난 실행 ${estimate.observed.sampleSize}건): 자산당 중앙값 $${estimate.observed.medianUsd.toFixed(3)}` +
+        ` · 최대 $${estimate.observed.maxUsd.toFixed(3)} → 이번 ${estimate.callCount}건 예상 약 ` +
+        `$${(estimate.observed.medianUsd * estimate.callCount).toFixed(2)}${partial}`,
+    );
+  }
+  return lines;
+}
+
+/** 실행이 끝난 뒤 **실제로 나간 돈**을 적는다. 미보고가 있으면 총액이 아니라 하한이라고 말한다. */
+export function describeActualCost(cost: RunGenSummary["cost"]): string {
+  if (cost.calls_reported === 0) {
+    return `실측 비용: 보고 없음 — 호출 ${cost.calls_unreported}건 전부 total_cost_usd가 실리지 않았다(0원이라는 뜻이 아니다)`;
+  }
+  const bound = cost.calls_unreported > 0 ? "이상(하한)" : "";
+  return (
+    `실측 비용: $${cost.reported_total_usd.toFixed(2)}${bound} · 보고 ${cost.calls_reported}건` +
+    (cost.calls_unreported > 0 ? ` · 미보고 ${cost.calls_unreported}건` : "") +
+    (cost.median_usd === null ? "" : ` · 자산당 중앙값 $${cost.median_usd.toFixed(3)}`)
+  );
+}
+
 export class MissingRequiredFlagError extends Error {
   constructor(flag: string) {
     super(`${flag}은(는) 필수 플래그다 — 미지정 시 실행을 거부한다(전역 CLAUDE.md 비용/타임아웃 규칙)`);
@@ -49,7 +120,8 @@ export class MissingRequiredFlagError extends Error {
 export interface GenDryRunReport {
   assetCount: number;
   approxBytes: number;
-  emptyAssetIds: string[];
+  /** 원문을 못 구한 자산 — **사유별로 처방이 다르므로** id만 나열하지 않는다. */
+  unresolved: GenUnresolvedAsset[];
   /** 파일 위생(심볼릭 링크·크기 상한)에 걸려 건너뛴 자산. 조용히 빼지 않는다. */
   skipped: { assetId: string; failureClass: string; reason: string }[];
 }
@@ -68,7 +140,7 @@ export function runGenDryRun(options: { maxAssets?: number } = {}): GenDryRunRep
     (sum, t) => sum + t.sections.reduce((s, sec) => s + Buffer.byteLength(sec.content, "utf8"), 0),
     0,
   );
-  return { assetCount: plan.targets.length, approxBytes, emptyAssetIds: plan.emptyAssetIds, skipped: plan.skipped };
+  return { assetCount: plan.targets.length, approxBytes, unresolved: plan.unresolved, skipped: plan.skipped };
 }
 
 async function confirmInteractively(promptText: string): Promise<boolean> {
@@ -119,22 +191,19 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
         tokenizerModel: catalogConfig.tokenizer_model,
         cwd: ensureSealedLiveCwd(),
         timeoutSec: options.timeoutSec,
+        maxBudgetUsd: options.maxBudgetUsd,
+        // 이 머신의 지난 실행이 남긴 실비용. 없으면 null이고 실측 줄을 띄우지 않는다.
+        observedCost: readLatestGenCost(catalogPath, machine.machine_id),
       });
 
       console.log(`ctk gen — 대상 자산 ${estimate.assetCount}건, claude -p 호출 ${estimate.callCount}회 예정`);
-      console.log(
-        estimate.estimatedInputTokens !== null
-          ? `  예상 입력 토큰: ${estimate.estimatedInputTokens}tok (근사 비용: $${(estimate.approxCostUsd ?? 0).toFixed(4)}, 참고치 — 실제 상한은 각 호출의 --max-budget-usd=${options.maxBudgetUsd})`
-          : `  예상 입력 토큰: 측정 불가 — approx_bytes=${estimate.approxBytes} (토큰 아님, count_tokens 크레덴셜 없음)`,
-      );
+      for (const line of describeCostEstimate(estimate, options.maxBudgetUsd)) console.log(`  ${line}`);
       if (plan.skipped.length > 0) {
         // 위생 거부는 "생성 안 됨"의 이유가 다르므로 빈 자산과 분리해 보여준다.
         console.log(`  위생 검사가 거부해 건너뛴 자산 ${plan.skipped.length}건:`);
         for (const s of plan.skipped) console.log(`    - ${s.assetId} (${s.failureClass})`);
       }
-      if (plan.emptyAssetIds.length > 0) {
-        console.log(`  원본을 찾지 못해 건너뛴 자산: ${plan.emptyAssetIds.join(", ")}`);
-      }
+      for (const line of summarizeUnresolved(plan.unresolved)) console.log(`  ${line}`);
 
       const grade = gradeManagedPolicy(managedPolicies);
       if (grade.hasRisk) {
@@ -154,6 +223,10 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
             results: [],
             stoppedEarly: false,
             injectionFindingsTotal: { directive: 0, executable: 0, url: 0, length: 0 },
+            // 승인하지 않았으므로 호출이 **하나도 없었다** — 미보고 0건이 사실이다(0원으로
+            // 뭉갠 것이 아니다). 표본이 없으니 중앙값·최대값은 null로 남는다.
+            cost: summarizeGenCost([], 0),
+            urlScrub: { removed: 0, hosts: [] }, // 실행이 없었으므로 제거도 없다.
             sealAudit: { sessionOwnedExcluded: 0, concurrencyOverrides: 0 },
             indexPath: "",
           };
@@ -204,6 +277,12 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
       failure_class: summary.stoppedEarly ? "budget_exceeded" : null,
       seal_profile: options.noLlm === true ? "test-isolated" : "sealed-live",
       injection_findings: summary.injectionFindingsTotal,
+      // 다음 실행의 견적이 이 값을 읽어 실측 범위를 보여준다 — 상수로 박지 않는 이유는
+      // 자산당 실비용이 그 머신의 툴 원문 크기에 달린 **머신 종속** 사실이기 때문이다.
+      gen_cost: summary.cost,
+      // 제거 사실을 **지속 기록**에 남긴다(심사 M1) — 콘솔 경고만으로는 사후 감사가 불가능하고,
+      // injection_findings.url은 제거 도입 후 통과 문서에서 구조적으로 항상 0이다.
+      url_scrub: summary.urlScrub,
     });
 
     if (summary.results.some((r) => r.outcome === "fresh")) {

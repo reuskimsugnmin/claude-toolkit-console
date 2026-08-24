@@ -1,5 +1,8 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { toPerCallBudgetUsd } from "@ctk/core";
+import { toPerCallBudgetUsd, type GenCost } from "@ctk/core";
+import { resolveHomeContext } from "@ctk/probe";
+import { readLatestGenCost } from "@ctk/sync";
+import { readLocalConfig, readMachineIdentityOrNull } from "../local-config.js";
 import { ActionError, type ActionHandlers } from "@ctk/web";
 import { LockContendedError } from "@ctk/sync";
 import { runScan } from "./scan.js";
@@ -141,7 +144,7 @@ function genView(s: Awaited<ReturnType<typeof runGenCli>>) {
     stopped_early: s.stoppedEarly,
     injection_findings: s.injectionFindingsTotal,
     skipped: s.plan.skipped,
-    empty_asset_ids: s.plan.emptyAssetIds,
+    unresolved: s.plan.unresolved,
   };
 }
 
@@ -193,6 +196,25 @@ export interface CreateActionHandlersOptions {
   cumulativeUsdCap?: number;
 }
 
+/**
+ * 이 머신의 지난 `gen` 실행이 남긴 실측 단가를 읽는다. **못 읽으면 `null`이고 대체값을 만들지
+ * 않는다**(안전 원칙 7) — 화면은 그때 "실측 없음"이라고 말해야지 그럴듯한 숫자를 보여선 안 된다.
+ *
+ * 카탈로그가 아직 없는 로컬(초기화 전)에서도 견적 화면은 떠야 하므로 여기서 던지지 않는다.
+ */
+function readObservedGenCost(): GenCost | null {
+  try {
+    const home = resolveHomeContext();
+    const localConfig = readLocalConfig(home);
+    if (localConfig === null) return null;
+    const machine = readMachineIdentityOrNull(home);
+    if (machine === null) return null;
+    return readLatestGenCost(localConfig.catalog_path, machine.machine_id);
+  } catch {
+    return null;
+  }
+}
+
 export function createActionHandlers(options: CreateActionHandlersOptions = {}): ActionHandlers {
   const estimates = options.estimates ?? new EstimateTokenStore();
   const timeoutSec = options.genTimeoutSec ?? 300;
@@ -223,6 +245,10 @@ export function createActionHandlers(options: CreateActionHandlersOptions = {}):
       const data = await rethrowClassified(async () => runGenDryRun({ maxAssets: params.maxAssets }));
       const callCount = data.assetCount;
       const perCallBudgetUsd = toPerCallBudgetUsd(params.maxTotalUsd, callCount);
+      // 이 머신의 지난 실행이 남긴 실측 단가. **없으면 null이고 지어내지 않는다.**
+      // 이것이 없으면 화면은 상한만 보여주고, 사용자는 그 상한이 현실적인지 알 수 없다 —
+      // 실측(2026-08-24) 중앙값이 기본 총액을 호출수로 나눈 값보다 커서 대부분 사전 거부됐다.
+      const observedCost = readObservedGenCost();
       return {
         estimateToken: estimates.issue({ ...params, callCount }),
         // 승인 화면이 보여줄 값에 **적용될 상한**을 함께 싣는다. 이름을 총액/호출당으로
@@ -234,6 +260,7 @@ export function createActionHandlers(options: CreateActionHandlersOptions = {}):
           per_call_budget_usd: perCallBudgetUsd,
           max_total_usd: params.maxTotalUsd,
           session_remaining_usd: Math.max(cumulativeCap - cumulativeApprovedUsd, 0),
+          observed_cost: observedCost,
         },
       };
     },

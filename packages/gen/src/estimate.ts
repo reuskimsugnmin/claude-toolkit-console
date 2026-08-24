@@ -1,4 +1,5 @@
 import { checkSealedLiveAuthStatus, countTokensMeasured, createNullTokenCacheStore, type HomeContext, type TokenCacheStore } from "@ctk/probe";
+import type { GenCost } from "@ctk/core";
 import type { GenPlanTarget } from "./plan.js";
 
 /**
@@ -37,9 +38,18 @@ export interface EstimateOptions {
   /** 테스트 주입용. */
   checkAuthFn?: typeof checkSealedLiveAuthStatus;
   countTokensFn?: typeof countTokensMeasured;
-  /** $/1M input 토큰 근사치 — 실제 과금은 각 `claude -p` 호출의 `--max-budget-usd`가 최종
-   * 상한이다. 이 값은 사전 고지용 근사치일 뿐 정확한 청구 근거가 아니다. */
+  /** $/1M input 토큰 근사치. **입력분만** 곱하므로 이것만으로는 총비용이 되지 않는다. */
   approxUsdPerMillionInputTokens?: number;
+  /**
+   * `--max-budget-usd` — **호출당** 상한. 하네스가 이 값을 넘는 호출을 사전 견적으로 거부하므로
+   * `callCount × maxBudgetUsd`가 **이 실행의 정확한 상한**이다(추정이 아니다).
+   *
+   * **필수 필드다.** 선택으로 두면 상한 없는 견적이 조용히 통과하고, 승인 화면은 다시 하한
+   * 하나만 보여주게 된다 — 이 수정이 없애려는 상태 그대로다(안전 원칙 5).
+   */
+  maxBudgetUsd: number;
+  /** 이 머신의 지난 `gen` 실행에서 관측된 실비용. 없으면 생략 — **지어내지 않는다.** */
+  observedCost?: GenCost | null;
 }
 
 export interface EstimateResult {
@@ -48,8 +58,23 @@ export interface EstimateResult {
   /** 크레덴셜이 있어 실측 가능했으면 토큰 수, 없으면 null(그 경우 approxBytes를 대신 본다). */
   estimatedInputTokens: number | null;
   approxBytes: number;
-  /** 근사치 — 정확한 상한은 각 spawn의 --max-budget-usd다. */
-  approxCostUsd: number | null;
+  /**
+   * **입력 토큰만 계산한 하한.** 총비용이 아니다 — 출력·캐시 생성이 빠져 있고, 실측(2026-08-24)
+   * 에서 실제 비용은 이 값의 약 20배였다. 이름이 `approxCostUsd`였을 때 이 값은 "예상 비용"으로
+   * 읽혔고 그 숫자 위에서 승인이 이뤄졌다 — **이름이 곧 오해의 원인이었다.**
+   */
+  costFloorUsd: number | null;
+  /**
+   * **정확한 상한** = `callCount × maxBudgetUsd`. 추정이 아니다 — 하네스가 호출당 상한을
+   * 넘는 요청을 사전 견적으로 거부하므로 이 값을 넘길 수 없다.
+   */
+  costCeilingUsd: number;
+  /**
+   * 이 머신의 지난 실행에서 관측된 자산당 실비용. **없으면 null이고 대체값을 만들지 않는다.**
+   * 실측 단가는 그 머신에 깔린 툴의 원문 크기에 달린 **머신 종속** 사실이라 카탈로그의
+   * 머신별 영역에 쌓이고, 제품 코드에 상수로 박히지 않는다.
+   */
+  observed: { medianUsd: number; maxUsd: number; sampleSize: number; partial: boolean } | null;
 }
 
 const DEFAULT_APPROX_USD_PER_MILLION_INPUT_TOKENS = 3; // Claude Sonnet급 input 요율 근사치(공개 가격 참고치, 정확한 청구 근거 아님).
@@ -73,6 +98,8 @@ export async function estimateGenCost(options: EstimateOptions): Promise<Estimat
     checkAuthFn = checkSealedLiveAuthStatus,
     countTokensFn = countTokensMeasured,
     approxUsdPerMillionInputTokens = DEFAULT_APPROX_USD_PER_MILLION_INPUT_TOKENS,
+    maxBudgetUsd,
+    observedCost = null,
   } = options;
 
   const auth = await checkAuthFn({ home, cwd, timeoutSec });
@@ -93,7 +120,7 @@ export async function estimateGenCost(options: EstimateOptions): Promise<Estimat
     estimatedInputTokens += measured.value_tokens;
   }
 
-  const approxCostUsd =
+  const costFloorUsd =
     estimatedInputTokens !== null ? (estimatedInputTokens / 1_000_000) * approxUsdPerMillionInputTokens : null;
 
   return {
@@ -101,6 +128,26 @@ export async function estimateGenCost(options: EstimateOptions): Promise<Estimat
     callCount: targets.length, // 자산 1개당 claude -p 1회(직렬) — §1.3 결정 6 H3.
     estimatedInputTokens,
     approxBytes,
-    approxCostUsd,
+    costFloorUsd,
+    costCeilingUsd: targets.length * maxBudgetUsd,
+    observed: toObserved(observedCost),
+  };
+}
+
+/**
+ * 지난 실행의 실측을 표시용으로 옮긴다. **보고 0건이면 null** — 중앙값을 0으로 채우면
+ * "실측했더니 공짜였다"로 읽힌다(안전 원칙 7).
+ *
+ * `partial`은 미보고 호출이 섞였다는 뜻이다. 그 경우 중앙값·최대값은 **보고된 부분만**의
+ * 값이므로 화면이 그 사실을 함께 말해야 한다.
+ */
+function toObserved(cost: GenCost | null): EstimateResult["observed"] {
+  if (cost === null || cost.calls_reported === 0) return null;
+  if (cost.median_usd === null || cost.max_usd === null) return null;
+  return {
+    medianUsd: cost.median_usd,
+    maxUsd: cost.max_usd,
+    sampleSize: cost.calls_reported,
+    partial: cost.calls_unreported > 0,
   };
 }
