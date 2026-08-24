@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
+  type AssetDocState,
   annotationMdPath,
   buildConsoleViewModel,
   buildProjectChoices,
@@ -17,8 +18,9 @@ import {
   type UsageMetric,
 } from "@ctk/core";
 import { listKnownProjectPaths, resolveHomeContext, type HomeContext } from "@ctk/probe";
-import { listAllAssets, listAllOccupancy } from "@ctk/sync";
+import { listAllAssets, listAllOccupancy, readCatalogIndex } from "@ctk/sync";
 import { startReadonlyServer, type AssetDocKind, type ListeningServer } from "@ctk/web";
+import { classifyAssetDocState } from "@ctk/gen";
 import { createActionHandlers, createSessionToken } from "./web-actions.js";
 import { readLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
 import { CatalogNotInitializedError } from "./scan.js";
@@ -380,6 +382,22 @@ export async function runWebServe(options: ServeOptions = {}): Promise<ServeResu
     getViewModel: () => buildViewModelFromCatalog({ ...options, home }),
     getAssetDoc: (assetId: string, which: AssetDocKind) =>
       readAssetDoc(catalogPath, listAllAssets(catalogPath), assetId, which),
+    /**
+     * "문서가 왜 없는가"를 **그 자산 하나만** 판정한다.
+     *
+     * 전체 계산(자산 183건·1.18MB)은 약 0.8초라 요청마다 얹을 수 없다. 상세는 한 번에 하나만
+     * 열리므로 단건이면 비용이 사실상 0이고 **항상 최신 파일 상태를 반영한다** — 캐시가 없으니
+     * "낡은 값에 최신 딱지"(위 주석의 함정)가 생길 여지도 없다.
+     *
+     * 판정은 `gen`의 `classifyAssetDocState`가 하고, 그것은 `planGenTargets`와 **같은 함수**를
+     * 탄다. 화면이 말하는 사유와 `gen`이 실제로 할 일이 갈리지 않아야 하기 때문이다.
+     */
+    getAssetDocState: (assetId: string): AssetDocState | null => {
+      const asset = listAllAssets(catalogPath).find((a) => a.id === assetId);
+      if (asset === undefined) return null; // 자산 자체가 없다 — "상태 불명"과 구분해 404로 낸다
+      const index = readCatalogIndex(catalogPath);
+      return classifyAssetDocState(home, asset, index.assets.find((e) => e.id === assetId));
+    },
   };
 
   // 고지는 실제로 나갈 응답을 기준으로 만든다 — 플래그·읽기 실패가 이미 반영된 값이다.

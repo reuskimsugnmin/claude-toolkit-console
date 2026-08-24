@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import type { Asset } from "@ctk/core";
+import type { Asset, AssetDocState } from "@ctk/core";
 import type { HomeContext } from "@ctk/probe";
-import type { CatalogIndex } from "@ctk/sync";
+import type { CatalogIndex, CatalogIndexEntry } from "@ctk/sync";
 import { FileHygieneError } from "./file-hygiene.js";
 import { resolveAssetSource, type ResolvedAssetSource } from "./source-resolve.js";
 
@@ -86,45 +86,101 @@ export function planGenTargets(options: PlanGenTargetsOptions): GenPlanResult {
   for (const asset of assets) {
     if (maxAssets !== undefined && targets.length >= maxAssets) break;
 
-    let resolved: ResolvedAssetSource;
-    try {
-      resolved = resolveAssetSource(home, asset);
-    } catch (err) {
-      // 위생 실패만 자산 단위로 가둔다. 그 밖의 예외는 그대로 올린다 — 여기서 넓게 잡으면
-      // 진짜 결함이 "건너뛴 자산 1건"으로 조용히 묻힌다.
-      // 포획은 `FileHygieneError` **한 계층**으로 좁힌다. ENOENT는 `readAssetSourceFileSafely`
-      // 안에서 `AssetSourceMissingError`로 분류되므로 여기서 errno를 다시 볼 필요가 없다 —
-      // errno로 잡으면 설정 디렉터리 읽기 실패 같은 진짜 결함까지 묻힌다(심사 L-c).
-      if (!(err instanceof FileHygieneError)) throw err;
-      // ⚠️ 경로를 싣지 않는다. 이 배열은 `gen_estimate`의 **200 성공 본문**으로 브라우저까지
-      // 나가는데(심사 M1), 홈 밖 프로젝트 스킬이면 홈 상대화로도 가려지지 않아 디렉터리
-      // 구조가 그대로 노출된다(심사 L-b). 위생 에러는 메시지에 경로를 넣지 않고, 여기서는
-      // 그것이 지켜졌는지 마지막으로 한 번 더 훑는다(새 에러 타입이 어겨도 새지 않게).
-      skipped.push({ assetId: asset.id, failureClass: err.failureClass, reason: scrubPaths(err.message) });
-      continue;
+    // ⚠️ 판정은 `judgeAsset` **한 곳**에서만 한다. 단건 조회(`classifyAssetDocState`)와 이
+    // 일괄 산출이 각자 판정하면 화면이 말하는 사유와 `gen`이 실제로 하는 일이 갈린다 —
+    // 그 드리프트는 조용하고, 두 경로가 같은 함수를 타야 구조적으로 막힌다.
+    const verdict = judgeAsset(home, asset, indexById.get(asset.id));
+    switch (verdict.kind) {
+      case "blocked":
+        skipped.push({ assetId: asset.id, failureClass: verdict.failureClass, reason: verdict.reason });
+        continue;
+      case "empty":
+        emptyAssetIds.push(asset.id);
+        continue;
+      case "up-to-date":
+        upToDateCount++;
+        continue;
+      case "target":
+        targets.push({
+          asset,
+          reason: verdict.reason,
+          sections: verdict.sections,
+          sourceContentSha256: verdict.sourceContentSha256,
+        });
+        continue;
     }
-    if (resolved.empty) {
-      emptyAssetIds.push(asset.id);
-      continue;
-    }
-
-    const sourceContentSha256 = hashSections(resolved.sections);
-    const indexEntry = indexById.get(asset.id);
-
-    if (indexEntry?.gen_state === "stale") {
-      targets.push({ asset, reason: "stale", sections: resolved.sections, sourceContentSha256 });
-      continue;
-    }
-    if (indexEntry?.gen_content_sha256 === undefined) {
-      targets.push({ asset, reason: "new", sections: resolved.sections, sourceContentSha256 });
-      continue;
-    }
-    if (indexEntry.gen_content_sha256 !== sourceContentSha256) {
-      targets.push({ asset, reason: "changed", sections: resolved.sections, sourceContentSha256 });
-      continue;
-    }
-    upToDateCount++;
   }
 
   return { targets, emptyAssetIds, skipped, upToDateCount };
+}
+
+/** `judgeAsset`의 내부 판정 결과. 일괄 산출과 단건 조회가 **둘 다 이것을** 근거로 삼는다. */
+type AssetVerdict =
+  | { kind: "blocked"; failureClass: string; reason: string }
+  | { kind: "empty" }
+  | { kind: "up-to-date" }
+  | { kind: "target"; reason: GenTargetReason; sections: ResolvedAssetSource["sections"]; sourceContentSha256: string };
+
+/**
+ * 자산 하나의 생성 상태를 판정한다. **파일시스템을 읽지만 아무것도 쓰지 않는다.**
+ *
+ * 위생 실패만 자산 단위로 가둔다. 그 밖의 예외는 그대로 올린다 — 여기서 넓게 잡으면 진짜
+ * 결함이 "건너뛴 자산 1건"으로 조용히 묻힌다. 포획은 `FileHygieneError` **한 계층**으로
+ * 좁힌다. ENOENT는 `readAssetSourceFileSafely` 안에서 `AssetSourceMissingError`로 분류되므로
+ * 여기서 errno를 다시 볼 필요가 없다 — errno로 잡으면 설정 디렉터리 읽기 실패 같은 진짜
+ * 결함까지 묻힌다(심사 L-c).
+ */
+function judgeAsset(home: HomeContext, asset: Asset, indexEntry: CatalogIndexEntry | undefined): AssetVerdict {
+  let resolved: ResolvedAssetSource;
+  try {
+    resolved = resolveAssetSource(home, asset);
+  } catch (err) {
+    if (!(err instanceof FileHygieneError)) throw err;
+    // ⚠️ 경로를 싣지 않는다. 이 값은 `gen_estimate`의 **200 성공 본문**과 자산 상세 조회로
+    // 브라우저까지 나가는데(심사 M1), 홈 밖 프로젝트 스킬이면 홈 상대화로도 가려지지 않아
+    // 디렉터리 구조가 그대로 노출된다(심사 L-b). 위생 에러는 메시지에 경로를 넣지 않고,
+    // 여기서는 그것이 지켜졌는지 마지막으로 한 번 더 훑는다(새 에러 타입이 어겨도 새지 않게).
+    return { kind: "blocked", failureClass: err.failureClass, reason: scrubPaths(err.message) };
+  }
+  if (resolved.empty) return { kind: "empty" };
+
+  const sourceContentSha256 = hashSections(resolved.sections);
+  if (indexEntry?.gen_state === "stale") {
+    return { kind: "target", reason: "stale", sections: resolved.sections, sourceContentSha256 };
+  }
+  if (indexEntry?.gen_content_sha256 === undefined) {
+    return { kind: "target", reason: "new", sections: resolved.sections, sourceContentSha256 };
+  }
+  if (indexEntry.gen_content_sha256 !== sourceContentSha256) {
+    return { kind: "target", reason: "changed", sections: resolved.sections, sourceContentSha256 };
+  }
+  return { kind: "up-to-date" };
+}
+
+/**
+ * **자산 하나**의 문서 상태를 조회용으로 판정한다(콘솔 자산 상세).
+ *
+ * 일괄 산출(`planGenTargets`)과 **같은 `judgeAsset`을 탄다** — 화면이 말하는 사유와 `gen`이
+ * 실제로 할 일이 갈리지 않게 하는 유일한 방법이다. 전체를 계산하지 않으므로 비용은 그 자산의
+ * 원본을 한 번 읽는 것뿐이다(전체 계산은 자산 183건·1.18MB 기준 약 0.8초였다).
+ *
+ * 결과는 **어디에도 저장하지 않는다.** `source_missing`·`blocked`는 이 머신의 파일 배치에
+ * 대한 사실이라 머신 독립 카탈로그에 넣으면 스키마의 축을 섞는다(core/view/asset-doc-state.ts).
+ */
+export function classifyAssetDocState(
+  home: HomeContext,
+  asset: Asset,
+  indexEntry: CatalogIndexEntry | undefined,
+): AssetDocState {
+  const verdict = judgeAsset(home, asset, indexEntry);
+  switch (verdict.kind) {
+    case "blocked":
+      return { kind: "blocked", failure_class: verdict.failureClass, reason: verdict.reason };
+    case "empty":
+      return { kind: "source_missing" };
+    case "up-to-date":
+      return { kind: "generated" };
+    case "target":
+      return { kind: "pending_generation", trigger: verdict.reason };
+  }
 }

@@ -489,6 +489,37 @@ async function showDetail(asset) {
 
   const host = $("detail-docs");
   host.textContent = "";
+
+  // 문서 상태를 **먼저** 한 번 조회한다. 이전에는 문서가 없으면 사유와 무관하게 항상 같은
+  // 한 문장을 띄웠는데, 사유는 셋으로 갈리고 사용자가 할 일이 각각 다르다 — 돈만 내면 되는
+  // 것과 정책을 정해야 하는 것이 같은 배지를 달고 있었다(안전 원칙 7).
+  // 문구는 서버가 만들어 보낸다(판정 주체 하나). 여기서는 textContent로 넣기만 한다.
+  let docState = null;
+  try {
+    const sres = await fetch("/api/assets/" + encodeURIComponent(asset.id) + "/doc-state");
+    if (sres.ok) docState = await sres.json();
+  } catch (e) {
+    docState = null; // 조회 실패는 "상태 없음"이지 "문서 있음"이 아니다 — 아래에서 구분해 표시한다
+  }
+
+  const banner = document.createElement("div");
+  banner.className = "doc muted";
+  if (docState && docState.display) {
+    const label = document.createElement("strong");
+    label.textContent = docState.display.label;
+    banner.appendChild(label);
+    const detail = document.createElement("div");
+    detail.textContent = docState.display.detail;
+    banner.appendChild(detail);
+    const action = document.createElement("div");
+    action.textContent = "할 일: " + docState.display.action;
+    banner.appendChild(action);
+  } else {
+    // 상태를 못 읽은 것과 "문서가 없다"를 뭉개지 않는다.
+    banner.textContent = "문서 상태를 확인하지 못했다 (서버 응답 없음) — 문서 유무와는 별개다.";
+  }
+  host.appendChild(banner);
+
   for (const which of ["annotation", "usage"]) {
     const title = document.createElement("h3");
     title.style.fontSize = "14px";
@@ -498,7 +529,8 @@ async function showDetail(asset) {
     pre.className = "doc";
     const res = await fetch("/api/assets/" + encodeURIComponent(asset.id) + "/doc/" + which);
     // 404를 빈 문서로 렌더하지 않는다 — "없다"와 "비어 있다"는 다른 사실이다.
-    pre.textContent = res.ok ? await res.text() : "문서가 아직 생성되지 않았다 (ctk gen 필요)";
+    // 사유는 위 배너가 말한다. 여기서는 "이 문서가 없다"는 사실만 적는다.
+    pre.textContent = res.ok ? await res.text() : "이 문서는 아직 없다 (사유는 위 상태 참조)";
     if (!res.ok) pre.className = "doc muted";
     host.appendChild(pre);
   }

@@ -62,6 +62,7 @@ async function start(): Promise<ListeningServer> {
   running = await startReadonlyServer({
     getViewModel: () => VIEW_MODEL,
     getAssetDoc: (assetId, which) => DOCS[`${assetId}::${which}`] ?? null,
+      getAssetDocState: () => null,
   });
   return running;
 }
@@ -177,6 +178,7 @@ describe("응답 내용", () => {
         throw new Error("카탈로그 읽기 실패");
       },
       getAssetDoc: () => null,
+      getAssetDocState: () => null,
     });
     const res = await fetch(`${running.url}/api/view-model`);
     expect(res.status).toBe(500);

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { Asset } from "@ctk/core";
 import type { CatalogIndex } from "@ctk/sync";
 import type { HomeContext } from "@ctk/probe";
-import { planGenTargets } from "../src/plan.js";
+import { classifyAssetDocState, planGenTargets } from "../src/plan.js";
 
 function skillAsset(id: string): Asset {
   return { schema_version: 1, _scope: "machine_independent", id, kind: "skill", name: id, description: `${id} 설명` };
@@ -285,4 +285,111 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     expect(reason).toContain("바이트");
     expect(reason).not.toMatch(/\/[A-Za-z]/);
   });
+
+  describe("classifyAssetDocState — 단건 조회가 일괄 산출과 갈리지 않는다", () => {
+    /**
+     * ⚠️ **범위 게이트다.** 화면이 말하는 사유와 `gen`이 실제로 할 일이 갈리면 그 드리프트는
+     * 조용하다 — 사용자는 "생성 대기"를 보고 돈을 냈는데 gen은 그 자산을 건너뛴다. 항목이
+     * 아니라 범위로 닫기 위해, **네 상태가 모두 등장하는 픽스처**를 만들고 전 자산에 대해
+     * 두 경로의 판정이 일치하는지 대조한다. 두 경로가 각자 판정하도록 되돌리면 여기서 깨진다.
+     */
+    it("네 상태가 모두 나오는 표본에서 단건 판정과 일괄 산출이 전부 일치한다", () => {
+      init();
+
+      // ① pending(new) — 원본 있고 인덱스에 해시 없음
+      setupSkill("fresh-skill", "v1");
+      // ② generated — 해시가 일치하도록 먼저 일괄 산출로 실제 해시를 얻어 인덱스에 넣는다
+      setupSkill("done-skill", "v1");
+      // ⑤ pending(changed) — 인덱스에 **다른** 해시가 박혀 있다
+      setupSkill("moved-skill", "v1");
+      // ⑥ pending(stale) — 직전 실행이 실패로 남긴 상태. 해시가 일치해도 대상이어야 한다
+      setupSkill("stale-skill", "v1");
+      // ③ source_missing — 자산은 있는데 SKILL.md가 없다
+      mkdirSync(path.join(home.ctkConfigDir, "skills", "empty-skill"), { recursive: true });
+      // ④ blocked — 원본이 심볼릭 링크
+      const linkedDir = path.join(home.ctkConfigDir, "skills", "linked-skill");
+      mkdirSync(linkedDir, { recursive: true });
+      const outside = path.join(ctkHome, "outside.md");
+      writeFileSync(outside, "---\nname: linked-skill\ndescription: x\n---\n본문\n");
+      symlinkSync(outside, path.join(linkedDir, "SKILL.md"));
+
+      const ids = ["fresh-skill", "done-skill", "moved-skill", "stale-skill", "empty-skill", "linked-skill"];
+      const assets = ids.map(skillAsset);
+
+      // done-skill의 실제 해시를 얻어 "최신" 상태를 만든다 — 손으로 지어낸 해시는 판정을
+      // 검증하지 못한다(픽스처가 결과를 지배해야 한다).
+      const probe = planGenTargets({
+        home,
+        assets,
+        index: { schema_version: 1, assets: ids.map((id) => ({ id, kind: "skill" as const, name: id })) },
+      });
+      const doneHash = probe.targets.find((t) => t.asset.id === "done-skill")?.sourceContentSha256;
+      const staleHash = probe.targets.find((t) => t.asset.id === "stale-skill")?.sourceContentSha256;
+      expect(doneHash).toBeDefined();
+      expect(staleHash).toBeDefined();
+
+      const index: CatalogIndex = {
+        schema_version: 1,
+        assets: ids.map((id) => {
+          const base = { id, kind: "skill" as const, name: id };
+          // 최신 — 실제 해시와 일치
+          if (id === "done-skill") return { ...base, gen_state: "fresh" as const, gen_content_sha256: doneHash };
+          // 원본이 바뀜 — 해시가 다르다
+          if (id === "moved-skill") return { ...base, gen_state: "fresh" as const, gen_content_sha256: "0".repeat(64) };
+          // 직전 실패 — 해시가 **일치해도** stale이면 대상이어야 한다(그래야 stale 분기가 실행된다)
+          if (id === "stale-skill") return { ...base, gen_state: "stale" as const, gen_content_sha256: staleHash };
+          return base;
+        }),
+      };
+
+      const bulk = planGenTargets({ home, assets, index });
+      const indexById = new Map(index.assets.map((e) => [e.id, e]));
+
+      // 일괄 산출을 자산 id → 기대 상태로 펼친다.
+      const fromBulk = new Map<string, string>();
+      for (const t of bulk.targets) fromBulk.set(t.asset.id, `pending_generation:${t.reason}`);
+      for (const id of bulk.emptyAssetIds) fromBulk.set(id, "source_missing");
+      for (const sk of bulk.skipped) fromBulk.set(sk.assetId, "blocked");
+      for (const a of assets) if (!fromBulk.has(a.id)) fromBulk.set(a.id, "generated");
+
+      // ⚠️ **표본에 오답이 가능해야 대조가 의미를 갖는다.** 처음엔 상태 4종만 넣고
+      // `size === 4`로 만족했는데, 실제로 갈릴 수 있는 축은 `pending_generation`의 **세 trigger**
+      // 였다 — `stale` 자산이 없으니 stale 오분류를 주입해도 게이트가 통과했다(파괴 실험으로 발견).
+      // 범위가 아니라 **축**이 어긋난 경우다. 판정이 만들 수 있는 값 전체를 표본에 넣는다.
+      expect([...fromBulk.values()].sort()).toEqual(
+        [
+          "blocked",
+          "generated",
+          "pending_generation:changed",
+          "pending_generation:new",
+          "pending_generation:stale",
+          "source_missing",
+        ].sort(),
+      );
+
+      for (const asset of assets) {
+        const single = classifyAssetDocState(home, asset, indexById.get(asset.id));
+        const flattened =
+          single.kind === "pending_generation" ? `pending_generation:${single.trigger}` : single.kind;
+        expect(flattened, `자산 ${asset.id}에서 단건/일괄 판정이 갈렸다`).toBe(fromBulk.get(asset.id));
+      }
+    });
+
+    it("blocked의 reason에는 절대경로가 실리지 않는다(무인증 조회 채널로 나간다)", () => {
+      init();
+      const linkedDir = path.join(home.ctkConfigDir, "skills", "linked-skill");
+      mkdirSync(linkedDir, { recursive: true });
+      const outside = path.join(ctkHome, "outside.md");
+      writeFileSync(outside, "---\nname: linked-skill\ndescription: x\n---\n본문\n");
+      symlinkSync(outside, path.join(linkedDir, "SKILL.md"));
+
+      const state = classifyAssetDocState(home, skillAsset("linked-skill"), undefined);
+      expect(state.kind).toBe("blocked");
+      if (state.kind === "blocked") {
+        expect(state.reason).not.toMatch(/\/[^\s:]+/);
+        expect(state.failure_class).toBe("path_traversal_detected");
+      }
+    });
+  });
+
 });
