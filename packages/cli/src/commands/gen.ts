@@ -9,8 +9,8 @@ import {
   readCatalogIndex,
   writeRunLog,
 } from "@ctk/sync";
-import { gradeManagedPolicy } from "@ctk/core";
-import { estimateGenCost, planGenTargets, runGen, type RunGenSummary } from "@ctk/gen";
+import { gradeManagedPolicy, unresolvedReasonLabel } from "@ctk/core";
+import { estimateGenCost, planGenTargets, runGen, type GenUnresolvedAsset, type RunGenSummary } from "@ctk/gen";
 import { readLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
 import { ensureSealedLiveCwd } from "../sealed-cwd.js";
 import { CatalogNotInitializedError } from "./scan.js";
@@ -39,6 +39,20 @@ export interface RunGenCliOptions {
   routingProbeCommand?: string;
 }
 
+/**
+ * 미해결 자산을 **사유별로** 줄 세운다. 한 목록으로 합쳐 보여주면 사용자는 있지도 않은
+ * 드리프트를 조사하러 간다(실측: 12건 중 드리프트 0건). 라벨은 `core`가 단독으로 갖는다.
+ */
+export function summarizeUnresolved(unresolved: readonly GenUnresolvedAsset[]): string[] {
+  const byReason = new Map<GenUnresolvedAsset["reason"], string[]>();
+  for (const u of unresolved) {
+    const ids = byReason.get(u.reason) ?? [];
+    ids.push(u.locationCount === undefined ? u.assetId : `${u.assetId}(${u.locationCount}곳)`);
+    byReason.set(u.reason, ids);
+  }
+  return [...byReason].map(([reason, ids]) => `${unresolvedReasonLabel(reason)} ${ids.length}건: ${ids.join(", ")}`);
+}
+
 export class MissingRequiredFlagError extends Error {
   constructor(flag: string) {
     super(`${flag}은(는) 필수 플래그다 — 미지정 시 실행을 거부한다(전역 CLAUDE.md 비용/타임아웃 규칙)`);
@@ -49,7 +63,8 @@ export class MissingRequiredFlagError extends Error {
 export interface GenDryRunReport {
   assetCount: number;
   approxBytes: number;
-  emptyAssetIds: string[];
+  /** 원문을 못 구한 자산 — **사유별로 처방이 다르므로** id만 나열하지 않는다. */
+  unresolved: GenUnresolvedAsset[];
   /** 파일 위생(심볼릭 링크·크기 상한)에 걸려 건너뛴 자산. 조용히 빼지 않는다. */
   skipped: { assetId: string; failureClass: string; reason: string }[];
 }
@@ -68,7 +83,7 @@ export function runGenDryRun(options: { maxAssets?: number } = {}): GenDryRunRep
     (sum, t) => sum + t.sections.reduce((s, sec) => s + Buffer.byteLength(sec.content, "utf8"), 0),
     0,
   );
-  return { assetCount: plan.targets.length, approxBytes, emptyAssetIds: plan.emptyAssetIds, skipped: plan.skipped };
+  return { assetCount: plan.targets.length, approxBytes, unresolved: plan.unresolved, skipped: plan.skipped };
 }
 
 async function confirmInteractively(promptText: string): Promise<boolean> {
@@ -132,9 +147,7 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
         console.log(`  위생 검사가 거부해 건너뛴 자산 ${plan.skipped.length}건:`);
         for (const s of plan.skipped) console.log(`    - ${s.assetId} (${s.failureClass})`);
       }
-      if (plan.emptyAssetIds.length > 0) {
-        console.log(`  원본을 찾지 못해 건너뛴 자산: ${plan.emptyAssetIds.join(", ")}`);
-      }
+      for (const line of summarizeUnresolved(plan.unresolved)) console.log(`  ${line}`);
 
       const grade = gradeManagedPolicy(managedPolicies);
       if (grade.hasRisk) {

@@ -8,7 +8,7 @@
 
 import { runInit } from "../src/commands/init.js";
 import { runScan, CatalogNotInitializedError } from "../src/commands/scan.js";
-import { runGenCli, runGenDryRun, MissingRequiredFlagError } from "../src/commands/gen.js";
+import { runGenCli, runGenDryRun, summarizeUnresolved, MissingRequiredFlagError } from "../src/commands/gen.js";
 import { runAgentProbeCli } from "../src/commands/agent-probe.js";
 import { runVerifySeal } from "../src/commands/verify-seal.js";
 import {
@@ -325,9 +325,7 @@ async function main(): Promise<void> {
           const report = runGenDryRun({ maxAssets: maxAssets !== undefined ? Number(maxAssets) : undefined });
           console.log(`ctk gen --dry-run (로컬 전용 미리보기 — 네트워크·spawn 없음)`);
           console.log(`  생성 대상: ${report.assetCount}건 · 원본 크기 합계: ${report.approxBytes} bytes`);
-          if (report.emptyAssetIds.length > 0) {
-            console.log(`  ⚠️ 원본이 비어 생성 불가: ${report.emptyAssetIds.length}건`);
-          }
+          for (const line of summarizeUnresolved(report.unresolved)) console.log(`  ⚠️ ${line}`);
           if (report.skipped.length > 0) {
             // 위생 거부는 "원본 없음"과 이유가 다르다 — 뭉치면 사용자가 무엇을 고쳐야 할지 모른다.
             const byClass = new Map<string, number>();

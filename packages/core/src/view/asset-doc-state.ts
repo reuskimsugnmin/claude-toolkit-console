@@ -27,8 +27,25 @@ export type AssetDocState =
   | { kind: "generated" }
   /** 만들 수 있고 아직 안 만들었다 — 유료 실행이 필요하다. */
   | { kind: "pending_generation"; trigger: AssetDocPendingTrigger }
-  /** 자산은 카탈로그에 있는데 원본(`SKILL.md`·`README` 등)을 찾지 못했다. */
+  /** 자산은 카탈로그에 있는데 원본(`SKILL.md`·`README` 등)을 찾지 못했다 — 드리프트 의심. */
   | { kind: "source_missing" }
+  /**
+   * 이 자산 **유형**에는 로컬에 읽을 정형 원문 파일이 없다(mcp·cli).
+   *
+   * ⚠️ **`source_missing`과 섞지 않는다.** 실측(2026-08-24) 12건 중 6건이 이것이었고, 화면은
+   * 그 6건에도 "드리프트인지 확인하라"고 말하고 있었다 — **실행 불가능한 조언**이다. 사라진
+   * 것이 아니라 애초에 그런 파일이 없다. mcp 4건·cli 2건 전부 `Asset.description`이 비어
+   * 있었으므로(유형 전체 0%) 원문의 진짜 소재지는 카탈로그 밖이다(MCP는 서버 런타임
+   * instructions, CLI는 `--help`).
+   */
+  | { kind: "no_local_source" }
+  /**
+   * 같은 id의 원문이 여러 곳에 있고 **내용이 서로 다르다** — 어느 것이 진짜인지 판정 불가.
+   *
+   * 내용이 같으면 이 상태가 아니다(그때는 읽어서 생성한다). `location_count`는 이 머신의
+   * 파일 배치 사실이므로 계산해서 보여줄 뿐 카탈로그에 저장하지 않는다.
+   */
+  | { kind: "ambiguous_source"; location_count: number }
   /**
    * 위생 검사가 원문 읽기를 거부했다.
    *
@@ -37,6 +54,26 @@ export type AssetDocState =
    * 여기서 새로 문자열을 조립할 때도 경로를 만들어 넣지 않는다.
    */
   | { kind: "blocked"; failure_class: string; reason: string };
+
+/**
+ * 원문을 구하지 못한 사유. **`AssetDocState`의 kind와 문자열이 같다** — `gen`이 산출한 사유를
+ * 화면 상태로 옮길 때 매핑 표를 하나 더 두면 그 표가 조용히 드리프트한다.
+ *
+ * 이 타입이 `core`에 있는 이유: `gen`(판정)과 `cli`·`web`(표시)이 **같은 라벨**을 써야 하는데,
+ * `cli`는 `gen`을 임포트하지만 `web`의 UI 스크립트는 JSON만 받는다. 라벨 출처가 갈리면
+ * 같은 자산이 CLI에서는 "원본 없음", 화면에서는 다른 말이 된다.
+ */
+export type UnresolvedSourceReason = "source_missing" | "no_local_source" | "ambiguous_source";
+
+/**
+ * 사유 하나의 배지 문구. **`describeAssetDocState`를 거쳐서** 얻는다 — 라벨을 여기 다시
+ * 적으면 두 곳이 갈린다. `location_count`는 label에 쓰이지 않으므로 0을 넣어도 무방하다.
+ */
+export function unresolvedReasonLabel(reason: UnresolvedSourceReason): string {
+  return describeAssetDocState(
+    reason === "ambiguous_source" ? { kind: reason, location_count: 0 } : { kind: reason },
+  ).label;
+}
 
 export interface AssetDocStateDisplay {
   /** 배지 문구 — 짧게. */
@@ -73,6 +110,18 @@ export function describeAssetDocState(state: AssetDocState): AssetDocStateDispla
         label: "원본 없음",
         detail: "자산은 카탈로그에 있는데 문서를 만들 원본(SKILL.md · README 등)을 찾지 못했다.",
         action: "원본이 실제로 지워졌는지(드리프트) 확인한다 — `ctk doctor --drift`. 지워졌다면 생성 대상이 아니라 정리 대상이다.",
+      };
+    case "no_local_source":
+      return {
+        label: "유형상 원문 없음",
+        detail: "이 자산 유형(MCP 서버 · CLI)은 로컬에 읽을 정형 원문 파일이 없다. 사라진 것이 아니라 애초에 없다.",
+        action: "조사할 것이 없다 — 드리프트가 아니다. 이 유형의 설명은 카탈로그 밖(MCP는 서버 런타임, CLI는 `--help`)에 있고 v1은 그것을 읽지 않는다.",
+      };
+    case "ambiguous_source":
+      return {
+        label: "중복 설치 · 내용 불일치",
+        detail: `같은 이름의 원문이 이 머신 ${state.location_count}곳에 있고 내용이 서로 다르다 — 어느 것이 진짜인지 판정할 수 없다.`,
+        action: "중복 중 하나를 지우거나 이름을 갈라 충돌을 없앤다. 내용이 완전히 같아지면 그때는 자동으로 생성 대상이 된다.",
       };
     case "blocked":
       return {

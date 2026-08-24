@@ -18,6 +18,21 @@
  * 값은 전부 `textContent`로 넣는다(`innerHTML` 금지). 카탈로그 문서는 서드파티 원문 기반
  * 자동 생성물이므로(gen_source_trust) 그 안의 문자열을 마크업으로 해석하면 안 된다.
  */
+import { unresolvedReasonLabel, type UnresolvedSourceReason } from "@ctk/core";
+
+/**
+ * 미해결 사유의 배지 문구를 **`core`에서 받아** UI 스크립트에 주입한다.
+ *
+ * ⚠️ 여기에 문자열을 다시 적지 않는다. UI는 브라우저 스크립트라 `core`를 임포트할 수 없고,
+ * 그 틈에 라벨을 복사해 두면 같은 자산이 CLI에서는 한 말, 화면에서는 다른 말이 된다 —
+ * 이 저장소가 반복해서 만난 드리프트다. 렌더 시점에 주입하면 출처가 하나로 유지된다.
+ */
+const UNRESOLVED_LABELS: Record<UnresolvedSourceReason, string> = {
+  source_missing: unresolvedReasonLabel("source_missing"),
+  no_local_source: unresolvedReasonLabel("no_local_source"),
+  ambiguous_source: unresolvedReasonLabel("ambiguous_source"),
+};
+
 function renderUiHtml(nonce: string): string {
   return `<!doctype html>
 <html lang="ko">
@@ -154,6 +169,8 @@ function renderUiHtml(nonce: string): string {
 </main>
 
 <script nonce="${nonce}">
+// 사유 배지 문구 — core가 단독 출처다(위 UNRESOLVED_LABELS 주석 참조).
+const UNRESOLVED_LABEL = ${JSON.stringify(UNRESOLVED_LABELS)};
 const $ = (id) => document.getElementById(id);
 let VM = null;
 
@@ -347,7 +364,15 @@ async function runGenTwoPhase() {
   ];
   if (d.clamped) rows.push(["참고", "서버 상한에 걸려 요청보다 줄었다"]);
   if (d.skipped && d.skipped.length > 0) rows.push(["건너뜀", d.skipped.length + "건 (위생 검사 거부)"]);
-  if (d.emptyAssetIds && d.emptyAssetIds.length > 0) rows.push(["원본 없음", d.emptyAssetIds.length + "건"]);
+  // 사유별로 갈라 보여준다 — 합치면 "드리프트를 조사하라"가 조사할 것 없는 자산에도 붙는다.
+  if (d.unresolved && d.unresolved.length > 0) {
+    var byReason = {};
+    for (var i = 0; i < d.unresolved.length; i++) {
+      var r = d.unresolved[i].reason;
+      byReason[r] = (byReason[r] || 0) + 1;
+    }
+    for (var key in byReason) rows.push([UNRESOLVED_LABEL[key] || key, byReason[key] + "건"]);
+  }
 
   if (d.assetCount === 0) {
     showResult("생성할 대상이 없다 — 모든 자산이 최신이거나 원본을 읽을 수 없다.", false);

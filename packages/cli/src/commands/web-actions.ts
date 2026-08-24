@@ -141,7 +141,7 @@ function genView(s: Awaited<ReturnType<typeof runGenCli>>) {
     stopped_early: s.stoppedEarly,
     injection_findings: s.injectionFindingsTotal,
     skipped: s.plan.skipped,
-    empty_asset_ids: s.plan.emptyAssetIds,
+    unresolved: s.plan.unresolved,
   };
 }
 

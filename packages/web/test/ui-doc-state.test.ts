@@ -101,6 +101,34 @@ interface DocStateEnvelope {
   display: { label: string; detail: string; action: string };
 }
 
+/**
+ * 스크립트만 띄우고, **같은 컨텍스트에서 식 하나를 평가해** 값을 꺼낸다.
+ *
+ * ⚠️ `ctx["이름"]`으로는 못 읽는다 — vm 컨텍스트에서 top-level `const`/`let`은 전역 **객체의
+ * 속성이 되지 않고** 전역 렉시컬 환경에만 산다(`var`·함수 선언과 다르다). 이 테스트를 처음
+ * 쓸 때 그대로 걸렸다. 같은 컨텍스트에서 이어 평가하면 그 바인딩이 보이고, 이것이 파싱이
+ * 아니라 실행으로 확인하는 방법이다.
+ */
+async function evalInBootedScript(expression: string): Promise<unknown> {
+  const ctx: Record<string, unknown> = {
+    document: {
+      getElementById: () => new El("stub"),
+      createElement: (tag: string) => new El(tag),
+      querySelectorAll: () => [],
+      querySelector: () => new El("main"),
+    },
+    location: { hash: "", pathname: "/" },
+    history: { replaceState: () => {} },
+    URLSearchParams,
+    fetch: () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(VIEW_MODEL) }),
+    console,
+  };
+  vm.createContext(ctx);
+  new vm.Script(extractScript(UI_HTML)).runInContext(ctx);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+  return new vm.Script(expression).runInContext(ctx);
+}
+
 async function bootAndShowDetail(docState: DocStateEnvelope | null): Promise<El> {
   const byId = new Map<string, El>();
   const el = (id: string): El => {
@@ -164,6 +192,30 @@ describe("자산 상세 — 문서가 없는 사유를 구분해 보여준다", 
       mustContain: ["원본 없음", "드리프트인지 확인한다"],
     },
     {
+      name: "유형상 원문 없음(조사할 것이 없다)",
+      envelope: {
+        state: { kind: "no_local_source" },
+        display: {
+          label: "유형상 원문 없음",
+          detail: "이 자산 유형(MCP 서버 · CLI)은 로컬에 읽을 정형 원문 파일이 없다.",
+          action: "조사할 것이 없다 — 드리프트가 아니다",
+        },
+      },
+      mustContain: ["유형상 원문 없음", "드리프트가 아니다"],
+    },
+    {
+      name: "중복 설치 · 내용 불일치(충돌 해소가 필요)",
+      envelope: {
+        state: { kind: "ambiguous_source", location_count: 2 },
+        display: {
+          label: "중복 설치 · 내용 불일치",
+          detail: "같은 이름의 원문이 이 머신 2곳에 있고 내용이 서로 다르다.",
+          action: "중복 중 하나를 지우거나 이름을 갈라 충돌을 없앤다",
+        },
+      },
+      mustContain: ["중복 설치", "2곳", "충돌을 없앤다"],
+    },
+    {
       name: "위생 거부(정책 결정이 필요)",
       envelope: {
         state: { kind: "blocked", failure_class: "path_traversal_detected", reason: "심볼릭 링크" },
@@ -182,10 +234,27 @@ describe("자산 상세 — 문서가 없는 사유를 구분해 보여준다", 
     });
   }
 
-  it("세 사유가 서로 다른 화면을 만든다 (이전 결함: 셋이 같은 한 문장이었다)", async () => {
+  it("다섯 사유가 서로 다른 화면을 만든다 (이전 결함: 전부 같은 한 문장이었다)", async () => {
     const texts: string[] = [];
     for (const c of CASES) texts.push((await bootAndShowDetail(c.envelope)).textContent);
-    expect(new Set(texts).size, "사유가 달라도 화면이 같으면 3분할이 되지 않은 것이다").toBe(3);
+    expect(new Set(texts).size, "사유가 달라도 화면이 같으면 분할이 되지 않은 것이다").toBe(CASES.length);
+  });
+
+  /**
+   * ⚠️ **라벨 출처가 하나인지 실행해서 확인한다.** UI는 브라우저 스크립트라 `@ctk/core`를
+   * 임포트할 수 없어 `ui-page.ts`가 렌더 시점에 `UNRESOLVED_LABEL`을 주입한다. 그 주입이
+   * 조용히 빠지면 화면은 사유 문자열(`no_local_source`)을 날것으로 보여주는데, 문자열
+   * 조립물은 **파싱돼도 동작은 틀린다**(CLAUDE.md) — 그래서 정적 검사가 아니라 실행으로 본다.
+   */
+  it("사유 배지 문구가 core에서 주입돼 실행 시점에 닿는다", async () => {
+    const labels = (await evalInBootedScript("UNRESOLVED_LABEL")) as Record<string, string> | undefined;
+    expect(labels, "UNRESOLVED_LABEL 주입이 빠졌다").toBeTypeOf("object");
+    for (const reason of ["source_missing", "no_local_source", "ambiguous_source"]) {
+      expect(labels?.[reason], `${reason}의 배지 문구가 없다`).toBeTruthy();
+      // 사유 슬러그를 그대로 보여주면 주입이 안 된 것과 같다.
+      expect(labels?.[reason]).not.toBe(reason);
+    }
+    expect(new Set(Object.values(labels ?? {})).size, "세 사유가 같은 문구면 화면이 뭉갠다").toBe(3);
   });
 
   it("상태 조회가 실패하면 '문서 없음'으로 뭉개지 않고 확인 실패라고 말한다", async () => {
