@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { summarizeGenCost } from "../src/index.js";
+import { GenRunAbortedError, summarizeGenCost } from "../src/index.js";
 import { readEnvelopeCostUsd, readEnvelopeProvenance } from "../src/output-schema.js";
 import { GEN_MODEL } from "../src/run-claude-p.js";
 import { GenCostSchema } from "@ctk/core";
@@ -145,5 +145,33 @@ describe("readEnvelopeProvenance", () => {
 describe("gen 모델 고정", () => {
   it("문서 생성은 sonnet으로 고정된다", () => {
     expect(GEN_MODEL).toBe("sonnet");
+  });
+});
+
+/**
+ * **중단된 실행도 장부를 남긴다 (2026-08-25 실측).**
+ *
+ * 감사 위반으로 멈춘 배치가 **문서 10건을 만들고 돈을 썼는데 run-log를 한 줄도 남기지
+ * 않았다** — `writeRunLog`가 `await runGen(...)` 뒤에 있어 던지면 건너뛴다. 카탈로그는
+ * 나아가고 장부는 안 나아간다.
+ *
+ * 결과가 두 겹이다 — ① 나간 돈이 어디에도 없고 ② 다음 견적이 **성공한 실행만**으로
+ * 계산된다. 중단은 대개 비싼 자산에서 나므로 그 표본은 아래로 편향된다(안전 원칙 8).
+ */
+describe("GenRunAbortedError — 중단 시점까지의 집계를 실어 나른다", () => {
+  it("원래 실패를 cause로 그대로 보존한다 — 중단을 다른 실패로 바꾸지 않는다", () => {
+    const cause = Object.assign(new Error("감사 위반"), { failureClass: "whitelist_violation" });
+    const partial = summarizeGenCost([0.2, 0.3], 1, []);
+    const err = new GenRunAbortedError(cause, { cost: partial } as never);
+    expect(err.cause).toBe(cause);
+    expect((err.partial as { cost: typeof partial }).cost.reported_total_usd).toBeCloseTo(0.5, 10);
+  });
+
+  /** 부분 집계가 **0이 아니어야** 한다 — 빈 값을 실으면 장부를 쓴 것과 안 쓴 것이 같아진다. */
+  it("중단 전 호출들의 비용이 부분 집계에 들어 있다", () => {
+    const partial = summarizeGenCost([0.2, 0.3], 1, []);
+    expect(partial.calls_reported).toBe(2);
+    expect(partial.calls_unreported).toBe(1);
+    expect(partial.reported_total_usd).toBeCloseTo(0.5, 10);
   });
 });

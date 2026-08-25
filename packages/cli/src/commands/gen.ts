@@ -10,12 +10,19 @@ import {
   readLatestGenCost,
   writeRunLog,
 } from "@ctk/sync";
-import { gradeManagedPolicy, projectGenTotalUsd, unresolvedReasonLabel } from "@ctk/core";
+import {
+  FailureClassSchema,
+  gradeManagedPolicy,
+  projectGenTotalUsd,
+  unresolvedReasonLabel,
+  type FailureClass,
+} from "@ctk/core";
 import {
   estimateGenCost,
   planGenTargets,
   runGen,
   summarizeGenCost,
+  GenRunAbortedError,
   type EstimateResult,
   type GenUnresolvedAsset,
   type RunGenSummary,
@@ -113,6 +120,17 @@ export function describeActualCost(cost: RunGenSummary["cost"]): string {
     (cost.calls_unreported > 0 ? ` · 미보고 ${cost.calls_unreported}건` : "") +
     (cost.median_usd === null ? "" : ` · 자산당 중앙값 $${cost.median_usd.toFixed(3)}`)
   );
+}
+
+/**
+ * 중단시킨 실패의 분류를 꺼낸다. **모르면 `null`이고 아무 이름이나 붙이지 않는다** —
+ * `exit_code`가 1로 남으므로 "성공"으로 읽히지는 않는다(안전 원칙 7).
+ */
+function failureClassOf(cause: unknown): FailureClass | null {
+  const fc = (cause as { failureClass?: unknown } | null)?.failureClass;
+  // 열거에 없는 이름은 기록하지 않는다 — 스키마가 거부하면 장부 전체가 안 써진다.
+  const parsed = FailureClassSchema.safeParse(fc);
+  return parsed.success ? parsed.data : null;
 }
 
 export class MissingRequiredFlagError extends Error {
@@ -239,7 +257,10 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
       }
     }
 
-    const summary = await runGen({
+    let summary: Awaited<ReturnType<typeof runGen>>;
+    let abortedCause: unknown = null;
+    try {
+      summary = await runGen({
       home,
       catalogRoot: catalogPath,
       assets,
@@ -254,8 +275,20 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
       interactive,
       allowManagedPolicy: options.allowManagedPolicy === true,
       managedPolicies,
-      managedPolicyParseFailures: managed.parseFailures,
-    });
+        managedPolicyParseFailures: managed.parseFailures,
+      });
+    } catch (err) {
+      // ⚠️ **중단이어도 장부는 쓴다.** 실측(2026-08-25): 감사 위반으로 멈춘 배치가 문서 10건을
+      // 만들고 돈을 썼는데 run-log를 한 줄도 남기지 않았다 — 카탈로그는 나아가고 장부는
+      // 안 나아갔다. 그러면 다음 실행의 견적이 **성공한 실행만**으로 계산되고, 중단은 대개
+      // 비싼 자산에서 나므로 그 표본은 아래로 편향된다(안전 원칙 8).
+      // ⚠️ **이 배선은 아직 테스트가 지나가지 않는다**(2026-08-25 파괴 실험: 이 줄을 `throw err`로
+      // 되돌려도 1147개가 전부 통과했다). `runGenCli`를 태우는 테스트가 하나도 없기 때문이다 —
+      // 실증은 다음 실제 배치가 중단됐을 때 run-log가 남는지로 한다. 그때까지 **미측정**이다.
+      if (!(err instanceof GenRunAbortedError)) throw err;
+      summary = err.partial;
+      abortedCause = err.cause;
+    }
 
     const finishedAt = new Date();
     writeRunLog(catalogPath, {
@@ -278,8 +311,9 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
       machine_id: machine.machine_id,
       started_at: startedAt.toISOString(),
       finished_at: finishedAt.toISOString(),
-      exit_code: 0,
-      failure_class: summary.stoppedEarly ? "budget_exceeded" : null,
+      exit_code: abortedCause === null ? 0 : 1,
+      // 중단이면 그 실패를, 아니면 예산 초과 여부를 적는다. 둘을 뭉개지 않는다.
+      failure_class: abortedCause !== null ? failureClassOf(abortedCause) : summary.stoppedEarly ? "budget_exceeded" : null,
       seal_profile: options.noLlm === true ? "test-isolated" : "sealed-live",
       injection_findings: summary.injectionFindingsTotal,
       // 다음 실행의 견적이 이 값을 읽어 실측 범위를 보여준다 — 상수로 박지 않는 이유는
@@ -294,6 +328,8 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
       commitAll(catalogPath, `ctk gen: ${startedAt.toISOString()}`);
     }
 
+    // 장부를 남긴 뒤 원래 실패를 그대로 올린다 — 중단을 성공으로 바꾸지 않는다.
+    if (abortedCause !== null) throw abortedCause;
     return summary;
   } finally {
     lock.release();
