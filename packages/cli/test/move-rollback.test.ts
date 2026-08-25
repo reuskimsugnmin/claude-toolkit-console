@@ -91,8 +91,8 @@ describe("cli — ctk move / ctk rollback 왕복 e2e (Step 5, AC-2.1/2.2/2.3/2.4
     else process.env.CTK_HOME = originalEnv.CTK_HOME;
     if (originalEnv.CTK_CONFIG_DIR === undefined) delete process.env.CTK_CONFIG_DIR;
     else process.env.CTK_CONFIG_DIR = originalEnv.CTK_CONFIG_DIR;
-    rmSync(ctkHome, { recursive: true, force: true });
-    rmSync(projectDir, { recursive: true, force: true });
+    rmSync(ctkHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    rmSync(projectDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   it("플러그인: user → project 전이 → 재스캔 실측 확인 → 롤백 → 원상복구 확인(AC-2.1)", async (ctx) => {

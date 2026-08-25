@@ -51,7 +51,7 @@ describe("cli — 프로덕션 분기 e2e (CTK_CONFIG_DIR 미설정)", () => {
     else process.env.CTK_HOME = saved.home;
     if (saved.configDir === undefined) delete process.env.CTK_CONFIG_DIR;
     else process.env.CTK_CONFIG_DIR = saved.configDir;
-    rmSync(ctkHome, { recursive: true, force: true });
+    rmSync(ctkHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   it("프로덕션 분기임을 확인한다 — configDirExplicit이 false다", () => {
