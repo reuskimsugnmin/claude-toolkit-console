@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { toPerCallBudgetUsd, type GenCost } from "@ctk/core";
+import { deriveObservedUnitCost, projectGenTotalUsd, toPerCallBudgetUsd, type GenCost } from "@ctk/core";
 import { resolveHomeContext } from "@ctk/probe";
 import { readLatestGenCost } from "@ctk/sync";
 import { readLocalConfig, readMachineIdentityOrNull } from "../local-config.js";
@@ -249,6 +249,9 @@ export function createActionHandlers(options: CreateActionHandlersOptions = {}):
       // 이것이 없으면 화면은 상한만 보여주고, 사용자는 그 상한이 현실적인지 알 수 없다 —
       // 실측(2026-08-24) 중앙값이 기본 총액을 호출수로 나눈 값보다 커서 대부분 사전 거부됐다.
       const observedCost = readObservedGenCost();
+      // 브라우저가 직접 곱하지 않는다 — 총액 투사는 core 한 곳에서만 한다(둘 다 중앙값으로
+      // 곱해 총액을 10~21% 낮게 말하던 결함이 여기서 갈라져 있었다).
+      const observedUnit = deriveObservedUnitCost(observedCost);
       return {
         estimateToken: estimates.issue({ ...params, callCount }),
         // 승인 화면이 보여줄 값에 **적용될 상한**을 함께 싣는다. 이름을 총액/호출당으로
@@ -261,6 +264,17 @@ export function createActionHandlers(options: CreateActionHandlersOptions = {}):
           max_total_usd: params.maxTotalUsd,
           session_remaining_usd: Math.max(cumulativeCap - cumulativeApprovedUsd, 0),
           observed_cost: observedCost,
+          observed_unit_cost:
+            observedUnit === null
+              ? null
+              : {
+                  mean_usd: observedUnit.meanUsd,
+                  median_usd: observedUnit.medianUsd,
+                  max_usd: observedUnit.maxUsd,
+                  sample_size: observedUnit.sampleSize,
+                  partial: observedUnit.partial,
+                  projected_total_usd: projectGenTotalUsd(observedUnit, callCount),
+                },
         },
       };
     },

@@ -1,6 +1,6 @@
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
-import { buildConsoleViewModel } from "@ctk/core";
+import { buildConsoleViewModel, deriveObservedUnitCost, projectGenTotalUsd, type GenCost } from "@ctk/core";
 import { UI_HTML } from "../server/ui-page.js";
 
 /**
@@ -91,8 +91,22 @@ function estimateData(
   observedCost: unknown = null,
   perCallBudgetUsd = 0.1,
 ) {
+  // 서버가 하는 파생을 **실제 함수로** 한다 — 손으로 만든 숫자를 심으면 그 뒤의 단언은
+  // 코드가 아니라 픽스처를 재게 된다.
+  const unit = deriveObservedUnitCost(observedCost as GenCost | null);
   return {
     observed_cost: observedCost,
+    observed_unit_cost:
+      unit === null
+        ? null
+        : {
+            mean_usd: unit.meanUsd,
+            median_usd: unit.medianUsd,
+            max_usd: unit.maxUsd,
+            sample_size: unit.sampleSize,
+            partial: unit.partial,
+            projected_total_usd: projectGenTotalUsd(unit, 3),
+          },
     assetCount: 3,
     approxBytes: 100,
     skipped: [],
@@ -195,9 +209,21 @@ describe("gen 승인 화면 — 실측 단가와 상한 경고", () => {
 
   it("실측이 있으면 자산당 단가와 이번 실행 환산액을 보여준다", async () => {
     const text = (await bootAndEstimate([], OBSERVED, 0.5)).textContent;
+    // 평균·중앙값·최대를 갈라 적는다 — 셋은 서로 다른 질문에 답한다(한 값으로 뭉치지 않는다).
+    expect(text).toContain("평균 $0.197"); // 3.74 ÷ 19
     expect(text).toContain("중앙값 $0.184");
     expect(text).toContain("최대 $0.406");
-    expect(text).toContain("$0.55"); // 0.184 × 3건
+    // **총액은 평균 × 건수다.** 0.196842 × 3 = 0.5905
+    expect(text).toContain("$0.59");
+  });
+
+  /**
+   * 회귀 고정 — 화면이 다시 **중앙값**으로 총액을 투사하면 $0.55가 나온다. 실측 3배치에서
+   * 그 식은 총액을 11.7~21.0% 낮게 말했고, 사용자는 그 숫자 위에서 승인했다.
+   */
+  it("총액을 중앙값으로 곱하지 않는다 (그러면 $0.55가 나온다)", async () => {
+    const text = (await bootAndEstimate([], OBSERVED, 0.5)).textContent;
+    expect(text).not.toContain("$0.55");
   });
 
   it("호출당 상한이 실측 중앙값보다 낮으면 경고한다 — 이번에 15건이 사전 거부된 이유다", async () => {

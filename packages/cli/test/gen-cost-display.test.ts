@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { deriveObservedUnitCost, GenCostSchema } from "@ctk/core";
 import { describeActualCost, describeCostEstimate } from "../src/commands/gen.js";
 
 /**
@@ -10,6 +11,21 @@ import { describeActualCost, describeCostEstimate } from "../src/commands/gen.js
  */
 
 const BASE = { assetCount: 30, callCount: 30, estimatedInputTokens: 96_320, approxBytes: 1_000_000 };
+
+/**
+ * 실측 분포의 모양을 담은 표본 — 평균 $0.197 > 중앙값 $0.184.
+ * **픽스처는 실제 파서와 실제 파생 함수를 통과시킨다**(`as T` 금지). 손으로 만든 객체는
+ * 평균과 중앙값이 우연히 같아도 통과해, 결함을 주입해도 안 깨지는 표본이 된다.
+ */
+const OBSERVED = deriveObservedUnitCost(
+  GenCostSchema.parse({
+    calls_reported: 19,
+    calls_unreported: 0,
+    reported_total_usd: 3.74,
+    median_usd: 0.184,
+    max_usd: 0.406,
+  }),
+);
 
 describe("describeCostEstimate — 하한·상한·실측을 갈라 말한다", () => {
   it("하한을 '총비용'으로 읽히게 두지 않는다", () => {
@@ -35,17 +51,40 @@ describe("describeCostEstimate — 하한·상한·실측을 갈라 말한다", 
 
   it("실측이 있으면 자산당 단가와 이번 실행 환산액을 함께 낸다", () => {
     const text = describeCostEstimate(
-      { ...BASE, costFloorUsd: 0.289, costCeilingUsd: 13.5, observed: { medianUsd: 0.184, maxUsd: 0.406, sampleSize: 19, partial: false } },
+      { ...BASE, costFloorUsd: 0.289, costCeilingUsd: 13.5, observed: OBSERVED },
       0.45,
     ).join("\n");
+    expect(text).toContain("평균 $0.197"); // 3.74 ÷ 19
     expect(text).toContain("중앙값 $0.184");
     expect(text).toContain("최대 $0.406");
-    expect(text).toContain("$5.52"); // 0.184 × 30 — 하한 $0.289와 자릿수가 다르다
+    expect(text).toContain("$5.91"); // 0.196842 × 30 — 하한 $0.289와 자릿수가 다르다
+  });
+
+  /**
+   * 회귀 고정 — **총액을 중앙값으로 곱하면 $5.52**가 나온다. 실측 3배치에서 그 식은 실제
+   * 총액을 11.7~21.0% 낮게 말했고, 승인은 그 숫자 위에서 이뤄졌다. 곱하는 값이 바뀌면
+   * 여기서 깨진다.
+   */
+  it("총액을 중앙값으로 곱하지 않는다 (그러면 $5.52가 나온다)", () => {
+    const text = describeCostEstimate(
+      { ...BASE, costFloorUsd: 0.289, costCeilingUsd: 13.5, observed: OBSERVED },
+      0.45,
+    ).join("\n");
+    expect(text).not.toContain("$5.52");
   });
 
   it("표본이 불완전하면 그 사실을 함께 말한다", () => {
+    const partial = deriveObservedUnitCost(
+      GenCostSchema.parse({
+        calls_reported: 4,
+        calls_unreported: 2,
+        reported_total_usd: 0.787,
+        median_usd: 0.184,
+        max_usd: 0.406,
+      }),
+    );
     const text = describeCostEstimate(
-      { ...BASE, costFloorUsd: 0.289, costCeilingUsd: 13.5, observed: { medianUsd: 0.184, maxUsd: 0.406, sampleSize: 4, partial: true } },
+      { ...BASE, costFloorUsd: 0.289, costCeilingUsd: 13.5, observed: partial },
       0.45,
     ).join("\n");
     expect(text).toContain("표본이 불완전");

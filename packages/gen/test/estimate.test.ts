@@ -84,7 +84,14 @@ describe("gen/estimate — 비용은 하한·상한·실측 셋으로 갈라 보
       ...base,
       observedCost: { calls_reported: 4, calls_unreported: 1, reported_total_usd: 0.8, median_usd: 0.2, max_usd: 0.3 },
     });
-    expect(withHistory.observed).toEqual({ medianUsd: 0.2, maxUsd: 0.3, sampleSize: 4, partial: true });
+    // 평균은 총액÷보고건수로 함께 실린다 — 배치 총액 투사는 중앙값이 아니라 이 값으로 한다.
+    expect(withHistory.observed).toEqual({
+      meanUsd: 0.2, // 0.8 ÷ 4
+      medianUsd: 0.2,
+      maxUsd: 0.3,
+      sampleSize: 4,
+      partial: true,
+    });
 
     expect((await estimateGenCost({ ...base, observedCost: null })).observed).toBeNull();
     expect((await estimateGenCost(base)).observed).toBeNull();
