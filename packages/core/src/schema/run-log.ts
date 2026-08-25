@@ -70,6 +70,19 @@ export const GenCostSchema = z
     /** 보고된 호출당 비용의 중앙값·최대값. 보고가 0건이면 null — 0으로 대체하지 않는다. */
     median_usd: z.number().finite().nonnegative().nullable(),
     max_usd: z.number().finite().nonnegative().nullable(),
+    /**
+     * **이 단가가 어떤 모집단의 것인가.** 없이 쌓으면 서로 다른 모델의 비용이 한 통에 섞이고,
+     * 다음 실행의 견적이 조용히 틀린다(안전 원칙 8 — 모집단이 결론을 지탱하는지 함께 싣는다).
+     *
+     * `models`는 이 실행에서 **실제로 관측된** 모델 id들이다. 하나면 단가가 그 모델의 것이고,
+     * 둘 이상이면 섞였다는 뜻이다. 빈 배열은 **못 읽었다**는 뜻이지 "기본 모델"이 아니다.
+     * `calls_model_unknown`이 그 건수를 따로 센다 — 미보고를 0으로 삼키지 않는 것과 같은 규율이다.
+     */
+    models: z.array(z.string()).default([]),
+    calls_model_unknown: z.number().int().nonnegative().default(0),
+    /** 보고된 입출력 토큰 합. 못 읽은 호출은 빼고 센다(위 `calls_model_unknown`과 짝). */
+    input_tokens: z.number().int().finite().nonnegative().nullable().default(null),
+    output_tokens: z.number().int().finite().nonnegative().nullable().default(null),
   })
   .strict();
 export type GenCost = z.infer<typeof GenCostSchema>;

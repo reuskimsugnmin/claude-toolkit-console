@@ -4,6 +4,7 @@
 // (계층 lint가 fs 쓰기 계열 호출을 이미 차단한다). 봉인 프로파일은 test-isolated | sealed-live
 // 둘뿐이며 --bare는 전 경로에서 폐기됐다(Step 0 실측, AC-0.10ⓑ).
 
+import type { GenCallProvenance } from "./output-schema.js";
 import {
   gradeManagedPolicy,
   decideManagedPolicyGate,
@@ -140,7 +141,17 @@ export interface RunGenSummary {
 }
 
 /** 보고된 호출 비용들로 `GenCost`를 만든다. **보고가 0건이면 중앙값·최대값은 null이다.** */
-export function summarizeGenCost(reportedUsd: readonly number[], unreportedCalls: number): GenCost {
+/** 하나라도 읽지 못했으면 합계를 만들지 않는다 — 부분합을 총합으로 내보내지 않는다. */
+function sumOrNull(values: readonly (number | null)[]): number | null {
+  const known = values.filter((v): v is number => v !== null);
+  return known.length === 0 ? null : known.reduce((a, b) => a + b, 0);
+}
+
+export function summarizeGenCost(
+  reportedUsd: readonly number[],
+  unreportedCalls: number,
+  provenance: readonly GenCallProvenance[] = [],
+): GenCost {
   const sorted = [...reportedUsd].sort((a, b) => a - b);
   const mid = sorted[Math.floor(sorted.length / 2)];
   const max = sorted[sorted.length - 1];
@@ -150,6 +161,11 @@ export function summarizeGenCost(reportedUsd: readonly number[], unreportedCalls
     reported_total_usd: sorted.reduce((sum, v) => sum + v, 0),
     median_usd: mid ?? null,
     max_usd: max ?? null,
+    // **모집단을 함께 싣는다.** 못 읽은 호출은 0으로 삼키지 않고 따로 센다(안전 원칙 7).
+    models: [...new Set(provenance.map((p) => p.model).filter((m): m is string => m !== null))].sort(),
+    calls_model_unknown: provenance.filter((p) => p.model === null).length,
+    input_tokens: sumOrNull(provenance.map((p) => p.inputTokens)),
+    output_tokens: sumOrNull(provenance.map((p) => p.outputTokens)),
   };
 }
 
@@ -244,7 +260,9 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
   // 실측 비용 집계. **보고된 값만 모은다** — 미보고를 0으로 더하면 총액이 조용히 낮아진다.
   const reportedCostsUsd: number[] = [];
   let costUnreportedCalls = 0;
-  const recordCost = (usd: number | null): void => {
+  const callProvenance: GenCallProvenance[] = [];
+  const recordCost = (usd: number | null, provenance?: GenCallProvenance): void => {
+    if (provenance !== undefined) callProvenance.push(provenance);
     if (usd === null) costUnreportedCalls += 1;
     else reportedCostsUsd.push(usd);
   };
@@ -277,7 +295,7 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
           now,
           spawnFn,
         });
-        recordCost(llmResult.reportedCostUsd);
+        recordCost(llmResult.reportedCostUsd, llmResult.provenance);
         const after = captureConfigDirSnapshot(home.ctkConfigDir, before.cache);
         treeCache = after.cache;
         const audit = auditSealedLiveConfigDir(home.ctkConfigDir, before, after, claudeJsonBefore, {
@@ -307,7 +325,7 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
       }
       if (err instanceof ClaudePCallFailedError) {
         // 실패한 호출에 든 돈도 실지출이다 — 빼면 보고 총액이 실제보다 낮아진다.
-        recordCost(err.reportedCostUsd);
+        recordCost(err.reportedCostUsd, err.provenance);
         // ⚠️ **범위 축소(2026-08-24).** 예산 실패가 아닌 `claude -p` 실패도 전체를 중단시키고
         // 있었다. E5.12가 위생 실패에 대해 이미 내린 판단과 같다 — "거부는 옳지만 **범위가
         // 틀렸다**: 그 자산만 빼고 나머지는 처리한다".
@@ -431,7 +449,7 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
     results,
     stoppedEarly,
     injectionFindingsTotal,
-    cost: summarizeGenCost(reportedCostsUsd, costUnreportedCalls),
+    cost: summarizeGenCost(reportedCostsUsd, costUnreportedCalls, callProvenance),
     urlScrub: { removed: urlsScrubbedTotal, hosts: [...scrubbedHosts] },
     sealAudit: {
       sessionOwnedExcluded: sessionOwnedExcludedTotal,
