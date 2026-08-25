@@ -10,7 +10,7 @@ import {
   readLatestGenCost,
   writeRunLog,
 } from "@ctk/sync";
-import { gradeManagedPolicy, unresolvedReasonLabel } from "@ctk/core";
+import { gradeManagedPolicy, projectGenTotalUsd, unresolvedReasonLabel } from "@ctk/core";
 import {
   estimateGenCost,
   planGenTargets,
@@ -88,10 +88,15 @@ export function describeCostEstimate(estimate: EstimateResult, maxBudgetUsd: num
     lines.push(`실측 단가: 없음 — 이 머신의 지난 gen 실행 기록이 없다. 추정치를 지어내지 않는다`);
   } else {
     const partial = estimate.observed.partial ? " · 일부 호출은 비용 미보고라 표본이 불완전하다" : "";
+    // 투사는 **평균 × 건수**다 — 중앙값으로 곱하면 총액을 계속 낮게 말한다(분포가 오른쪽으로
+    // 길다: 최대가 중앙값의 약 4배). 곱셈은 core가 한다.
     lines.push(
-      `실측 단가(지난 실행 ${estimate.observed.sampleSize}건): 자산당 중앙값 $${estimate.observed.medianUsd.toFixed(3)}` +
-        ` · 최대 $${estimate.observed.maxUsd.toFixed(3)} → 이번 ${estimate.callCount}건 예상 약 ` +
-        `$${(estimate.observed.medianUsd * estimate.callCount).toFixed(2)}${partial}`,
+      `실측 단가(지난 실행 ${estimate.observed.sampleSize}건): 자산당 평균 $${estimate.observed.meanUsd.toFixed(3)}` +
+        ` · 중앙값 $${estimate.observed.medianUsd.toFixed(3)} · 최대 $${estimate.observed.maxUsd.toFixed(3)}`,
+    );
+    lines.push(
+      `이번 ${estimate.callCount}건 예상 총액: 약 $${projectGenTotalUsd(estimate.observed, estimate.callCount).toFixed(2)}` +
+        ` (평균 × 건수 — 상한이 아니라 예상치다)${partial}`,
     );
   }
   return lines;

@@ -53,4 +53,5 @@ export * from "./usage/rank.js";
 export * from "./view/view-model.js";
 export * from "./view/project-label.js";
 export * from "./view/asset-doc-state.js";
+export * from "./view/gen-cost-projection.js";
 export * from "./failure/classes.js";

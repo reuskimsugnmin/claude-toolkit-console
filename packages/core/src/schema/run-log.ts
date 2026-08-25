@@ -63,10 +63,13 @@ export const GenCostSchema = z
     calls_reported: z.number().int().nonnegative(),
     calls_unreported: z.number().int().nonnegative(),
     /** 보고된 호출들의 합. `calls_unreported > 0`이면 하한이다. */
-    reported_total_usd: z.number().nonnegative(),
+    // ⚠️ `.finite()`가 없으면 `Infinity`가 통과한다 — JSON의 `1e400`은 `JSON.parse`에서
+    // `Infinity`가 되고 `Infinity >= 0`은 참이다(심사 L-4). run log는 private 동기화 저장소를
+    // 통해 **다른 머신에서 흘러 들어오므로** 이 값을 신뢰하지 않는다.
+    reported_total_usd: z.number().finite().nonnegative(),
     /** 보고된 호출당 비용의 중앙값·최대값. 보고가 0건이면 null — 0으로 대체하지 않는다. */
-    median_usd: z.number().nonnegative().nullable(),
-    max_usd: z.number().nonnegative().nullable(),
+    median_usd: z.number().finite().nonnegative().nullable(),
+    max_usd: z.number().finite().nonnegative().nullable(),
   })
   .strict();
 export type GenCost = z.infer<typeof GenCostSchema>;

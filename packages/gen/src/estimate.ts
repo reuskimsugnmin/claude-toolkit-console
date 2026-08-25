@@ -1,5 +1,5 @@
 import { checkSealedLiveAuthStatus, countTokensMeasured, createNullTokenCacheStore, type HomeContext, type TokenCacheStore } from "@ctk/probe";
-import type { GenCost } from "@ctk/core";
+import { deriveObservedUnitCost, type GenCost, type ObservedUnitCost } from "@ctk/core";
 import type { GenPlanTarget } from "./plan.js";
 
 /**
@@ -74,7 +74,7 @@ export interface EstimateResult {
    * 실측 단가는 그 머신에 깔린 툴의 원문 크기에 달린 **머신 종속** 사실이라 카탈로그의
    * 머신별 영역에 쌓이고, 제품 코드에 상수로 박히지 않는다.
    */
-  observed: { medianUsd: number; maxUsd: number; sampleSize: number; partial: boolean } | null;
+  observed: ObservedUnitCost | null;
 }
 
 const DEFAULT_APPROX_USD_PER_MILLION_INPUT_TOKENS = 3; // Claude Sonnet급 input 요율 근사치(공개 가격 참고치, 정확한 청구 근거 아님).
@@ -142,12 +142,6 @@ export async function estimateGenCost(options: EstimateOptions): Promise<Estimat
  * 값이므로 화면이 그 사실을 함께 말해야 한다.
  */
 function toObserved(cost: GenCost | null): EstimateResult["observed"] {
-  if (cost === null || cost.calls_reported === 0) return null;
-  if (cost.median_usd === null || cost.max_usd === null) return null;
-  return {
-    medianUsd: cost.median_usd,
-    maxUsd: cost.max_usd,
-    sampleSize: cost.calls_reported,
-    partial: cost.calls_unreported > 0,
-  };
+  // 파생은 core가 한다 — 표시 계층 둘이 각자 곱하다가 둘 다 중앙값을 쓰는 결함이 났다.
+  return deriveObservedUnitCost(cost);
 }

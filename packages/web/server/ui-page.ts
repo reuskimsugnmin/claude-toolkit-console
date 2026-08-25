@@ -366,13 +366,20 @@ async function runGenTwoPhase() {
   // 실측 단가 — **상한만 보여주면 그 상한이 현실적인지 알 수 없다.** 실측(2026-08-24) 자산당
   // 중앙값이 기본 총액÷호출수보다 커서 대부분의 호출이 하네스에 사전 거부됐다. 실측이 없으면
   // 없다고 말한다(그럴듯한 값을 지어내지 않는다).
-  if (d.observed_cost && d.observed_cost.calls_reported > 0 && d.observed_cost.median_usd !== null) {
-    var oc = d.observed_cost;
+  // ⚠️ 이 화면은 곱하지 않는다. 총액 투사는 서버(core)가 계산해 projected_total_usd로 실어
+  // 보낸다 — 브라우저와 CLI가 각자 곱하던 때 둘 다 중앙값을 써서 총액을 10~21% 낮게 말했다.
+  // 표시가 산술을 하면 같은 결함이 화면 수만큼 갈라진다.
+  // (이 구역은 템플릿 리터럴 안이다 — 주석에도 백틱을 쓰지 않는다.)
+  if (d.observed_unit_cost) {
+    var oc = d.observed_unit_cost;
     rows.push([
-      "실측 단가(지난 실행 " + oc.calls_reported + "건)",
-      "자산당 중앙값 $" + oc.median_usd.toFixed(3) + " · 최대 $" + (oc.max_usd || 0).toFixed(3) +
-        " → 이번 " + d.call_count + "건 예상 약 $" + (oc.median_usd * d.call_count).toFixed(2) +
-        (oc.calls_unreported > 0 ? " (일부 미보고, 표본 불완전)" : ""),
+      "실측 단가(지난 실행 " + oc.sample_size + "건)",
+      "자산당 평균 $" + oc.mean_usd.toFixed(3) + " · 중앙값 $" + oc.median_usd.toFixed(3) +
+        " · 최대 $" + oc.max_usd.toFixed(3) + (oc.partial ? " (일부 미보고, 표본 불완전)" : ""),
+    ]);
+    rows.push([
+      "이번 " + d.call_count + "건 예상 총액",
+      "약 $" + oc.projected_total_usd.toFixed(2) + " — 평균 × 건수이며 상한이 아니라 예상치다",
     ]);
     if (Number(d.per_call_budget_usd) < oc.median_usd) {
       rows.push([

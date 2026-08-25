@@ -208,8 +208,28 @@ async function main(): Promise<void> {
               "그 훅을 배선해야 이 축을 잴 수 있다",
           } as const;
           console.log(`  (i) 훅 마커 미생성: ${HOOK_MARKER_TEXT[sig.hookMarker]}`);
-          console.log(`  (ii) CLAUDE.md 미로드: ${sig.claudeMdStringAbsent ? "통과" : "실패"}`);
-          console.log(`  (iii) 플러그인 커맨드 미인식: ${sig.installedPluginCommandUnrecognized ? "통과" : "실패"}`);
+          // (ii)도 3상태다 — "미측정"을 "통과"로도 "실패"로도 적지 않는다. 못 잰 것은 못 잰
+          // 것이고, 그 구분이 사라지면 재시도해야 할 상황이 봉인 파손으로 읽힌다(또는 그 반대).
+          const CLAUDE_MD_TEXT = {
+            confirmed_absent: "통과",
+            present: "실패 — 봉인 세션이 실제 CLAUDE.md를 로드했다",
+            // ⚠️ **못 잰 이유를 잴 수 있게 한다.** 재시도는 유료 세션 3회이고, 원인에 따라
+            // 결정적으로 수렴하지 않는다 — 이유를 말하지 않으면 사용자는 카탈로그의 버전
+            // 문자열을 손으로 고치는 법부터 찾고, 그 순간 프리플라이트 게이트가 사라진다.
+            unmeasured:
+              `미측정 (exit=${sig.claudeMdDiagnostic.exitCode ?? "신호 종료"}, ` +
+              `응답: ${JSON.stringify(sig.claudeMdDiagnostic.answerExcerpt)}) — ` +
+              "봉인이 깨졌다는 뜻이 아니라 이번에 재지 못했다는 뜻이다. " +
+              "exit이 0이 아니면 인증·타임아웃을, 0인데 응답이 YES/NO가 아니면 프롬프트를 본다",
+          } as const;
+          console.log(`  (ii) CLAUDE.md 미로드: ${CLAUDE_MD_TEXT[sig.claudeMdString]}`);
+          const ROUTING_TEXT = {
+            confirmed_unrecognized: "통과",
+            recognized: "실패 — 봉인 세션이 설치된 플러그인 커맨드를 인식했다",
+            unmeasured:
+              "미측정 — 타임아웃이거나 출력이 비어 판정 근거가 없다. 봉인 파손이 아니라 못 잰 것이다",
+          } as const;
+          console.log(`  (iii) 플러그인 커맨드 미인식: ${ROUTING_TEXT[sig.pluginCommandRouting]}`);
           if (report.updated) {
             console.log(`  ✅ 봉인 재증명 완료 — verified_cli_version을 ${report.actualVersion}로 갱신했다`);
           } else {
