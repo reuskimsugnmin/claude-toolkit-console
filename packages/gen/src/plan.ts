@@ -189,7 +189,7 @@ function judgeAsset(home: HomeContext, asset: Asset, indexEntry: CatalogIndexEnt
  *
  * 일괄 산출(`planGenTargets`)과 **같은 `judgeAsset`을 탄다** — 화면이 말하는 사유와 `gen`이
  * 실제로 할 일이 갈리지 않게 하는 유일한 방법이다. 전체를 계산하지 않으므로 비용은 그 자산의
- * 원본을 한 번 읽는 것뿐이다(전체 계산은 자산 183건·1.18MB 기준 약 0.8초였다).
+ * 원본을 한 번 읽는 것뿐이다(전 자산 일괄 계산은 개발 로컬 실측 약 0.8초였다).
  *
  * 결과는 **어디에도 저장하지 않는다.** `source_missing`·`blocked`는 이 머신의 파일 배치에
  * 대한 사실이라 머신 독립 카탈로그에 넣으면 스키마의 축을 섞는다(core/view/asset-doc-state.ts).

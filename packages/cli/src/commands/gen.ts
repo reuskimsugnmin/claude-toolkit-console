@@ -89,7 +89,7 @@ export function describeCostEstimate(estimate: EstimateResult, maxBudgetUsd: num
   } else {
     const partial = estimate.observed.partial ? " · 일부 호출은 비용 미보고라 표본이 불완전하다" : "";
     // 투사는 **평균 × 건수**다 — 중앙값으로 곱하면 총액을 계속 낮게 말한다(분포가 오른쪽으로
-    // 길다: 실측 중앙값 $0.17 · 최대 $0.70). 곱셈은 core가 한다.
+    // 길다: 최대가 중앙값의 약 4배). 곱셈은 core가 한다.
     lines.push(
       `실측 단가(지난 실행 ${estimate.observed.sampleSize}건): 자산당 평균 $${estimate.observed.meanUsd.toFixed(3)}` +
         ` · 중앙값 $${estimate.observed.medianUsd.toFixed(3)} · 최대 $${estimate.observed.maxUsd.toFixed(3)}`,
