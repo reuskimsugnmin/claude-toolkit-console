@@ -126,8 +126,29 @@ const GenEnvelopeSchema = z
     structured_output: z.unknown().optional(),
     /** 하네스가 싣는 이 호출의 실비용. **없을 수 있다** — 없으면 null이고 0으로 대체하지 않는다. */
     total_cost_usd: z.number().nonnegative().optional(),
+    /**
+     * 이 호출을 실제로 처리한 모델과 토큰. **기록하지 않으면 실측 단가가 어떤 모집단의
+     * 것인지 말할 수 없다**(안전 원칙 8 — 모집단이 결론을 지탱하는지 함께 싣는다).
+     * 봉투는 하네스 소유라 키가 늘 수 있으므로 전부 optional이고, 없으면 null이다.
+     */
+    modelUsage: z.record(z.string(), z.unknown()).optional(),
+    usage: z
+      .object({
+        input_tokens: z.number().nonnegative().finite().optional(),
+        output_tokens: z.number().nonnegative().finite().optional(),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough();
+
+/** 이 호출이 실제로 무엇으로 처리됐는가. 판정할 수 없으면 `null`이다 — 지어내지 않는다. */
+export interface GenCallProvenance {
+  /** 하네스가 보고한 모델 id. 못 읽으면 null — "기본 모델"로 추측하지 않는다. */
+  model: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+}
 
 export class GenEnvelopeError extends Error {
   constructor(message: string) {
@@ -154,6 +175,33 @@ export function readEnvelopeCostUsd(rawStdout: string): number | null {
     return parsed.success ? (parsed.data.total_cost_usd ?? null) : null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * 봉투에서 **모델과 토큰**을 꺼낸다. 비용과 마찬가지로 실패 경로에서도 읽혀야 하므로
+ * 페이로드 검증과 분리한다.
+ *
+ * ⚠️ **못 읽으면 `null`이고 "기본 모델"로 추측하지 않는다**(안전 원칙 7). 모델을 모르는 채
+ * 단가를 쌓으면 그 단가는 서로 다른 모집단이 섞인 값이 되고, 견적이 조용히 틀린다.
+ *
+ * 모델 id는 `modelUsage` 맵의 키로 실린다(하네스가 모델별로 사용량을 나눠 담는다).
+ * 키가 여럿이면 **판정하지 않는다** — 한 호출이 두 모델을 탔다는 뜻이고, 그 경우 "어느
+ * 모델의 단가인가"에 답할 수 없다.
+ */
+export function readEnvelopeProvenance(rawStdout: string): GenCallProvenance {
+  const empty: GenCallProvenance = { model: null, inputTokens: null, outputTokens: null };
+  try {
+    const parsed = GenEnvelopeSchema.safeParse(JSON.parse(rawStdout));
+    if (!parsed.success) return empty;
+    const keys = Object.keys(parsed.data.modelUsage ?? {});
+    return {
+      model: keys.length === 1 ? (keys[0] ?? null) : null,
+      inputTokens: parsed.data.usage?.input_tokens ?? null,
+      outputTokens: parsed.data.usage?.output_tokens ?? null,
+    };
+  } catch {
+    return empty;
   }
 }
 

@@ -103,20 +103,20 @@ describe("describeCostEstimate — 하한·상한·실측을 갈라 말한다", 
 
 describe("describeActualCost — 실행 뒤 실제로 나간 돈", () => {
   it("미보고가 섞이면 총액이 아니라 하한이라고 말한다", () => {
-    const text = describeActualCost({ calls_reported: 11, calls_unreported: 4, reported_total_usd: 1.9, median_usd: 0.17, max_usd: 0.4 });
+    const text = describeActualCost({ calls_reported: 11, calls_unreported: 4, reported_total_usd: 1.9, median_usd: 0.17, max_usd: 0.4, models: ["sonnet"], calls_model_unknown: 0, input_tokens: null, output_tokens: null });
     expect(text).toContain("$1.90이상(하한)");
     expect(text).toContain("미보고 4건");
   });
 
   it("전부 보고되면 하한 표기를 붙이지 않는다", () => {
-    const text = describeActualCost({ calls_reported: 11, calls_unreported: 0, reported_total_usd: 1.9, median_usd: 0.17, max_usd: 0.4 });
+    const text = describeActualCost({ calls_reported: 11, calls_unreported: 0, reported_total_usd: 1.9, median_usd: 0.17, max_usd: 0.4, models: ["sonnet"], calls_model_unknown: 0, input_tokens: null, output_tokens: null });
     expect(text).toContain("$1.90 ");
     expect(text).not.toContain("하한");
     expect(text).not.toContain("미보고");
   });
 
   it("보고가 하나도 없으면 '0원이 아니다'라고 못박는다", () => {
-    const text = describeActualCost({ calls_reported: 0, calls_unreported: 7, reported_total_usd: 0, median_usd: null, max_usd: null });
+    const text = describeActualCost({ calls_reported: 0, calls_unreported: 7, reported_total_usd: 0, median_usd: null, max_usd: null, models: ["sonnet"], calls_model_unknown: 0, input_tokens: null, output_tokens: null });
     expect(text).toContain("보고 없음");
     expect(text).toContain("0원이라는 뜻이 아니다");
     expect(text).not.toContain("$0.00 ");

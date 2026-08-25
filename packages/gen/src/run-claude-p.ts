@@ -2,7 +2,13 @@ import { spawnClaude, type HomeContext } from "@ctk/probe";
 import { usageMdPath, type Annotation, type DocPage } from "@ctk/core";
 import type { PreflightVersionMatch } from "@ctk/core";
 import { buildPromptEnvelope } from "./prompt-envelope.js";
-import { buildGenOutputJsonSchema, parseGenEnvelope, readEnvelopeCostUsd } from "./output-schema.js";
+import {
+  buildGenOutputJsonSchema,
+  parseGenEnvelope,
+  readEnvelopeCostUsd,
+  readEnvelopeProvenance,
+  type GenCallProvenance,
+} from "./output-schema.js";
 import { determineSourceTrust } from "./source-trust.js";
 import type { GenPlanTarget } from "./plan.js";
 
@@ -49,6 +55,8 @@ function scrubPathsForDiagnostics(text: string): string {
 export class ClaudePCallFailedError extends Error {
   /** 하네스가 보고한 이 실패 호출의 비용. 못 읽었으면 `null`(= 0원이 아니라 **미보고**). */
   readonly reportedCostUsd: number | null;
+  /** 이 호출을 처리한 모델·토큰. **필수 필드다** — 선택으로 두면 배선 누락이 통과한다. */
+  readonly provenance: GenCallProvenance;
 
   constructor(
     readonly assetId: string,
@@ -72,6 +80,7 @@ export class ClaudePCallFailedError extends Error {
     this.name = "ClaudePCallFailedError";
     // 실패한 호출에도 비용이 실려 온다(실측). 실패분을 빼면 보고 총액이 실제보다 낮아진다.
     this.reportedCostUsd = readEnvelopeCostUsd(stdout);
+    this.provenance = readEnvelopeProvenance(stdout);
   }
 }
 
@@ -98,7 +107,16 @@ export interface RunClaudePResult {
    * 0을 더하지 말고 미보고 건수로 센다(안전 원칙 7). 필수 필드로 둬 호출자가 빠뜨릴 수 없게 한다.
    */
   reportedCostUsd: number | null;
+  /** 이 호출을 처리한 모델·토큰. **필수 필드다.** */
+  provenance: GenCallProvenance;
 }
+
+/**
+ * 문서 생성에 쓰는 모델. **별칭으로 고정한다** — CLI가 공식 지원하는 별칭이라(`claude --help`:
+ * "Provide an alias for the latest model (e.g. 'fable', 'opus', or 'sonnet')") 버전이 올라가도
+ * 그 시점의 최신 Sonnet을 가리킨다. 정확한 id로 박으면 모델이 은퇴할 때 배치가 통째로 죽는다.
+ */
+export const GEN_MODEL = "sonnet";
 
 export async function runClaudePForTarget(options: RunClaudePOptions): Promise<RunClaudePResult> {
   const { home, cwd, timeoutSec, maxBudgetUsd, verifiedCliVersion, routingProbeCommand, target, spawnFn = spawnClaude } = options;
@@ -114,6 +132,12 @@ export async function runClaudePForTarget(options: RunClaudePOptions): Promise<R
     profile: "sealed-live",
     subcommand: [
       "-p",
+      // ⚠️ **모델을 고정한다.** 없으면 자식이 **사용자의 기본 모델**을 쓰므로 ① 같은 카탈로그의
+      // 문서가 서로 다른 모델로 만들어지고 ② run-log에 쌓이는 실측 단가가 **서로 다른 모집단이
+      // 섞인 값**이 되어 다음 실행의 견적이 조용히 틀린다(안전 원칙 8).
+      // 문서 생성은 원문을 읽고 인용과 함께 요약하는 작업이라 Sonnet급으로 충분하다.
+      "--model",
+      GEN_MODEL,
       "--max-budget-usd",
       String(maxBudgetUsd),
       "--json-schema",
@@ -168,5 +192,6 @@ export async function runClaudePForTarget(options: RunClaudePOptions): Promise<R
     docPage,
     preflightVersionMatch: result.preflightVersionMatch ?? "match",
     reportedCostUsd: readEnvelopeCostUsd(result.stdout),
+    provenance: readEnvelopeProvenance(result.stdout),
   };
 }

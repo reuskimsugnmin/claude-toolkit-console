@@ -476,8 +476,10 @@ describe("gen/index — runGen 전체 배선 (plan → 생성 → citation-check
         noLlm: true, verifiedCliVersion: "2.1.238", sealedCwd, interactive: true,
         allowManagedPolicy: false, spawnFn: (async () => ({ exitCode: 0, stdout: "{}", stderr: "", timedOut: false })) as never,
       });
+      // 호출이 없으면 출처도 없다 — 빈 배열/null이지 "sonnet 0건"이 아니다.
       expect(summary.cost).toEqual({
         calls_reported: 0, calls_unreported: 0, reported_total_usd: 0, median_usd: null, max_usd: null,
+        models: [], calls_model_unknown: 0, input_tokens: null, output_tokens: null,
       });
     });
   });
