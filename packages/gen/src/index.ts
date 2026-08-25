@@ -272,6 +272,30 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
   let sessionOwnedExcludedTotal = 0;
   let concurrencyOverridesTotal = 0;
 
+  /**
+   * 요약을 만드는 **유일한 자리.** 정상 종료와 중단이 같은 값을 내야 장부가 갈리지 않는다 —
+   * 두 자리에 두면 중단 경로가 조용히 다른 모양을 쓰게 된다(안전 원칙 5).
+   */
+  const buildSummary = (): RunGenSummary => {
+    // §4 Step 4 부분 실패 규약 ① — 인덱스는 실행 종료 시점에 1회만 재생성한다(성공·
+    // budget_exceeded·중단 모두 포함). 중단이어도 이미 쓴 문서가 있으므로 여기서도 돌린다.
+    const { path: indexPath } = rebuildCatalogIndex(catalogRoot);
+    return {
+      plan,
+      results,
+      stoppedEarly,
+      injectionFindingsTotal,
+      cost: summarizeGenCost(reportedCostsUsd, costUnreportedCalls, callProvenance),
+      urlScrub: { removed: urlsScrubbedTotal, hosts: [...scrubbedHosts] },
+      sealAudit: {
+        sessionOwnedExcluded: sessionOwnedExcludedTotal,
+        concurrencyOverrides: concurrencyOverridesTotal,
+      },
+      indexPath,
+    };
+  };
+
+  try {
   for (let i = 0; i < plan.targets.length; i++) {
     const target = plan.targets[i];
     if (target === undefined) continue;
@@ -432,6 +456,10 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
     setAssetGenState(catalogRoot, target.asset.id, "fresh", target.sourceContentSha256);
     results.push({ assetId: target.asset.id, outcome: "fresh" });
   }
+  } catch (err) {
+    // 중단이어도 그때까지의 비용·집계는 장부에 오른다. 원래 실패는 cause로 그대로 전달한다.
+    throw new GenRunAbortedError(err, buildSummary());
+  }
 
   if (stoppedEarly) {
     for (const remaining of plan.targets.slice(results.length)) {
@@ -440,23 +468,31 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
     }
   }
 
-  // §4 Step 4 부분 실패 규약 ① — 인덱스는 실행 종료 시점에 1회만 재생성한다(성공·budget_exceeded·
-  // 중단 모두 포함).
-  const { path: indexPath } = rebuildCatalogIndex(catalogRoot);
+  return buildSummary();
+}
 
-  return {
-    plan,
-    results,
-    stoppedEarly,
-    injectionFindingsTotal,
-    cost: summarizeGenCost(reportedCostsUsd, costUnreportedCalls, callProvenance),
-    urlScrub: { removed: urlsScrubbedTotal, hosts: [...scrubbedHosts] },
-    sealAudit: {
-      sessionOwnedExcluded: sessionOwnedExcludedTotal,
-      concurrencyOverrides: concurrencyOverridesTotal,
-    },
-    indexPath,
-  };
+/**
+ * **중단된 실행의 부분 집계를 실어 나른다.**
+ *
+ * ⚠️ 실측(2026-08-25): 감사 위반으로 중단된 배치가 **문서 10건을 만들고 돈을 썼는데 run-log를
+ * 한 줄도 남기지 않았다.** `writeRunLog`가 `await runGen(...)` **뒤에** 있어서 던지면 건너뛴다.
+ * 카탈로그는 나아가고 장부는 안 나아간다.
+ *
+ * 결과가 두 겹이다 — ① 나간 돈이 어디에도 없고 ② 다음 실행의 견적이 **성공한 실행만**으로
+ * 계산된다. 중단은 대개 비싼 자산에서 나므로 그 표본은 아래로 편향된다(안전 원칙 8).
+ *
+ * **"없음"과 "실패"를 구분한다** — 실패한 실행의 비용은 없음이 아니라 실제로 나간 돈이다.
+ */
+export class GenRunAbortedError extends Error {
+  constructor(
+    /** 원래 던져진 실패. 호출자는 분류·종료 코드를 여기서 얻는다. */
+    override readonly cause: unknown,
+    /** 중단 시점까지의 집계. run-log는 이것을 쓴다. */
+    readonly partial: RunGenSummary,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "GenRunAbortedError";
+  }
 }
 
 export type { GenPlanTarget };
