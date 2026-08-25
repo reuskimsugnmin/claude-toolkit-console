@@ -101,7 +101,22 @@ function readLockInfo(lockPath: string): LockInfo | null {
  * 던진다(대기하지 않는다). 성공하면 `release()`로 해제하는 핸들을 반환한다 — 호출자는 반드시
  * `try/finally`로 `release()`를 호출해야 한다(정상·비정상 종료 모두에서 해제 규약).
  */
-export function acquireLock(catalogRoot: string, info: Omit<LockInfo, "pid">): AcquiredLock {
+/**
+ * 신호 핸들러가 정리 후 **재발화**하는 동작. 기본값은 실제 `process.kill`이다.
+ *
+ * ⚠️ 테스트 이음매다(이 저장소의 `spawnFn`·`checkAuthFn`과 같은 방식). 이것 없이는 신호
+ * 발화 축을 **아예 태울 수 없다** — 실제로 파괴 실험 하나가 그래서 통과했다: 정상 해제
+ * 경로만 흔들었더니 `removeAllListeners`의 과잉 삭제가 드러나지 않았다.
+ * **파괴 실험에도 축이 있다.**
+ */
+export type TerminateFn = (signal: NodeJS.Signals) => void;
+
+export function acquireLock(
+  catalogRoot: string,
+  info: Omit<LockInfo, "pid">,
+  options: { terminateFn?: TerminateFn } = {},
+): AcquiredLock {
+  const terminateFn: TerminateFn = options.terminateFn ?? ((signal) => process.kill(process.pid, signal));
   mkdirSync(catalogRoot, { recursive: true });
   const lockPath = lockFilePath(catalogRoot);
   const content: LockInfo = { ...info, pid: process.pid };
@@ -135,29 +150,45 @@ export function acquireLock(catalogRoot: string, info: Omit<LockInfo, "pid">): A
       unlinkSync(lockPath);
     }
   };
+  // ⚠️ `exit`는 신호로 죽을 때 실행되지 않는다 — 실측(2026-08-24): 배치가 중단되자 락이 남아
+  // 다음 실행이 `lock_contended`로 막혔다. 신호를 받으면 해제하고 기본 동작(종료)으로 넘긴다.
+  // SIGKILL(-9)은 잡을 수 없으므로 위의 stale 회수 경로가 여전히 필요하다.
+  const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+  /**
+   * 등록한 핸들러를 **참조로 들고 있다가 정확히 그것만 뗀다.**
+   *
+   * ⚠️ 예전에는 핸들러 안에서 `process.removeAllListeners(sig)`를 불렀다. 자기 재귀를 막으려는
+   * 의도였지만(그건 `process.once`가 이미 한다) 범위가 넘쳐 **다른 코드가 등록한 핸들러까지
+   * 지웠다** — 장수 프로세스(웹 서버)의 graceful shutdown 핸들러가 그렇게 사라진다.
+   * 그리고 정상 해제 경로가 신호 핸들러를 떼지 않아 락을 반복 취득하면 리스너가 3개씩
+   * 쌓였다(테스트에서 `MaxListenersExceededWarning`으로 드러났다).
+   */
+  const signalHandlers = new Map<NodeJS.Signals, () => void>();
+  const detach = (): void => {
+    process.removeListener("exit", onExit);
+    for (const [sig, handler] of signalHandlers) process.removeListener(sig, handler);
+    signalHandlers.clear();
+  };
+
   const release = (): void => {
     if (released) return;
     released = true;
-    process.removeListener("exit", onExit); // 정상 해제 시 exit 훅을 걷어 리스너가 누적되지 않게 한다.
+    detach(); // 정상 해제 시 훅을 전부 걷어 리스너가 누적되지 않게 한다.
     if (existsSync(lockPath)) {
       unlinkSync(lockPath);
     }
   };
+
   // 프로세스 비정상 종료 시에도 락이 남지 않게 최선의 안전망을 건다(정상 종료는 위 release()가 처리).
   process.once("exit", onExit);
-  // ⚠️ `exit`는 신호로 죽을 때 실행되지 않는다 — 실측(2026-08-24): 배치가 중단되자 락이 남아
-  // 다음 실행이 `lock_contended`로 막혔다. 신호를 받으면 해제하고 기본 동작(종료)으로 넘긴다.
-  // SIGKILL(-9)은 잡을 수 없으므로 위의 stale 회수 경로가 여전히 필요하다.
-  const onSignal = (signal: NodeJS.Signals): void => {
-    onExit();
-    process.removeListener("exit", onExit);
-    process.kill(process.pid, signal); // 기본 처리로 죽는다 — 종료 코드를 위조하지 않는다.
-  };
-  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-    process.once(sig, () => {
-      process.removeAllListeners(sig);
-      onSignal(sig);
-    });
+  for (const sig of SIGNALS) {
+    const handler = (): void => {
+      onExit();
+      detach(); // 우리 것만 뗀다 — 남의 핸들러는 그대로 두고 재발화에서 실행되게 한다.
+      terminateFn(sig); // 기본 처리로 죽는다 — 종료 코드를 위조하지 않는다.
+    };
+    signalHandlers.set(sig, handler);
+    process.once(sig, handler);
   }
 
   return { path: lockPath, release };

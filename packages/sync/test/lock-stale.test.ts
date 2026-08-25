@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -121,5 +121,106 @@ describe("acquireLock — 죽은 보유자의 락만 회수한다", () => {
     const lock = acquireLock(root, info);
     expect(readFileSync(lock.path, "utf8")).toContain(String(process.pid));
     lock.release();
+  });
+});
+
+/**
+ * **신호 핸들러의 생애.** 지난 수정이 신호 핸들러를 등록만 하고 정상 해제 경로에서 떼지
+ * 않아, 락을 반복 취득하면 리스너가 3개씩 쌓였다(테스트 전체 실행에서
+ * `MaxListenersExceededWarning: 11 SIGTERM listeners`로 드러났다). 그리고 핸들러 안의
+ * `removeAllListeners(sig)`는 **다른 코드가 등록한 핸들러까지** 지웠다.
+ *
+ * 여기서 재는 것은 "락을 여러 번 잡았다 놓으면 프로세스에 흔적이 남는가"이다.
+ */
+describe("acquireLock — 신호 핸들러를 남기지 않는다", () => {
+  const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+
+  function counts(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const s of SIGNALS) out[s] = process.listenerCount(s);
+    out.exit = process.listenerCount("exit");
+    return out;
+  }
+
+  it("취득·해제를 반복해도 리스너가 누적되지 않는다", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ctk-lock-listeners-"));
+    try {
+      const before = counts();
+      for (let i = 0; i < 5; i++) {
+        acquireLock(dir, { machine_id: MACHINE, command: "test", origin: "cli", started_at: "now" }).release();
+      }
+      expect(counts(), "락을 5번 잡았다 놓았더니 리스너가 남았다").toEqual(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("보유 중에는 신호 핸들러가 실제로 걸려 있다 — 위 케이스가 '애초에 안 걸었다'와 구분된다", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ctk-lock-listeners-held-"));
+    try {
+      const before = counts();
+      const lock = acquireLock(dir, { machine_id: MACHINE, command: "test", origin: "cli", started_at: "now" });
+      for (const s of SIGNALS) {
+        expect(process.listenerCount(s), `${s} 핸들러가 걸리지 않았다`).toBe((before[s] ?? 0) + 1);
+      }
+      lock.release();
+      expect(counts()).toEqual(before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("남이 등록한 핸들러를 지우지 않는다 — removeAllListeners는 범위가 넘친다", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ctk-lock-listeners-foreign-"));
+    const foreign = (): void => {};
+    process.on("SIGTERM", foreign);
+    try {
+      acquireLock(dir, { machine_id: MACHINE, command: "test", origin: "cli", started_at: "now" }).release();
+      expect(process.listeners("SIGTERM"), "남의 핸들러가 사라졌다").toContain(foreign);
+    } finally {
+      process.removeListener("SIGTERM", foreign);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * **신호 발화 축.** 위의 세 케이스는 전부 *정상 해제* 경로만 태운다 — 그래서
+ * `removeAllListeners(sig)`를 되살리는 파괴 실험이 **통과했다**(2026-08-25). 과잉 삭제는
+ * 신호가 실제로 발화할 때만 일어나기 때문이다. 재발화를 주입해 그 축을 태운다.
+ */
+describe("acquireLock — 신호가 발화했을 때", () => {
+  it("남이 등록한 핸들러를 지우지 않는다 (removeAllListeners면 여기서 깨진다)", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ctk-lock-sig-foreign-"));
+    const foreign = (): void => {};
+    const raised: NodeJS.Signals[] = [];
+    process.on("SIGTERM", foreign);
+    try {
+      acquireLock(dir, { machine_id: MACHINE, command: "test", origin: "cli", started_at: "now" }, { terminateFn: (s) => raised.push(s) });
+      process.emit("SIGTERM"); // 실제 프로세스를 죽이지 않고 리스너만 돌린다
+      expect(raised, "정리 후 재발화하지 않았다").toEqual(["SIGTERM"]);
+      expect(process.listeners("SIGTERM"), "남의 핸들러가 사라졌다").toContain(foreign);
+    } finally {
+      process.removeListener("SIGTERM", foreign);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("락 파일을 지우고 자기 핸들러는 전부 뗀다", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ctk-lock-sig-cleanup-"));
+    try {
+      const sigs = ["SIGINT", "SIGTERM", "SIGHUP", "exit"] as const;
+      const before = Object.fromEntries(sigs.map((s) => [s, process.listenerCount(s)]));
+      const lock = acquireLock(dir, { machine_id: MACHINE, command: "test", origin: "cli", started_at: "now" }, { terminateFn: () => {} });
+      expect(existsSync(lock.path)).toBe(true);
+      process.emit("SIGINT");
+      expect(existsSync(lock.path), "신호를 받고도 락이 남았다").toBe(false);
+      // 발화한 신호뿐 아니라 **나머지 축도 함께** 떼야 한다 — 하나만 떼면 나머지가 쌓인다.
+      for (const s of sigs) {
+        expect(process.listenerCount(s), `${s} 핸들러가 남았다`).toBe(before[s]);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
