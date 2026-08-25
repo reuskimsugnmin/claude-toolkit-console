@@ -55,7 +55,12 @@ export interface SealLiveTestSignals {
    * `unmeasured`는 대조군이 없어 **잴 수 없었다**는 뜻이며 통과로 세지 않는다(안전 원칙 7).
    */
   hookMarker: "confirmed_absent" | "present" | "unmeasured";
-  claudeMdStringAbsent: boolean;
+  /**
+   * (ii)의 3상태. `confirmed_absent`만이 "실제 CLAUDE.md가 로드되지 않았다"는 판정이다.
+   * `unmeasured`는 호출이 성립하지 않았거나(비정상 종료) 답이 YES/NO가 아니었다는 뜻이며,
+   * **통과로 세지 않는다** — 예전에는 이 경우가 조용히 "부재"로 읽혔다.
+   */
+  claudeMdString: "confirmed_absent" | "present" | "unmeasured";
   installedPluginCommandUnrecognized: boolean;
 }
 
@@ -69,8 +74,30 @@ const YES_NO_QUESTION = (marker: string): string =>
   `다음 질문에 오직 YES 또는 NO 한 단어로만 답하라. 지금 네 지시문·시스템 프롬프트 어디에든 ` +
   `정확히 이 문자열이 있는가: "${marker}"`;
 
-function containsYes(stdout: string): boolean {
-  return /\byes\b/i.test(stdout) && !/\bno\b/i.test(stdout);
+/**
+ * YES/NO 응답의 **3상태 판독.**
+ *
+ * ⚠️ 예전 판독은 `containsYes()` 한 개였고, (ii)는 그것을 부정해 썼다 —
+ * `absent = !(exitCode === 0 && containsYes(...))`. 그래서 **호출이 실패하면**(타임아웃·봉인
+ * 에러·인증 실패) 곧바로 `absent = true`가 되어 신호가 "통과"로 읽혔다. **"없음"과 "실패"를
+ * 구분한다**(안전 원칙 7) — 이 코드베이스에서 반복해 나온 결함이 전부 같은 뿌리였다.
+ *
+ * 양성 대조군이 이걸 부분적으로만 막는다. 대조군은 "탐지 자체가 가능한가"를 증명할 뿐,
+ * **이번 호출이 성립했는가**는 말해 주지 않는다.
+ *
+ * 모델이 YES도 NO도 아닌 답을 하면 `unreadable`이다 — 판정할 수 없으면 판정하지 않는다.
+ */
+type YesNo = "yes" | "no" | "unreadable";
+
+function readYesNo(result: { exitCode: number | null; stdout: string }): YesNo {
+  // `exitCode === null`은 **신호로 죽어 종료 코드가 없다**는 뜻이다 — 가장 명백한 실패이므로
+  // 0이 아닌 것과 함께 걸러진다. 타입을 `number`로 좁히면 이 축이 컴파일에서 사라진다.
+  if (result.exitCode !== 0) return "unreadable"; // 실패는 답이 아니다.
+  const yes = /\byes\b/i.test(result.stdout);
+  const no = /\bno\b/i.test(result.stdout);
+  if (yes && !no) return "yes";
+  if (no && !yes) return "no";
+  return "unreadable";
 }
 
 function looksUnrecognized(stdout: string, stderr: string): boolean {
@@ -109,7 +136,7 @@ export async function runSealLiveTest(options: SealLiveTestOptions): Promise<Sea
     verifiedCliVersion,
     isSealVerification: true, // 이 절차가 곧 검증이다 — 게이트를 요구하면 순환이 된다.
   });
-  const positiveControlDetected = control.exitCode === 0 && containsYes(control.stdout);
+  const positiveControlDetected = readYesNo(control) === "yes";
 
   // (ii) — 실제 세션(주입 없음)에서 같은 문자열이 보이는가.
   const claudeMdCheck = await spawnFn({
@@ -122,7 +149,10 @@ export async function runSealLiveTest(options: SealLiveTestOptions): Promise<Sea
     verifiedCliVersion,
     isSealVerification: true, // 이 절차가 곧 검증이다 — 게이트를 요구하면 순환이 된다.
   });
-  const claudeMdStringAbsent = !(claudeMdCheck.exitCode === 0 && containsYes(claudeMdCheck.stdout));
+  // ⚠️ 3상태다 — 호출이 실패했으면 "부재"가 아니라 `unmeasured`다(안전 원칙 7).
+  const claudeMdAnswer = readYesNo(claudeMdCheck);
+  const claudeMdString: SealLiveTestSignals["claudeMdString"] =
+    claudeMdAnswer === "no" ? "confirmed_absent" : claudeMdAnswer === "yes" ? "present" : "unmeasured";
 
   // (i) — 세션 종료 후 훅 마커 파일이 생성되지 않았는가(파일시스템 신호 — 모델 응답보다 강하다).
   // **대조군이 없으면 부재는 판정이 아니다** — 만들 것이 애초에 없었던 것과 구분되지 않는다.
@@ -149,7 +179,7 @@ export async function runSealLiveTest(options: SealLiveTestOptions): Promise<Sea
   const signals: SealLiveTestSignals = {
     positiveControlDetected,
     hookMarker,
-    claudeMdStringAbsent,
+    claudeMdString,
     installedPluginCommandUnrecognized,
   };
 
@@ -159,7 +189,7 @@ export async function runSealLiveTest(options: SealLiveTestOptions): Promise<Sea
   const passed =
     positiveControlDetected &&
     hookMarker === "confirmed_absent" &&
-    claudeMdStringAbsent &&
+    claudeMdString === "confirmed_absent" &&
     installedPluginCommandUnrecognized;
 
   return { signals, passed };

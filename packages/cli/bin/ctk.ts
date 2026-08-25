@@ -208,7 +208,16 @@ async function main(): Promise<void> {
               "그 훅을 배선해야 이 축을 잴 수 있다",
           } as const;
           console.log(`  (i) 훅 마커 미생성: ${HOOK_MARKER_TEXT[sig.hookMarker]}`);
-          console.log(`  (ii) CLAUDE.md 미로드: ${sig.claudeMdStringAbsent ? "통과" : "실패"}`);
+          // (ii)도 3상태다 — "미측정"을 "통과"로도 "실패"로도 적지 않는다. 못 잰 것은 못 잰
+          // 것이고, 그 구분이 사라지면 재시도해야 할 상황이 봉인 파손으로 읽힌다(또는 그 반대).
+          const CLAUDE_MD_TEXT = {
+            confirmed_absent: "통과",
+            present: "실패 — 봉인 세션이 실제 CLAUDE.md를 로드했다",
+            unmeasured:
+              "미측정 — 호출이 성립하지 않았거나(비정상 종료) 응답이 YES/NO가 아니었다. " +
+              "봉인이 깨졌다는 뜻이 아니라 이번에 재지 못했다는 뜻이다. 다시 실행하라",
+          } as const;
+          console.log(`  (ii) CLAUDE.md 미로드: ${CLAUDE_MD_TEXT[sig.claudeMdString]}`);
           console.log(`  (iii) 플러그인 커맨드 미인식: ${sig.installedPluginCommandUnrecognized ? "통과" : "실패"}`);
           if (report.updated) {
             console.log(`  ✅ 봉인 재증명 완료 — verified_cli_version을 ${report.actualVersion}로 갱신했다`);
