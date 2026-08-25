@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_PROBE_FORBIDDEN_ARGV_RULES, assertEnvWhitelist, assertForbiddenArgv, DEFAULT_SINGLE_VALUE_ARGV_FLAGS } from "@ctk/core";
+import {
+  AGENT_PROBE_FORBIDDEN_ARGV_RULES,
+  assertEnvWhitelist,
+  assertForbiddenArgv,
+  DEFAULT_SINGLE_VALUE_ARGV_FLAGS,
+  ENV_SELF_DECLARED_COMMON,
+  ENV_SELF_DECLARED_SEALED_LIVE,
+  ENV_WHITELIST_COMMON,
+  ENV_WHITELIST_SEALED_LIVE_EXTRA,
+} from "@ctk/core";
 import {
   buildAgentProbeArgv,
   buildArgvPrefix,
@@ -169,5 +178,83 @@ describe("probe/harness/seal-profiles — §1.3 결정 6 프로파일 조합 (�
     expect(env.SHELL).toBe("/bin/bash");
     expect(env.TMPDIR).toBe("/tmp");
     expect(assertEnvWhitelist(env).status).toBe("clean");
+  });
+});
+
+/**
+ * **자기선언 env (2026-08-25 실측 + 보안 재심 M1·L1).**
+ *
+ * 봉인 트리 감사가 실제로 켜진 첫 배치에서 두 번 연속 같은 위반이 났다 —
+ * `claude` CLI가 약 41분 주기로 마켓플레이스를 자동 갱신하고 플러그인 레지스트리 두 파일을
+ * 다시 쓰기 때문이다. 배치는 80분이라 재실행으로는 넘을 수 없었다.
+ *
+ * **허용목록을 넓히지 않고 원인을 없앤다** — 갱신이 일어나지 않으면 그 파일들은 감시에서 한 톨도
+ * 빠지지 않는다. 이 키는 자식에게 능력을 주는 것이 아니라 **빼앗는다.**
+ *
+ * ⚠️ **개별 키만 단언하지 않는다**(재심 M1). 그러면 **다음에 추가되는 키는 그물을 그냥 통과한다** —
+ * 자기선언 맵을 순회해 "모든 키가 부모 env와 독립"임을 재는 것이 불변식 자체를 재는 방법이다.
+ */
+describe("buildChildEnv — 자기선언 env는 부모를 상속하지 않는다", () => {
+  const SEALED_KEYS = { ...ENV_SELF_DECLARED_COMMON, ...ENV_SELF_DECLARED_SEALED_LIVE };
+
+  it("sealed-live: 자기선언 키 전부가 고정값으로 실린다", () => {
+    const env = buildChildEnv("sealed-live", "/h", "/h/.claude", false, {});
+    for (const [key, value] of Object.entries(SEALED_KEYS)) {
+      expect(env[key], `${key}가 실리지 않았다`).toBe(value);
+    }
+  });
+
+  /**
+   * ⚠️ **봉인의 성질은 사용자 환경에 좌우되면 안 된다.** 부모가 다른 값을 들고 있어도 고정값이
+   * 이겨야 한다 — 상속했다면 사용자 env 하나로 이 방어가 통째로 사라진다.
+   *
+   * **맵을 순회한다** — 키가 늘어도 이 테스트가 자동으로 그 키를 덮는다.
+   */
+  it("부모 env가 다른 값을 들고 있어도 고정값이 이긴다 (키가 늘어도 자동으로 덮인다)", () => {
+    const hostile: NodeJS.ProcessEnv = {};
+    for (const key of Object.keys(SEALED_KEYS)) hostile[key] = "0";
+    const env = buildChildEnv("sealed-live", "/h", "/h/.claude", false, hostile);
+    for (const [key, value] of Object.entries(SEALED_KEYS)) {
+      expect(env[key], `${key}에 부모 값이 새어 들어왔다`).toBe(value);
+    }
+  });
+
+  it("부모에 아예 없어도 실린다 — 존재 여부에 의존하지 않는다", () => {
+    const env = buildChildEnv("sealed-live", "/h", "/h/.claude", false, { PATH: "/usr/bin" });
+    for (const [key, value] of Object.entries(SEALED_KEYS)) expect(env[key]).toBe(value);
+  });
+
+  /**
+   * **`DISABLE_AUTOUPDATER`는 공통이다**(재심 L1). 처음에는 `sealed-live` 전용으로 뒀고 그 근거를
+   * "test-isolated는 실제 config dir을 쓰지 않는다"라고 적었는데 **그 근거가 틀렸다** —
+   * `ctk scan`의 `plugin list --json`과 `agent-probe`는 `CLAUDE_CONFIG_DIR`을 주입하지 않아
+   * 자식이 **실제 config dir을 본다.** `probe`는 계층 계약상 읽기 전용인데 그 자식이 마켓플레이스
+   * 갱신을 유발할 수 있었다.
+   */
+  it("test-isolated에도 DISABLE_AUTOUPDATER가 실린다 — probe의 읽기 전용 계약을 지킨다", () => {
+    const env = buildChildEnv("test-isolated", "/h", "/h/.claude", true, { DISABLE_AUTOUPDATER: "0" });
+    expect(env.DISABLE_AUTOUPDATER).toBe("1");
+  });
+
+  it("test-isolated에는 sealed-live 전용 키가 실리지 않는다 — 프로파일 경계는 유지된다", () => {
+    const env = buildChildEnv("test-isolated", "/h", "/h/.claude", true, {});
+    for (const key of Object.keys(ENV_SELF_DECLARED_SEALED_LIVE)) expect(env[key]).toBeUndefined();
+  });
+
+  it("여전히 허용 목록 안이다 — 자기 선언이 env-whitelist 판정에 위반으로 잡히지 않는다", () => {
+    for (const profile of ["sealed-live", "test-isolated"] as const) {
+      const env = buildChildEnv(profile, "/h", "/h/.claude", false, {});
+      const allowlist =
+        profile === "sealed-live" ? [...ENV_WHITELIST_COMMON, ...ENV_WHITELIST_SEALED_LIVE_EXTRA] : ENV_WHITELIST_COMMON;
+      expect(assertEnvWhitelist(env, allowlist).status, profile).toBe("clean");
+    }
+  });
+
+  /** 화이트리스트는 자기선언 맵에서 **파생**된다 — 맨 키를 손으로 더할 수 없다는 것이 M1의 처방이다. */
+  it("화이트리스트가 자기선언 맵을 전부 포함한다 (파생이 끊기면 여기서 깨진다)", () => {
+    for (const key of Object.keys(ENV_SELF_DECLARED_COMMON)) expect(ENV_WHITELIST_COMMON).toContain(key);
+    for (const key of Object.keys(ENV_SELF_DECLARED_SEALED_LIVE)) {
+      expect(ENV_WHITELIST_SEALED_LIVE_EXTRA).toContain(key);
+    }
   });
 });

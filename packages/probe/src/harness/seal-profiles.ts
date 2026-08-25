@@ -1,4 +1,9 @@
-import { ENV_WHITELIST_COMMON, ENV_WHITELIST_SEALED_LIVE_EXTRA } from "@ctk/core";
+import {
+  ENV_SELF_DECLARED_COMMON,
+  ENV_SELF_DECLARED_SEALED_LIVE,
+  ENV_WHITELIST_COMMON,
+  ENV_WHITELIST_SEALED_LIVE_EXTRA,
+} from "@ctk/core";
 
 /**
  * probe/src/harness/seal-profiles.ts — 두 프로파일(§1.3 결정 6)의 argv/env 조합을 순수하게
@@ -148,6 +153,10 @@ export function buildChildEnv(
 ): Record<string, string> {
   const allowlist =
     profile === "sealed-live" ? [...ENV_WHITELIST_COMMON, ...ENV_WHITELIST_SEALED_LIVE_EXTRA] : ENV_WHITELIST_COMMON;
+  const selfDeclared: Record<string, string> =
+    profile === "sealed-live"
+      ? { ...ENV_SELF_DECLARED_COMMON, ...ENV_SELF_DECLARED_SEALED_LIVE }
+      : { ...ENV_SELF_DECLARED_COMMON };
 
   const env: Record<string, string> = {};
   for (const key of allowlist) {
@@ -159,9 +168,12 @@ export function buildChildEnv(
       if (configDirExplicit) env.CLAUDE_CONFIG_DIR = ctkConfigDir;
       continue; // 명시 안 됐으면(프로덕션 기본 경로) 자식이 $HOME 기준 기본값을 쓰게 둔다(H5).
     }
-    if (key === "CLAUDE_CODE_SAFE_MODE") {
-      // safe mode의 자기 선언 — 플래그 파싱 의미가 바뀌어도 이 경로는 남는다(§1.3 결정 6).
-      env.CLAUDE_CODE_SAFE_MODE = "1";
+    // ⚠️ **자기선언 키는 부모 env를 상속하지 않는다.** 손으로 쓴 `if` 분기 대신 맵에서 배선한다 —
+    // 분기로 두면 키가 늘 때 분기 추가를 잊고, 그 키는 조용히 상속 채널이 된다(보안 재심 M1).
+    // 사용자가 값을 "0"으로 두고 있어도 고정값이 이긴다: 봉인의 성질은 사용자 환경에 좌우되면 안 된다.
+    const selfDeclaredValue = selfDeclared[key];
+    if (selfDeclaredValue !== undefined) {
+      env[key] = selfDeclaredValue;
       continue;
     }
     const value = parentEnv[key];
