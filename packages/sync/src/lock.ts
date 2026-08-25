@@ -1,4 +1,4 @@
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync } from "node:fs";
 import path from "node:path";
 
 /**
@@ -145,10 +145,28 @@ export function acquireLock(
   }
 
   let released = false;
+  /**
+   * **이 락 파일이 우리 것일 때만 지운다.**
+   *
+   * ⚠️ 심사 M-1(2026-08-25). 예전에는 `existsSync(lockPath)`만 보고 지웠는데, 그것이 안전했던
+   * 이유는 **다른 결함이 가려주고 있었기 때문**이다 — 신호 핸들러가 `removeAllListeners`로
+   * 리스너를 0개로 만들어 재발화가 항상 기본 동작(종료)을 탔고, 그래서 "신호를 받았는데 아직
+   * 살아 있는 프로세스"라는 상태가 존재할 수 없었다.
+   *
+   * 남의 핸들러를 보존하도록 고치자 그 상태가 처음으로 가능해졌다(Node는 리스너가 하나라도
+   * 있으면 기본 종료를 적용하지 않는다). 그러면 A가 살아 있는 채로 락을 지우고 → B가 잡고 →
+   * **A의 뒤늦은 `release()`가 B의 락을 지운다.** 실증에서 C까지 들어와 가드가 사라졌다.
+   *
+   * 소유권을 확인하면 두 축이 함께 닫힌다. 판독 불가(`null`)도 **건드리지 않는다** — 모르는
+   * 것을 "내 것"으로 지어내지 않는다(안전 원칙 7).
+   */
+  const unlinkIfOurs = (): void => {
+    const holder = readLockInfo(lockPath);
+    if (holder === null || holder.pid !== process.pid) return;
+    unlinkSync(lockPath);
+  };
   const onExit = (): void => {
-    if (existsSync(lockPath)) {
-      unlinkSync(lockPath);
-    }
+    unlinkIfOurs();
   };
   // ⚠️ `exit`는 신호로 죽을 때 실행되지 않는다 — 실측(2026-08-24): 배치가 중단되자 락이 남아
   // 다음 실행이 `lock_contended`로 막혔다. 신호를 받으면 해제하고 기본 동작(종료)으로 넘긴다.
@@ -174,16 +192,17 @@ export function acquireLock(
     if (released) return;
     released = true;
     detach(); // 정상 해제 시 훅을 전부 걷어 리스너가 누적되지 않게 한다.
-    if (existsSync(lockPath)) {
-      unlinkSync(lockPath);
-    }
+    unlinkIfOurs();
   };
 
   // 프로세스 비정상 종료 시에도 락이 남지 않게 최선의 안전망을 건다(정상 종료는 위 release()가 처리).
   process.once("exit", onExit);
   for (const sig of SIGNALS) {
     const handler = (): void => {
-      onExit();
+      // ⚠️ 신호 경로도 **해제다.** `released`를 세우지 않으면, 남의 핸들러가 프로세스를 살려둔
+      // 뒤 뒤늦게 도착한 `release()`가 그 사이 남이 잡은 락을 지운다(심사 M-1).
+      released = true;
+      unlinkIfOurs();
       detach(); // 우리 것만 뗀다 — 남의 핸들러는 그대로 두고 재발화에서 실행되게 한다.
       terminateFn(sig); // 기본 처리로 죽는다 — 종료 코드를 위조하지 않는다.
     };

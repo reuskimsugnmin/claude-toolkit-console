@@ -224,3 +224,74 @@ describe("acquireLock — 신호가 발화했을 때", () => {
     }
   });
 });
+
+/**
+ * **심사 M-1 회귀 고정 — 신호를 받고도 살아남은 프로세스가 남의 락을 지웠다.**
+ *
+ * 이 상태는 `removeAllListeners`를 걷어내면서 **처음으로 가능해졌다.** 예전에는 재발화 시점에
+ * 리스너가 0개라 Node가 항상 기본 동작(종료)을 적용해 프로세스가 반드시 죽었다. 남의 핸들러를
+ * 보존하자(Node는 리스너가 하나라도 있으면 기본 종료를 적용하지 않는다) "신호를 받았는데 아직
+ * 살아 있다"가 생겼고, 그때 ① 핸들러가 `released`를 세우지 않고 ② 지울 때 소유권을 안 봐서
+ * **A의 뒤늦은 release()가 B의 락을 지웠다.**
+ *
+ * **한 결함을 고치면 그것이 가리던 결함이 드러난다** — 그래서 고친 뒤에도 다시 본다.
+ */
+describe("acquireLock — 신호 후 살아남아도 남의 락을 지우지 않는다 (심사 M-1)", () => {
+  const base = { command: "gen", origin: "cli" as const, started_at: "now", machine_id: MACHINE };
+
+  it("신호로 해제한 뒤 남이 잡은 락을, 뒤늦은 release()가 지우지 않는다", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ctk-lock-m1-"));
+    try {
+      // A: 락 취득 → 신호 수신(프로세스는 terminateFn no-op 덕에 살아남는다)
+      const a = acquireLock(dir, base, { terminateFn: () => {} });
+      expect(existsSync(a.path)).toBe(true);
+      process.emit("SIGTERM");
+      expect(existsSync(a.path), "신호 경로가 락을 지우지 않았다").toBe(false);
+
+      // B: A가 아직 살아 있는 사이에 락을 잡는다(정상 동작 — A는 해제를 선언했다)
+      const b = acquireLock(dir, { ...base, command: "scan" }, { terminateFn: () => {} });
+      expect(existsSync(b.path)).toBe(true);
+
+      // A의 뒤늦은 release() — **B의 락을 건드리면 안 된다**
+      a.release();
+      expect(existsSync(b.path), "A의 release()가 B의 락을 지웠다").toBe(true);
+
+      // 그리고 그 사이 제3자가 들어올 수 없어야 한다 — 가드가 살아 있는지 직접 확인한다
+      expect(() => acquireLock(dir, { ...base, command: "move" })).toThrow(LockContendedError);
+      b.release();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * 소유권 축을 **단독으로** 잰다. 위 케이스는 `released` 플래그가 먼저 막아 주기 때문에
+   * 소유권 검사를 걷어내도 통과한다 — 두 축을 함께 닫으라는 심사 권고가 그 뜻이다.
+   * 여기서는 `release()`를 한 번도 부르지 않은 락의 파일이 **그 사이 남의 것으로 바뀐** 경우를
+   * 만든다(stale 회수가 실제로 만드는 상태다).
+   */
+  it("락 파일이 그 사이 남의 것으로 바뀌었으면 release()가 지우지 않는다 (소유권 축 단독)", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ctk-lock-m1-stolen-"));
+    try {
+      const lock = acquireLock(dir, base, { terminateFn: () => {} });
+      // 남의 실행이 이 자리를 차지했다고 가정한다 — pid가 우리 것이 아니다.
+      writeFileSync(lock.path, JSON.stringify({ ...base, pid: process.pid + 1 }));
+      lock.release();
+      expect(existsSync(lock.path), "남의 pid가 적힌 락을 지웠다").toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("판독 불가한 락 파일은 건드리지 않는다 — 모르는 것을 '내 것'으로 지어내지 않는다", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ctk-lock-m1-unreadable-"));
+    try {
+      const lock = acquireLock(dir, base, { terminateFn: () => {} });
+      writeFileSync(lock.path, "{ 깨진 JSON"); // 남이 덮어썼다고 가정
+      lock.release();
+      expect(existsSync(lock.path), "판독 불가한 파일을 지웠다").toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
