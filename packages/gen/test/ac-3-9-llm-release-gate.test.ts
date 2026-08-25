@@ -87,8 +87,8 @@ describe.runIf(RELEASE_GATE)("AC-3.9 LLM 경로 (릴리스 게이트 — 유료)
   let sealedCwd: string;
 
   afterEach(() => {
-    if (catalogRoot) rmSync(catalogRoot, { recursive: true, force: true });
-    if (sealedCwd) rmSync(sealedCwd, { recursive: true, force: true });
+    if (catalogRoot) rmSync(catalogRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    if (sealedCwd) rmSync(sealedCwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   function init(): void {

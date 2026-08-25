@@ -70,7 +70,14 @@ describe("cli — ctk init / ctk scan 왕복 (Step 2)", () => {
     else process.env.CTK_HOME = originalEnv.CTK_HOME;
     if (originalEnv.CTK_CONFIG_DIR === undefined) delete process.env.CTK_CONFIG_DIR;
     else process.env.CTK_CONFIG_DIR = originalEnv.CTK_CONFIG_DIR;
-    rmSync(ctkHome, { recursive: true, force: true });
+    // ⚠️ `maxRetries`가 없으면 **간헐적으로 ENOTEMPTY로 죽는다**(2026-08-25 실측: 전체 스위트
+    // 5회 중 2회). `ctk init`이 만든 git 저장소에 git이 커밋 뒤 백그라운드 auto-gc를 포크하고,
+    // 그 프로세스가 재귀 삭제 도중 `.git/objects/` 아래를 다시 만든다(남은 잔해가 정확히 그것이었다).
+    //
+    // **이 경합은 원래 있었고, 봉인 자식이 빨라지자 드러났다** — `DISABLE_AUTOUPDATER`로 자식이
+    // 마켓플레이스 갱신을 건너뛰면서 테스트가 더 일찍 끝나 뒷정리가 git과 겹치게 됐다.
+    // 고친 결함이 가리던 결함이 드러나는 이 저장소의 단골 모양이다.
+    rmSync(ctkHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   it("원격 URL은 remote_catalog_unsupported로 거부되고 아무 것도 만들지 않는다(OQ-1 안 C)", async () => {

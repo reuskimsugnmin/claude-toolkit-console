@@ -89,8 +89,8 @@ describe("AC-3.9 — 악성 픽스처 5종에 대한 프롬프트 인젝션 부�
     let home: HomeContext;
 
     afterEach(() => {
-      if (ctkHome) rmSync(ctkHome, { recursive: true, force: true });
-      if (catalogRoot) rmSync(catalogRoot, { recursive: true, force: true });
+      if (ctkHome) rmSync(ctkHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+      if (catalogRoot) rmSync(catalogRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     });
 
     it.each(MALICIOUS_CASES)("$label — usage.md가 카탈로그에 커밋되지 않고 gen_state가 stale로 남는다", async ({ dir }) => {

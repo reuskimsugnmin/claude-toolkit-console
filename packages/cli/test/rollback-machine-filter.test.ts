@@ -32,7 +32,7 @@ describe("cli — ctk rollback --last는 이 머신이 만든 journal 레코드�
     else process.env.CTK_HOME = originalEnv.CTK_HOME;
     if (originalEnv.CTK_CONFIG_DIR === undefined) delete process.env.CTK_CONFIG_DIR;
     else process.env.CTK_CONFIG_DIR = originalEnv.CTK_CONFIG_DIR;
-    rmSync(ctkHome, { recursive: true, force: true });
+    rmSync(ctkHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   function writeJournalFile(catalogPath: string, filename: string, entry: unknown): void {

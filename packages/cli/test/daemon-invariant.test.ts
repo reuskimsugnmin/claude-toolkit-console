@@ -7,7 +7,7 @@ import { afterAll, describe, expect, it } from "vitest";
 
 const tempHomes: string[] = [];
 afterAll(() => {
-  for (const dir of tempHomes) rmSync(dir, { recursive: true, force: true });
+  for (const dir of tempHomes) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 });
 
 /**

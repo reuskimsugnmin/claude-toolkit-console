@@ -147,7 +147,7 @@ describe("cli — ctk measure / ctk usage 왕복 (Step 3)", () => {
     else process.env.ANTHROPIC_API_KEY = originalEnv.ANTHROPIC_API_KEY;
     if (originalEnv.PATH === undefined) delete process.env.PATH;
     else process.env.PATH = originalEnv.PATH;
-    rmSync(ctkHome, { recursive: true, force: true });
+    rmSync(ctkHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   it("크레덴셜 없이 --no-credentials-ok로 실행하면 exit 0으로 끝나고 3상태가 unmeasured로 정직하게 남는다(AC-4.5)", async () => {

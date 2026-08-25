@@ -91,8 +91,8 @@ describe("cli — AC-2.6 주입 테스트: 조치 도중 CLAUDE.md 변조 → �
     else process.env.CTK_HOME = originalEnv.CTK_HOME;
     if (originalEnv.CTK_CONFIG_DIR === undefined) delete process.env.CTK_CONFIG_DIR;
     else process.env.CTK_CONFIG_DIR = originalEnv.CTK_CONFIG_DIR;
-    rmSync(ctkHome, { recursive: true, force: true });
-    rmSync(projectDir, { recursive: true, force: true });
+    rmSync(ctkHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+    rmSync(projectDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   it(
