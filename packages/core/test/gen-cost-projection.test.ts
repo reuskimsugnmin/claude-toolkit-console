@@ -12,14 +12,20 @@ import { deriveObservedUnitCost, projectGenTotalUsd } from "../src/view/gen-cost
  * 테스트가 통과한다 — 갈릴 수 있는 축(오른쪽 꼬리)이 표본에 없으면 파괴 실험이 무력하다.
  */
 
-/** 실측(2026-08-24) 배치 ③의 모양: 중앙값 $0.170 · 최대 $0.705 · 33건 $7.0998. */
+/**
+ * **합성 표본** — 값은 지어냈고 **모양만** 실측을 따른다(오른쪽 꼬리: 최대가 중앙값의 약 4배).
+ * 이 저장소는 public이라 픽스처에 실제 지출을 넣지 않는다. 다만 평균과 중앙값이 **갈리는**
+ * 표본이어야 한다 — 대칭 표본이면 결함을 주입해도 통과한다.
+ *
+ * 평균 $0.200(= 4.00 ÷ 20) · 중앙값 $0.160 · 최대 $0.650
+ */
 function skewedCost() {
   return GenCostSchema.parse({
-    calls_reported: 33,
+    calls_reported: 20,
     calls_unreported: 0,
-    reported_total_usd: 7.099791,
-    median_usd: 0.169984,
-    max_usd: 0.704629,
+    reported_total_usd: 4.0,
+    median_usd: 0.16,
+    max_usd: 0.65,
   });
 }
 
@@ -27,8 +33,8 @@ describe("deriveObservedUnitCost", () => {
   it("평균을 총액÷건수로 낸다 — 스키마에 이미 있는 값에서 파생된다", () => {
     const observed = deriveObservedUnitCost(skewedCost());
     expect(observed).not.toBeNull();
-    expect(observed?.meanUsd).toBeCloseTo(7.099791 / 33, 10);
-    expect(observed?.sampleSize).toBe(33);
+    expect(observed?.meanUsd).toBeCloseTo(4.0 / 20, 10);
+    expect(observed?.sampleSize).toBe(20);
     expect(observed?.partial).toBe(false);
   });
 
@@ -87,5 +93,46 @@ describe("projectGenTotalUsd", () => {
   it("건수에 비례한다", () => {
     const observed = deriveObservedUnitCost(skewedCost())!;
     expect(projectGenTotalUsd(observed, 64)).toBeCloseTo(observed.meanUsd * 64, 10);
+  });
+});
+
+/**
+ * **심사 L-4 — 오염된 run log가 `Infinity`를 승인 화면에 띄울 수 있었다.**
+ *
+ * JSON의 `1e400`은 `JSON.parse`에서 `Infinity`가 되고, `z.number().nonnegative()`는
+ * `Infinity >= 0`이 참이라 **통과시킨다.** run log는 private 동기화 저장소를 통해 **다른
+ * 머신에서 흘러 들어오므로** 이 값을 신뢰하지 않는다. 스키마 한 줄(`.finite()`)로 닫힌다.
+ */
+describe("GenCostSchema — 유한하지 않은 값은 단가가 될 수 없다", () => {
+  it("Infinity를 거부한다 (JSON의 1e400이 파싱되면 Infinity다)", () => {
+    const raw: unknown = JSON.parse(
+      '{"calls_reported":1,"calls_unreported":0,"reported_total_usd":1e400,"median_usd":0.1,"max_usd":0.2}',
+    );
+    expect((raw as { reported_total_usd: number }).reported_total_usd).toBe(Infinity);
+    expect(GenCostSchema.safeParse(raw).success, "Infinity가 단가로 통과했다").toBe(false);
+  });
+
+  it("median·max에도 같은 가드가 걸려 있다 — 한 필드만 막으면 나머지로 샌다", () => {
+    for (const field of ["median_usd", "max_usd"] as const) {
+      const raw = {
+        calls_reported: 1,
+        calls_unreported: 0,
+        reported_total_usd: 1,
+        median_usd: 0.1,
+        max_usd: 0.2,
+        [field]: Number.POSITIVE_INFINITY,
+      };
+      expect(GenCostSchema.safeParse(raw).success, field).toBe(false);
+    }
+  });
+
+  it("정상 유한값은 그대로 통과한다 — 위 케이스가 '항상 거부'와 구분된다", () => {
+    expect(GenCostSchema.safeParse({
+      calls_reported: 1,
+      calls_unreported: 0,
+      reported_total_usd: 1,
+      median_usd: 0.1,
+      max_usd: 0.2,
+    }).success).toBe(true);
   });
 });

@@ -194,6 +194,15 @@ export interface CreateActionHandlersOptions {
   /** `gen` 실행에 필수인 벽시계 상한(초). 웹에서 자유 문자열로 받지 않고 서버가 고정한다. */
   genTimeoutSec?: number;
   cumulativeUsdCap?: number;
+  /**
+   * 견적 화면 조립부의 **테스트 이음매**(심사 M-4). 기본값은 실제 dry-run과 실제 run log다.
+   *
+   * ⚠️ 이것이 없으면 이 경로에 테스트를 붙일 수 없다 — 실제 카탈로그와 실제 실행 기록을 읽으므로
+   * 단언이 코드가 아니라 **그 머신**에 대한 진술이 된다. 실제로 `observed_unit_cost` 조립부는
+   * 어떤 테스트도 지나가지 않았고, 잘못된 개수를 곱해도 전 스위트가 통과했다.
+   */
+  dryRunFn?: typeof runGenDryRun;
+  observedCostFn?: () => GenCost | null;
 }
 
 /**
@@ -219,6 +228,8 @@ export function createActionHandlers(options: CreateActionHandlersOptions = {}):
   const estimates = options.estimates ?? new EstimateTokenStore();
   const timeoutSec = options.genTimeoutSec ?? 300;
   const cumulativeCap = options.cumulativeUsdCap ?? SESSION_CUMULATIVE_USD_CAP;
+  const dryRunFn = options.dryRunFn ?? runGenDryRun;
+  const observedCostFn = options.observedCostFn ?? readObservedGenCost;
   let cumulativeApprovedUsd = 0;
 
   return {
@@ -242,13 +253,13 @@ export function createActionHandlers(options: CreateActionHandlersOptions = {}):
 
     // ⓐ dry-run 경로를 그대로 쓴다 — 동기 함수이며 API 호출도 서브프로세스 spawn도 하지 않는다(AC-3.8).
     genEstimate: async (params) => {
-      const data = await rethrowClassified(async () => runGenDryRun({ maxAssets: params.maxAssets }));
+      const data = await rethrowClassified(async () => dryRunFn({ maxAssets: params.maxAssets }));
       const callCount = data.assetCount;
       const perCallBudgetUsd = toPerCallBudgetUsd(params.maxTotalUsd, callCount);
       // 이 머신의 지난 실행이 남긴 실측 단가. **없으면 null이고 지어내지 않는다.**
       // 이것이 없으면 화면은 상한만 보여주고, 사용자는 그 상한이 현실적인지 알 수 없다 —
       // 실측(2026-08-24) 중앙값이 기본 총액을 호출수로 나눈 값보다 커서 대부분 사전 거부됐다.
-      const observedCost = readObservedGenCost();
+      const observedCost = observedCostFn();
       // 브라우저가 직접 곱하지 않는다 — 총액 투사는 core 한 곳에서만 한다(둘 다 중앙값으로
       // 곱해 총액을 10~21% 낮게 말하던 결함이 여기서 갈라져 있었다).
       const observedUnit = deriveObservedUnitCost(observedCost);
@@ -263,7 +274,8 @@ export function createActionHandlers(options: CreateActionHandlersOptions = {}):
           per_call_budget_usd: perCallBudgetUsd,
           max_total_usd: params.maxTotalUsd,
           session_remaining_usd: Math.max(cumulativeCap - cumulativeApprovedUsd, 0),
-          observed_cost: observedCost,
+          // `observed_cost`(원자료)는 더 이상 화면이 쓰지 않는다 — 소비되지 않는 머신별 비용
+          // 원자료를 브라우저로 내보내지 않는다(심사 L-5). 파생값만 싣는다.
           observed_unit_cost:
             observedUnit === null
               ? null
