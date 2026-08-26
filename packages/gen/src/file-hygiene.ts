@@ -7,11 +7,19 @@ import path from "node:path";
  * ⓐ `lstat`으로 심볼릭 링크를 거부한다(또는 `realpath`가 자산 루트 밖이면 거부) —
  *    `SKILL.md`가 `~/.ssh/id_rsa`의 링크면 그 내용이 카탈로그 문서에 박혀 저장소로 동기화된다.
  * ⓑ 파일 크기 상한.
- * ⓒ 출력 경로는 ctk 생성 id(`asset.kind`+`asset.name`, scan 단계에서 이미 확정된 값)에서만
- *    산출한다 — frontmatter·LLM 출력의 어떤 문자열도 경로 산출에 쓰지 않는다. 이 파일은
- *    `core/catalog/layout.ts`의 경로 빌더(`usageMdPath`/`annotationMdPath`)를 그대로 재사용할
- *    뿐 별도 경로 조합 로직을 갖지 않는다(`ctk/no-adhoc-path-guard` lint 대상 회피 목적이
- *    아니라 애초에 재구현할 이유가 없다 — 단일 관문 원칙, C2와 동형).
+ * ⓒ [원문: B1 Step 1(2026-08-26) 이전] 출력 경로는 ctk 생성 id(`asset.kind`+`asset.name`,
+ *    scan 단계에서 이미 확정된 값)에서만 산출한다 — frontmatter·LLM 출력의 어떤 문자열도
+ *    경로 산출에 쓰지 않는다.
+ *    **왜 바뀌었는가**: `(kind, name)`만으로는 경로가 정해지지 않았다 — 이름이 같고 `id`가
+ *    다른 자산(번들 하위 툴이 들어오면 실제로 발생)이 같은 디렉터리를 공유해 서로의 문서를
+ *    조용히 덮었다(`assetDir(kind,name)` 시절의 결함, `core/catalog/layout.ts` 참조).
+ *    지금은 `usageMdPath`/`annotationMdPath`가 **`asset.id`도 함께** 받아 `<name>__<id의
+ *    sha256 앞 8자>`를 세그먼트로 쓴다 — id 역시 scan 단계에서 이미 확정된 값이고 원문·LLM
+ *    출력에서 오지 않으므로 "경로는 frontmatter·LLM 출력에서 오지 않는다"는 원래 보장은
+ *    그대로 유지된다(축이 `(kind,name)`에서 `(kind,name,id)`로 넓어졌을 뿐이다). 이 파일은
+ *    여전히 `core/catalog/layout.ts`의 경로 빌더(`usageMdPath`/`annotationMdPath`)를 그대로
+ *    재사용할 뿐 별도 경로 조합 로직을 갖지 않는다(`ctk/no-adhoc-path-guard` lint 대상 회피
+ *    목적이 아니라 애초에 재구현할 이유가 없다 — 단일 관문 원칙, C2와 동형).
  * ⓓ 최종 경로가 카탈로그 루트 하위인지는 `sync`(유일한 쓰기 주체)의 `catalog-boundary.ts`가
  *    쓰기 시점에 최종 확인한다(3계층 심층방어의 마지막 층) — gen은 쓰지 않으므로 이 층을 갖지
  *    않고, 대신 `usageMdPath`/`annotationMdPath`가 이미 거치는 `assertCatalogSegment()`가

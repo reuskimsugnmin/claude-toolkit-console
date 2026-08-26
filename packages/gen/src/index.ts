@@ -463,8 +463,8 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
       continue;
     }
 
-    writeAnnotationDoc(catalogRoot, target.asset.kind, target.asset.name, annotation);
-    writeUsageDoc(catalogRoot, target.asset.kind, target.asset.name, docPage);
+    writeAnnotationDoc(catalogRoot, target.asset.kind, target.asset.name, target.asset.id, annotation);
+    writeUsageDoc(catalogRoot, target.asset.kind, target.asset.name, target.asset.id, docPage);
     setAssetGenState(catalogRoot, target.asset.id, "fresh", target.sourceContentSha256);
     results.push({ assetId: target.asset.id, outcome: "fresh" });
   }

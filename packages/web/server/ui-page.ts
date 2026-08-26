@@ -18,7 +18,7 @@
  * 값은 전부 `textContent`로 넣는다(`innerHTML` 금지). 카탈로그 문서는 서드파티 원문 기반
  * 자동 생성물이므로(gen_source_trust) 그 안의 문자열을 마크업으로 해석하면 안 된다.
  */
-import { unresolvedReasonLabel, type UnresolvedSourceReason } from "@ctk/core";
+import { AssetKindSchema, unresolvedReasonLabel, type UnresolvedSourceReason } from "@ctk/core";
 
 /**
  * 미해결 사유의 배지 문구를 **`core`에서 받아** UI 스크립트에 주입한다.
@@ -32,6 +32,15 @@ const UNRESOLVED_LABELS: Record<UnresolvedSourceReason, string> = {
   no_local_source: unresolvedReasonLabel("no_local_source"),
   ambiguous_source: unresolvedReasonLabel("ambiguous_source"),
 };
+
+/**
+ * `<select id="kind">`의 종류 옵션 — **B1 Step 2(결정 2 #20)**. 이전에는 `<option>` 4줄이 HTML
+ * 문자열에 그대로 박혀 있었다. 타입체크는 문자열 리터럴 안을 보지 않으므로 `AssetKind`가 값을
+ * 얻어도 이 목록은 컴파일에서 절대 깨지지 않는다 — **타입 축이 안 닿는 자리다.** `AssetKindSchema`
+ * 에서 유도해 렌더 시점에 주입한다(위 `UNRESOLVED_LABELS`와 같은 패턴). 누락 여부는 런타임
+ * 테스트(`buildUiPage()`의 결과에 `AssetKindSchema.options` 전 값이 있는지 단언)가 지킨다.
+ */
+const KIND_OPTIONS_HTML = AssetKindSchema.options.map((kind) => `<option value="${kind}">${kind}</option>`).join("\n        ");
 
 function renderUiHtml(nonce: string): string {
   return `<!doctype html>
@@ -129,10 +138,7 @@ function renderUiHtml(nonce: string): string {
       <input id="q" type="search" placeholder="이름·id로 거르기" autocomplete="off">
       <select id="kind">
         <option value="">모든 종류</option>
-        <option value="plugin">plugin</option>
-        <option value="skill">skill</option>
-        <option value="mcp">mcp</option>
-        <option value="cli">cli</option>
+        ${KIND_OPTIONS_HTML}
       </select>
       <span class="meta" id="filter-count"></span>
     </div>

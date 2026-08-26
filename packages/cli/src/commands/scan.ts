@@ -14,6 +14,7 @@ import {
   commitAll,
   ensureGitRepo,
   ensureMachine,
+  migrateCatalogPaths,
   rebuildCatalogIndex,
   upsertAsset,
   writeRunLog,
@@ -51,7 +52,7 @@ function mergeAssets(...groups: Asset[][]): Asset[] {
 }
 
 function countAssetKinds(assets: Asset[]): Record<AssetKind, number> {
-  const counts: Record<AssetKind, number> = { plugin: 0, skill: 0, mcp: 0, cli: 0 };
+  const counts: Record<AssetKind, number> = { plugin: 0, skill: 0, mcp: 0, cli: 0, agent: 0, command: 0 };
   for (const asset of assets) counts[asset.kind]++;
   return counts;
 }
@@ -151,6 +152,12 @@ export async function runScan(options: RunScanOptions = {}): Promise<ScanSummary
       ...collected.cliTools.installations,
     ];
     const toggles: Toggle[] = [...collected.mcp.toggles];
+
+    // ⚠️ B1 Step 1 — 구 레이아웃(`catalog/assets/<kind>/<name>/`) 잔존 디렉터리를 새 경로
+    // (`<kind>/<name>__<id 해시8>/`)로 옮긴다. **반드시 upsertAsset·rebuildCatalogIndex보다
+    // 먼저** 돈다 — 먼저 upsertAsset이 새 경로에 asset.json을 써버리면 이전기가 구 경로를
+    // 새 경로로 옮기려 할 때 대상이 이미 존재해 충돌한다.
+    migrateCatalogPaths(catalogPath);
 
     for (const asset of assets) {
       upsertAsset(catalogPath, asset);

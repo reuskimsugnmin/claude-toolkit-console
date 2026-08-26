@@ -13,13 +13,23 @@ import { GEN_SOURCE_TRUST_HEADER, type Asset, type GenSourceTrust } from "@ctk/c
 
 export { GEN_SOURCE_TRUST_HEADER };
 
+/**
+ * exhaustive switch(B1 Step 2, 결정 2 #14) — `plugin`만 다르게 판정하고 나머지는 전부 같은
+ * `source_ref` 규칙을 쓴다는 사실을 새 kind가 추가될 때마다 컴파일이 재확인하게 만든다.
+ */
 export function determineSourceTrust(asset: Asset): GenSourceTrust {
-  if (asset.kind === "plugin") {
-    // Asset 스키마 불변식(asset.ts superRefine) — kind:"plugin"은 marketplace가 항상 있다.
-    return "marketplace";
+  switch (asset.kind) {
+    case "plugin":
+      // Asset 스키마 불변식(asset.ts superRefine) — kind:"plugin"은 marketplace가 항상 있다.
+      return "marketplace";
+    case "skill":
+    case "mcp":
+    case "cli":
+    case "agent":
+    case "command":
+      if (asset.source_ref !== undefined && asset.source_ref.length > 0) {
+        return "local";
+      }
+      return "unknown";
   }
-  if (asset.source_ref !== undefined && asset.source_ref.length > 0) {
-    return "local";
-  }
-  return "unknown";
 }

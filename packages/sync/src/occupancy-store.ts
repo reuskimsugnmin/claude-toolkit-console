@@ -12,10 +12,11 @@ export function upsertOccupancy(
   catalogRoot: string,
   kind: Parameters<typeof occupancyJsonPath>[0],
   name: string,
+  id: string,
   occupancy: Occupancy,
 ): { path: string } {
   assertNoRawPathLeaks(occupancy);
-  const absPath = catalogAbsPath(catalogRoot, occupancyJsonPath(kind, name));
+  const absPath = catalogAbsPath(catalogRoot, occupancyJsonPath(kind, name, id));
   mkdirSync(path.dirname(absPath), { recursive: true });
   writeFileSync(absPath, `${JSON.stringify(occupancy, null, 2)}\n`, "utf8");
   return { path: absPath };
@@ -25,8 +26,9 @@ export function readOccupancy(
   catalogRoot: string,
   kind: Parameters<typeof occupancyJsonPath>[0],
   name: string,
+  id: string,
 ): Occupancy | null {
-  const absPath = catalogAbsPath(catalogRoot, occupancyJsonPath(kind, name));
+  const absPath = catalogAbsPath(catalogRoot, occupancyJsonPath(kind, name, id));
   if (!existsSync(absPath)) return null;
   return parseOccupancy(JSON.parse(readFileSync(absPath, "utf8")) as unknown);
 }

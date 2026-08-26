@@ -13,3 +13,4 @@ export * from "./lock.js";
 export * from "./token-cache-store.js";
 export * from "./offset-cache-store.js";
 export * from "./occupancy-store.js";
+export * from "./migrate-catalog-paths.js";

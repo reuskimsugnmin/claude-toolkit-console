@@ -29,9 +29,23 @@ import type { ProjectChoice } from "./project-label.js";
 /** 화면에 실제로 표시되는 MCP 상태. 스키마의 nullable을 뜻이 다른 두 값으로 가른다. */
 export type McpStateView = "enabled" | "disabled" | "unset" | "unknown" | "not_applicable";
 
+/**
+ * exhaustive switch + 반환형에 `undefined` 없음(B1 Step 2, 결정 2 #5) — 이전에는
+ * `if (kind !== "mcp") return "not_applicable"`로 "우연히 맞는" 형태였다. `kind === "mcp"`
+ * 외의 모든 값이 같은 답을 내는 게 여전히 맞지만, 이제는 새 kind가 추가돼도 이 함수가 그 값을
+ * 실제로 검토하지 않고 지나치는 일이 없다 — 컴파일이 강제한다.
+ */
 export function toMcpStateView(kind: AssetKind, state: Installation["mcp_enabled_state"]): McpStateView {
-  if (kind !== "mcp") return "not_applicable";
-  return state ?? "unknown";
+  switch (kind) {
+    case "mcp":
+      return state ?? "unknown";
+    case "plugin":
+    case "skill":
+    case "cli":
+    case "agent":
+    case "command":
+      return "not_applicable";
+  }
 }
 
 export interface RepoLinkView {

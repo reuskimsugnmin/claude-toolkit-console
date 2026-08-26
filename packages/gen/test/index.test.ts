@@ -102,7 +102,7 @@ describe("gen/index — runGen 전체 배선 (plan → 생성 → citation-check
     expect(summary.results).toEqual([{ assetId: "demo-skill", outcome: "fresh" }]);
     const index = readCatalogIndex(catalogRoot);
     expect(index.assets.find((e) => e.id === "demo-skill")?.gen_state).toBe("fresh");
-    const usageMd = readFileSync(path.join(catalogRoot, "catalog/assets/skill/demo-skill/usage.md"), "utf8");
+    const usageMd = readFileSync(path.join(catalogRoot, "catalog/assets/skill/demo-skill__92d551f4/usage.md"), "utf8");
     expect(usageMd).toContain("본문");
   });
 
@@ -201,7 +201,7 @@ describe("gen/index — runGen 전체 배선 (plan → 생성 → citation-check
     // 원문 해시를 함께 기록해 **원문이 바뀌면 자동으로 다시 대상이 된다.**
     expect(index.assets.find((e) => e.id === "demo-skill")?.gen_state).toBe("policy_blocked");
     // usage.md가 커밋되지 않았어야 한다.
-    expect(() => readFileSync(path.join(catalogRoot, "catalog/assets/skill/demo-skill/usage.md"), "utf8")).toThrow();
+    expect(() => readFileSync(path.join(catalogRoot, "catalog/assets/skill/demo-skill__92d551f4/usage.md"), "utf8")).toThrow();
   });
 
   it("인용 태그가 없는 응답은 citation_missing으로 stale 처리된다(P5)", async () => {
@@ -534,7 +534,7 @@ describe("gen/index — runGen 전체 배선 (plan → 생성 → citation-check
         allowManagedPolicy: false, spawnFn: spawnFn as never,
       });
 
-      const usageMd = readFileSync(path.join(catalogRoot, "catalog/assets/skill/demo-skill/usage.md"), "utf8");
+      const usageMd = readFileSync(path.join(catalogRoot, "catalog/assets/skill/demo-skill__92d551f4/usage.md"), "utf8");
       expect(usageMd, "제거본이 저장되지 않았다 — 링크가 카탈로그에 박혔다").not.toContain("tool.example");
       expect(usageMd).toContain(REMOVED_URL_MARKER); // 표식 문자열을 테스트에 복사하지 않는다 — 바뀌면 여기가 갈린다
     });

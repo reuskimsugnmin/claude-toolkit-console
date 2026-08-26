@@ -84,7 +84,8 @@ describe("gen/rule-extract — --no-llm 폴백 (상시 구현, iter 7)", () => {
   it("catalog_relative_path는 core/catalog/layout.ts의 usageMdPath()로만 산출한다(H2 — 별도 경로 조합 금지)", () => {
     const asset = skillAsset();
     const { docPage } = ruleExtract(asset, [], NOW);
-    expect(docPage.catalog_relative_path).toBe("catalog/assets/skill/demo-skill/usage.md");
+    // 경로 세그먼트는 id에서 유도한다(B1 Step 1) — `<name>__<id의 sha256 앞 8자>`.
+    expect(docPage.catalog_relative_path).toBe("catalog/assets/skill/demo-skill__92d551f4/usage.md");
   });
 
   it("악성 SKILL.md 원문도 축자 그대로 옮긴다 — 요약을 거치지 않으므로 인젝션 방지는 rule-extract의 몫이 아니다(output-verify가 별도로 잡는다, M3)", () => {

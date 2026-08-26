@@ -177,8 +177,8 @@ export function buildViewModelFromCatalog(options: BuildViewModelOptions = {}): 
     assets.map((a) => [
       a.id,
       {
-        annotation: existsSync(path.join(catalogPath, annotationMdPath(a.kind, a.name))),
-        usage: existsSync(path.join(catalogPath, usageMdPath(a.kind, a.name))),
+        annotation: existsSync(path.join(catalogPath, annotationMdPath(a.kind, a.name, a.id))),
+        usage: existsSync(path.join(catalogPath, usageMdPath(a.kind, a.name, a.id))),
       },
     ]),
   );
@@ -251,7 +251,8 @@ export function runExportViewModel(outPath: string, options: BuildViewModelOptio
 function readAssetDoc(catalogPath: string, assets: readonly { id: string; kind: Asset["kind"]; name: string }[], assetId: string, which: AssetDocKind): string | null {
   const asset = assets.find((a) => a.id === assetId);
   if (asset === undefined) return null;
-  const relPath = which === "annotation" ? annotationMdPath(asset.kind, asset.name) : usageMdPath(asset.kind, asset.name);
+  const relPath =
+    which === "annotation" ? annotationMdPath(asset.kind, asset.name, asset.id) : usageMdPath(asset.kind, asset.name, asset.id);
   const absPath = path.join(catalogPath, relPath);
   if (!existsSync(absPath)) return null;
   return readFileSync(absPath, "utf8");

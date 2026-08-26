@@ -145,7 +145,8 @@ describe("gen/run-claude-p — sealed-live 프로파일로 claude -p를 띄워 A
       target: target(),
       spawnFn: spawnFn as never,
     });
-    expect(result.docPage.catalog_relative_path).toBe("catalog/assets/skill/demo-skill/usage.md");
+    // 경로 세그먼트는 id에서 유도한다(B1 Step 1) — `<name>__<id의 sha256 앞 8자>`.
+    expect(result.docPage.catalog_relative_path).toBe("catalog/assets/skill/demo-skill__92d551f4/usage.md");
   });
 });
 

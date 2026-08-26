@@ -363,6 +363,11 @@ export async function runMeasure(options: RunMeasureOptions = {}): Promise<Measu
     const harnessUsage = collectHarnessUsage(home);
 
     const usageMetrics: UsageMetric[] = [...usageAggs.values()].map((agg) => {
+      // ⚠️ `agg.kind`는 core/usage/attribution.ts의 `AttributionTargetKind`이지 `AssetKind`가
+      // 아니다(같은 이름 "agent"가 두 유니온에 각각 있다 — attribution.ts의 대응 주석 참조).
+      // "agent" 대조를 여기 추가하지 않는 것은 누락이 아니라 의도다: agg.ref는 맨 subagent_type
+      // 문자열이고 하네스 usage 맵은 카탈로그 Asset.id(`<부모플러그인id>:<이름>`) 키를 쓰므로,
+      // 변환 없이 대입하면 항상 못 찾는(우연히 안전하지만 뜻 없는) 조회가 된다.
       const harnessEntry =
         agg.kind === "skill" ? harnessUsage.skillUsage[agg.ref] : agg.kind === "plugin" ? harnessUsage.pluginUsage[agg.ref] : undefined;
       const harnessUsageCount = harnessEntry?.usageCount ?? null;
@@ -443,7 +448,7 @@ export async function runMeasure(options: RunMeasureOptions = {}): Promise<Measu
         occupancy_divergence: occupancyDivergence,
         occupancy_divergence_ratio: occupancyDivergenceRatio,
       });
-      upsertOccupancy(catalogPath, asset.kind, asset.name, occupancyRecords[occupancyRecords.length - 1]!);
+      upsertOccupancy(catalogPath, asset.kind, asset.name, asset.id, occupancyRecords[occupancyRecords.length - 1]!);
     }
 
     // ── 캐시 신규분 flush (sync가 유일한 쓰기 주체) ──
@@ -516,6 +521,11 @@ export async function runMeasure(options: RunMeasureOptions = {}): Promise<Measu
  * 명시한 대로 0(harness-parity/구조적으로 본문 없음) — 이건 "측정 실패"가 아니라 **정의상 0**이라
  * `measured` 상태로 기록한다(하네스 자신이 "not counted"라고 선언한 값을 그대로 받아쓰는 것 —
  * P6. 문자 수 어림값이 아니므로 approx_bytes가 아니다).
+ *
+ * ⚠️ **B1 Step 2 — exhaustive switch(결정 2 #12, 안전 원칙 7).** 이전에는 `if/if` 사슬의 마지막이
+ * skill 처리로 "떨어졌다" — kind가 늘어나면 새 값도 조용히 skill 분기로 떨어져 SKILL.md를 못 찾고
+ * `measurement_failed`("실패")를 냈다. 실제로는 "아직 정의가 없다"("없음")인데도 그랬다. 지금은
+ * kind마다 명시적으로 답하고, 새 kind가 추가되면 이 함수가 컴파일에서 깬다.
  */
 async function computeOccupancy(
   asset: { id: string; kind: AssetKind; name: string; description?: string },
@@ -527,36 +537,51 @@ async function computeOccupancy(
    * 실제 측정에서 재현되지 않는다(테스트에서도 마찬가지다). */
   countTokensFn: typeof countTokensMeasured,
 ): Promise<{ idle: OccupancyValue; loaded: OccupancyValue }> {
-  if (asset.kind === "mcp" || asset.kind === "cli") {
-    const zero: OccupancyValue = {
-      state: "measured",
-      value_tokens: 0,
-      tokenizer_model: tokenizerModel,
-      measured_at: new Date().toISOString(),
-    };
-    return { idle: zero, loaded: zero };
-  }
+  switch (asset.kind) {
+    case "mcp":
+    case "cli": {
+      const zero: OccupancyValue = {
+        state: "measured",
+        value_tokens: 0,
+        tokenizer_model: tokenizerModel,
+        measured_at: new Date().toISOString(),
+      };
+      return { idle: zero, loaded: zero };
+    }
 
-  const idleText = `${asset.name}\n${asset.description ?? ""}`;
-  const idle = await countTokensFn({ text: idleText, tokenizerModel, cache: tokenStore, apiKey });
+    case "plugin": {
+      const idleText = `${asset.name}\n${asset.description ?? ""}`;
+      const idle = await countTokensFn({ text: idleText, tokenizerModel, cache: tokenStore, apiKey });
+      // 산하 스킬·에이전트 전문 합산은 범위 밖(파일 상단 주석) — "측정 안 함"이지 "0"이 아니므로
+      // definition_pending으로 명시한다. not_applicable(개념 자체가 없음)과는 다른 사유다.
+      return { idle, loaded: { state: "unmeasured", value_tokens: null, reason: "definition_pending" } };
+    }
 
-  if (asset.kind === "plugin") {
-    // 산하 스킬·에이전트 전문 합산은 범위 밖(파일 상단 주석) — "측정 안 함"이지 "0"이 아니므로
-    // definition_pending으로 명시한다. not_applicable(개념 자체가 없음)과는 다른 사유다.
-    return { idle, loaded: { state: "unmeasured", value_tokens: null, reason: "definition_pending" } };
-  }
+    case "agent":
+    case "command": {
+      // 번들 자식(B1 Step 2 — 값만 추가됨, Step 5에서 편입). SKILL.md 같은 정형 본문 경로가
+      // 아직 없다 — "측정 실패"가 아니라 "아직 정의가 없다"이므로 definition_pending을 쓴다.
+      const idleText = `${asset.name}\n${asset.description ?? ""}`;
+      const idle = await countTokensFn({ text: idleText, tokenizerModel, cache: tokenStore, apiKey });
+      return { idle, loaded: { state: "unmeasured", value_tokens: null, reason: "definition_pending" } };
+    }
 
-  // skill — 실제 SKILL.md 전문을 재실측한다.
-  const dirs = findSkillDirsById(home, asset.id);
-  if (dirs.length !== 1) {
-    return { idle, loaded: { state: "unmeasured", value_tokens: null, reason: "measurement_failed" } };
+    case "skill": {
+      const idleText = `${asset.name}\n${asset.description ?? ""}`;
+      const idle = await countTokensFn({ text: idleText, tokenizerModel, cache: tokenStore, apiKey });
+      // 실제 SKILL.md 전문을 재실측한다.
+      const dirs = findSkillDirsById(home, asset.id);
+      if (dirs.length !== 1) {
+        return { idle, loaded: { state: "unmeasured", value_tokens: null, reason: "measurement_failed" } };
+      }
+      let body: string;
+      try {
+        body = readFileSync(path.join(dirs[0]!.absPath, "SKILL.md"), "utf8");
+      } catch {
+        return { idle, loaded: { state: "unmeasured", value_tokens: null, reason: "measurement_failed" } };
+      }
+      const loaded = await countTokensFn({ text: body, tokenizerModel, cache: tokenStore, apiKey });
+      return { idle, loaded };
+    }
   }
-  let body: string;
-  try {
-    body = readFileSync(path.join(dirs[0]!.absPath, "SKILL.md"), "utf8");
-  } catch {
-    return { idle, loaded: { state: "unmeasured", value_tokens: null, reason: "measurement_failed" } };
-  }
-  const loaded = await countTokensFn({ text: body, tokenizerModel, cache: tokenStore, apiKey });
-  return { idle, loaded };
 }

@@ -26,6 +26,15 @@ import type { AttributionSource } from "../schema/usage.js";
  * "실측으로 확인된 함정" 정신).
  */
 
+/**
+ * ⚠️ **B1 Step 2(결정 2 #23) — `"agent"`는 `schema/asset.ts`의 `AssetKind`에도 같은 리터럴로
+ * 있다. 이름이 같을 뿐 다른 네임스페이스다 — 대입하지 않는다.** `AssetKind`의 agent id는
+ * `<부모 플러그인id>:<이름>`(D2, 카탈로그 정체성) 꼴이고, 여기 `agent` 결과의 `ref`는
+ * 트랜스크립트가 준 맨 `subagent_type` 문자열(`fromAgentToolInput` 참조)이다. 두 유니온이
+ * 구조적으로 거의 같아져 TS가 조용히 대입을 허용하므로, `ref`를 `Asset.id`로 쓰려면 호출자가
+ * 명시적으로 변환해야 한다(현재 `cli/commands/measure.ts`는 harnessUsage 대조를 skill·plugin
+ * 에만 걸어 두어 이 변환이 필요 없다 — `measure.ts:367` 부근 주석 참조).
+ */
 export type AttributionTargetKind = "skill" | "plugin" | "mcp" | "agent" | "cli";
 
 export interface AttributionResult {

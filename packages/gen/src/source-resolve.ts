@@ -138,5 +138,11 @@ export function resolveAssetSource(home: HomeContext, asset: Asset): ResolvedAss
     case "mcp":
     case "cli":
       return descriptionOnlySource(asset);
+    // ⚠️ B1 Step 2 — 값만 추가됐다(AssetKindSchema). 번들 자식(agent/command)의 실제 원문 경로
+    // 해석은 Step 5(probe/sources/bundled.ts 편입)의 범위다. 그때까지는 mcp/cli와 같은 보수적
+    // 취급(description-only)만 한다 — 경로를 추측해 조립하지 않는다(P2, R18과 동형).
+    case "agent":
+    case "command":
+      return descriptionOnlySource(asset);
   }
 }

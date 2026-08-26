@@ -30,7 +30,7 @@ import {
  * (Step 5 보안 심사 수정 — 호출부마다 따로 있던 가드가 두 벌로 발산했던 문제(`asset-store.ts`는
  * 빈 문자열 허용, `cli/move.ts`는 거부)를 단일 관문으로 통합했다). `asset.name`은 서드파티 자산
  * 저자가 쓰는 값이다(예: `SKILL.md` frontmatter `name`, probe/sources/skills.ts는 이를 검증 없이
- * 그대로 asset id로 쓴다) — `assetJsonPath(kind, name)` 호출 자체가 `assertCatalogSegment()`를
+ * 그대로 asset id로 쓴다) — `assetJsonPath(kind, name, id)` 호출 자체가 `assertCatalogSegment()`를
  * 거치므로 여기서 별도로 재검증하지 않는다(`ctk/no-adhoc-path-guard` lint가 중복 가드를 금지한다).
  * `PathTraversalDetectedError`도 core가 던지는 것을 그대로 재노출한다.
  */
@@ -38,7 +38,7 @@ export { PathTraversalDetectedError };
 
 export function upsertAsset(catalogRoot: string, asset: Asset): { path: string } {
   assertNoRawPathLeaks(asset);
-  const relPath = assetJsonPath(asset.kind, asset.name);
+  const relPath = assetJsonPath(asset.kind, asset.name, asset.id);
   const absPath = catalogAbsPath(catalogRoot, relPath);
   mkdirSync(path.dirname(absPath), { recursive: true });
   writeFileSync(absPath, `${JSON.stringify(asset, null, 2)}\n`, "utf8");
@@ -155,17 +155,24 @@ export function writeAnnotationDoc(
   catalogRoot: string,
   kind: Asset["kind"],
   name: string,
+  id: string,
   annotation: Annotation,
 ): { path: string } {
-  const relPath = annotationMdPath(kind, name);
+  const relPath = annotationMdPath(kind, name, id);
   const absPath = catalogAbsPath(catalogRoot, relPath);
   mkdirSync(path.dirname(absPath), { recursive: true });
   writeFileSync(absPath, renderAnnotationMarkdown(annotation), "utf8");
   return { path: absPath };
 }
 
-export function writeUsageDoc(catalogRoot: string, kind: Asset["kind"], name: string, docPage: DocPage): { path: string } {
-  const relPath = usageMdPath(kind, name);
+export function writeUsageDoc(
+  catalogRoot: string,
+  kind: Asset["kind"],
+  name: string,
+  id: string,
+  docPage: DocPage,
+): { path: string } {
+  const relPath = usageMdPath(kind, name, id);
   const absPath = catalogAbsPath(catalogRoot, relPath);
   mkdirSync(path.dirname(absPath), { recursive: true });
   writeFileSync(absPath, renderDocPageMarkdown(docPage), "utf8");

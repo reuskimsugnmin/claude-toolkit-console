@@ -93,6 +93,24 @@ describe("sync stores — 카탈로그 저장소 쓰기 (Step 2)", () => {
     expect(rebuildCatalogIndex(catalogRoot).index.assets).toHaveLength(1);
   });
 
+  it(
+    "AC-2-b — 다른 id, 같은 (kind,name) 자산 두 건은 서로 다른 경로에 남고 " +
+      "rebuildCatalogIndex 결과 인덱스에 2행이 있다(경로 축 id 유도, B1 Step 1)",
+    () => {
+      ensureGitRepo(catalogRoot);
+      const assetA: Asset = { ...sampleAsset, id: "shared-name@plugin-a", name: "shared-name" };
+      const assetB: Asset = { ...sampleAsset, id: "shared-name@plugin-b", name: "shared-name" };
+      const { path: pathA } = upsertAsset(catalogRoot, assetA);
+      const { path: pathB } = upsertAsset(catalogRoot, assetB);
+      expect(pathA).not.toBe(pathB);
+      expect(existsSync(pathA)).toBe(true);
+      expect(existsSync(pathB)).toBe(true);
+
+      const { index } = rebuildCatalogIndex(catalogRoot);
+      expect(index.assets.map((e) => e.id).sort()).toEqual(["shared-name@plugin-a", "shared-name@plugin-b"]);
+    },
+  );
+
   it("machine-store — ensureMachine은 최초 1회만 쓰고 이후엔 덮어쓰지 않는다", () => {
     ensureGitRepo(catalogRoot);
     const first = ensureMachine(catalogRoot, sampleMachine);
