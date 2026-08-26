@@ -36,6 +36,40 @@ export interface RunAgentProbeCliOptions {
   timeoutSec?: number;
   /** 스킬 원본 경로 직접 지정(비표준 배치용). 생략하면 저장소에서 찾는다. */
   skillPath?: string;
+  /** 진단 모델. 생략하면 `PROBE_MODEL` — 결과에 어떤 모델로 쟀는지 함께 실린다. */
+  model?: string;
+}
+
+/**
+ * 진단 1회의 **지출과 모집단**을 한 줄로 말한다.
+ *
+ * ⚠️ **`agent-probe`는 `sync`를 호출하지 않는 계약이라 run-log에 쓸 수 없다** — 그래서 비용을
+ * 남길 자리는 화면뿐이다. 이 줄이 없던 동안 진단은 유료인데 지출이 **어디에도** 남지 않았다.
+ *
+ * **못 읽은 것을 "0원"으로 말하지 않는다**(안전 원칙 7). 그리고 **요청한 모델과 실제 태운
+ * 모델이 다르면 그것을 드러낸다** — 다르면 이 진단 결과는 의도한 모집단의 것이 아니다.
+ */
+export function describeProbeCost(result: {
+  reportedCostUsd: number | null;
+  provenance: { model: string | null; inputTokens: number | null; outputTokens: number | null };
+  requestedModel: string;
+}): string {
+  const cost =
+    result.reportedCostUsd === null
+      ? "실제 비용: **미보고** — 봉투에서 읽지 못했다(0원이라는 뜻이 아니다)"
+      : `실제 비용: $${result.reportedCostUsd.toFixed(4)}`;
+  const observed = result.provenance.model;
+  const model =
+    observed === null
+      ? `모델: 요청 ${result.requestedModel} · 실측 판정불가`
+      : observed === result.requestedModel
+        ? `모델: ${observed}`
+        : `모델: 요청 ${result.requestedModel} · **실제 ${observed}** ⚠️ 다르다`;
+  const tokens =
+    result.provenance.inputTokens === null && result.provenance.outputTokens === null
+      ? "토큰: 미보고"
+      : `토큰: 입력 ${result.provenance.inputTokens ?? "?"} · 출력 ${result.provenance.outputTokens ?? "?"}`;
+  return `${cost} · ${model} · ${tokens}`;
 }
 
 export interface AgentProbeCliResult extends RunAgentProbeResult {
@@ -65,6 +99,7 @@ export async function runAgentProbeCli(options: RunAgentProbeCliOptions): Promis
       machineId: options.machineId,
     });
     const result = await runAgentProbe({
+      model: options.model,
       home: resolveHomeContext(),
       cwd,
       timeoutSec: options.timeoutSec,

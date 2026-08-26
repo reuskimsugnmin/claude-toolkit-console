@@ -42,6 +42,15 @@ export interface SealLiveTestOptions {
   claudeMdMarkerString: string;
   /** (iii) — 실제 설치된 플러그인의 슬래시 커맨드(예: "/oh-my-claudecode:help"). */
   installedPluginCommand: string;
+  /**
+   * 봉인 시험에 쓸 모델. 생략하면 `SEAL_TEST_MODEL`이다.
+   *
+   * ⚠️ **없으면 자식이 사용자의 기본 모델을 쓴다.** 이 게이트는 `--max-budget-usd 0.50`으로
+   * 고정돼 있는데(`pnpm release:seal`), 상시 컨텍스트가 큰 머신에서는 호출 하나가 그 상한을
+   * 넘을 수 있다(실측 2026-08-26: 진단 1회 $0.863). 그러면 릴리스 게이트가 **0원에 거부되고**,
+   * 그것은 "통과"가 아니라 **미측정**인데 그 구분이 사라진다.
+   */
+  model?: string;
   spawnFn?: typeof spawnClaude;
 }
 
@@ -117,6 +126,14 @@ function looksUnrecognized(stdout: string, stderr: string): boolean {
 }
 
 /** ⓓ-2 3신호 + 양성 대조군을 실제로 재현한다. 유료 세션 최대 3회(대조군 1 + (ii) 1 + (iii) 1). */
+/**
+ * 봉인 시험 기준 모델. `GEN_MODEL`·`PROBE_MODEL`과 값은 같지만 **뜻이 다르다** — 이쪽은
+ * "봉인이 뚫렸는지 재는 데 충분한 모델"이다. 3신호 중 모델이 관여하는 것은 (ii)의 yes/no
+ * 판정뿐이고 (i)은 파일시스템, (iii)은 인증 이전 라우팅이라 모델과 무관하다.
+ * 같은 상수를 공유하면 한쪽 사정으로 바꿀 때 다른 쪽 판정 기준이 조용히 따라 움직인다.
+ */
+export const SEAL_TEST_MODEL = "sonnet";
+
 export async function runSealLiveTest(options: SealLiveTestOptions): Promise<SealLiveTestResult> {
   const {
     home,
@@ -128,6 +145,7 @@ export async function runSealLiveTest(options: SealLiveTestOptions): Promise<Sea
     hookMarkerControlConfirmed,
     claudeMdMarkerString,
     installedPluginCommand,
+    model = SEAL_TEST_MODEL,
     spawnFn = spawnClaude,
   } = options;
 
@@ -136,6 +154,8 @@ export async function runSealLiveTest(options: SealLiveTestOptions): Promise<Sea
     profile: "sealed-live",
     subcommand: [
       "-p",
+      "--model",
+      model,
       "--max-budget-usd",
       String(maxBudgetUsd),
       "--append-system-prompt",
@@ -153,7 +173,7 @@ export async function runSealLiveTest(options: SealLiveTestOptions): Promise<Sea
   // (ii) — 실제 세션(주입 없음)에서 같은 문자열이 보이는가.
   const claudeMdCheck = await spawnFn({
     profile: "sealed-live",
-    subcommand: ["-p", "--max-budget-usd", String(maxBudgetUsd)],
+    subcommand: ["-p", "--model", model, "--max-budget-usd", String(maxBudgetUsd)],
     home,
     cwd,
     timeoutSec,
@@ -182,7 +202,7 @@ export async function runSealLiveTest(options: SealLiveTestOptions): Promise<Sea
   // (iii) — 설치 플러그인 커맨드가 인식되지 않는가(라우팅은 인증 이전 — 0원에 가깝다).
   const pluginCheck = await spawnFn({
     profile: "sealed-live",
-    subcommand: ["-p", "--max-budget-usd", String(maxBudgetUsd)],
+    subcommand: ["-p", "--model", model, "--max-budget-usd", String(maxBudgetUsd)],
     home,
     cwd,
     timeoutSec,
