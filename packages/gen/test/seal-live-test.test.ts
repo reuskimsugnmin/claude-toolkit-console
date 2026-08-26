@@ -389,3 +389,58 @@ describe("gen/seal-live-test — (iii) 라우팅 신호의 3상태", () => {
     expect(result.passed).toBe(true);
   });
 });
+
+describe("gen/seal-live-test — 모든 spawn이 모델을 고정한다 (2026-08-26)", () => {
+  let dir: string;
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function options(hookMarkerPath: string) {
+    return {
+      home: HOME,
+      cwd: "/synthetic/sealed-cwd",
+      timeoutSec: 30,
+      maxBudgetUsd: 0.5,
+      verifiedCliVersion: "2.1.238",
+      hookMarkerPath,
+      hookMarkerControlConfirmed: true,
+      claudeMdMarkerString: "SYNTHETIC-MARKER",
+      installedPluginCommand: "/synthetic-command",
+    };
+  }
+
+  // ⚠️ **상수가 있다 ≠ 그 상수가 argv에 닿는다.** 등재만 확인하는 테스트는 배선이 끊겨도
+  // 통과한다(허용목록 항목이 죽어 있던 전례와 같은 형태). 그래서 **실제 subcommand를 본다.**
+  it("세 호출 전부 `--model`을 싣는다 — 하나라도 빠지면 그 호출만 사용자 기본 모델이 된다", async () => {
+    dir = mkdtempSync(path.join(tmpdir(), "ctk-seal-model-"));
+    const calls: string[][] = [];
+    const spawnFn = async (o: { subcommand: string[] }) => {
+      calls.push(o.subcommand);
+      return { exitCode: 0, stdout: "NO", stderr: "", timedOut: false };
+    };
+    await runSealLiveTest({ ...options(path.join(dir, "marker")), spawnFn: spawnFn as never });
+
+    expect(calls.length, "3신호 중 모델을 태우는 호출 수").toBeGreaterThanOrEqual(3);
+    for (const [i, argv] of calls.entries()) {
+      expect(argv, `${i}번째 호출에 --model이 없다 — 이 호출만 사용자 기본 모델을 쓴다`).toContain("--model");
+    }
+  });
+
+  it("모델을 오버라이드하면 세 호출에 **모두** 반영된다 — 한 곳만 바뀌면 모집단이 섞인다", async () => {
+    dir = mkdtempSync(path.join(tmpdir(), "ctk-seal-model-override-"));
+    const calls: string[][] = [];
+    const spawnFn = async (o: { subcommand: string[] }) => {
+      calls.push(o.subcommand);
+      return { exitCode: 0, stdout: "NO", stderr: "", timedOut: false };
+    };
+    await runSealLiveTest({
+      ...options(path.join(dir, "marker")),
+      model: "synthetic-model",
+      spawnFn: spawnFn as never,
+    });
+    for (const argv of calls) {
+      expect(argv[argv.indexOf("--model") + 1]).toBe("synthetic-model");
+    }
+  });
+});
