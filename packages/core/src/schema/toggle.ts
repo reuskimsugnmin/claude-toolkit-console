@@ -13,8 +13,9 @@ import { machineDependentTag, schemaVersion } from "./common.js";
  * 복원할 수 없다(append-only 원칙).
  *
  * **`__kind: "toggle"`은 Asset과의 타입 수준 분리를 위한 판별 필드다** — Asset에는 이 필드가 없고
- * `kind`(AssetKind: plugin/skill/mcp/cli)를 요구하므로, Toggle을 Asset 타입 변수에 대입하면
- * `__kind`·`id`·`kind` 등 필수 필드 불일치로 컴파일 오류가 난다(착수 조건 C4).
+ * `kind`(`AssetKind` — B1 Step 2부터 6종: plugin/skill/mcp/cli/agent/command)를 요구하므로,
+ * Toggle을 Asset 타입 변수에 대입하면 `__kind`·`id`·`kind` 등 필수 필드 불일치로 컴파일 오류가
+ * 난다(착수 조건 C4).
  * 자리는 Step 1에서 만들고, 채우는 것(probe의 실제 관측)은 Step 2다.
  */
 export const ToggleStateSchema = z.enum(["enabled", "disabled"]);

@@ -52,7 +52,7 @@ function mergeAssets(...groups: Asset[][]): Asset[] {
 }
 
 function countAssetKinds(assets: Asset[]): Record<AssetKind, number> {
-  const counts: Record<AssetKind, number> = { plugin: 0, skill: 0, mcp: 0, cli: 0 };
+  const counts: Record<AssetKind, number> = { plugin: 0, skill: 0, mcp: 0, cli: 0, agent: 0, command: 0 };
   for (const asset of assets) counts[asset.kind]++;
   return counts;
 }

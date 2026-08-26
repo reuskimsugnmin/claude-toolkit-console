@@ -2,11 +2,37 @@ import { z } from "zod";
 import { machineIndependentTag, schemaVersion } from "./common.js";
 
 /**
- * v1 Ontology의 4종 자산 유형. claude.ai 커넥터·내장 기능(computer-use 등)은
- * 여기 속하지 않는다 — 결정 7에 따라 비-Asset `toggles[]`로 별도 취급한다 (schema/toggle.ts).
+ * v1 Ontology의 자산 유형 — **B1 Step 2(2026-08-26)에서 4종 → 6종으로 넓힌다.**
+ * `agent`·`command`는 플러그인이 번들한 하위 툴(B1 편입 대상, Step 5에서 실제로 채워진다)이고,
+ * 지금 이 커밋에서는 값만 추가한다 — `Asset.parent_asset_id`는 아직 없다(Step 3 범위).
+ * claude.ai 커넥터·내장 기능(computer-use 등)은 여기 속하지 않는다 — 결정 7에 따라 비-Asset
+ * `toggles[]`로 별도 취급한다 (schema/toggle.ts).
+ *
+ * ⚠️ **`agent`는 `usage/attribution.ts`의 `AttributionTargetKind`에도 같은 리터럴로 존재한다 —
+ * 이름이 같을 뿐 다른 네임스페이스다.** 이 kind의 자산 id는 `<부모 플러그인id>:<이름>`(D2) 꼴이고,
+ * `AttributionTargetKind`의 agent `ref`는 트랜스크립트가 준 맨 `subagent_type` 문자열이다.
+ * 둘을 암묵적으로 대입하지 않는다 — 저 파일의 대응 주석을 함께 읽는다.
  */
-export const AssetKindSchema = z.enum(["plugin", "skill", "mcp", "cli"]);
+export const AssetKindSchema = z.enum(["plugin", "skill", "mcp", "cli", "agent", "command"]);
 export type AssetKind = z.infer<typeof AssetKindSchema>;
+
+/**
+ * `kind === "plugin"`만 `marketplace`가 필수다(id의 `name@marketplace` 규약, AC-0.3).
+ * exhaustive switch + 반환형에 `undefined` 없음 — 새 kind 값이 추가되면 이 함수가 컴파일에서
+ * 깨진다(선례: `gen/src/source-resolve.ts`의 `resolveAssetSource`).
+ */
+function assetKindRequiresMarketplace(kind: AssetKind): boolean {
+  switch (kind) {
+    case "plugin":
+      return true;
+    case "skill":
+    case "mcp":
+    case "cli":
+    case "agent":
+    case "command":
+      return false;
+  }
+}
 
 /**
  * Asset — 머신 독립 (CLAUDE.md 스키마의 척추). "이 툴이 무엇인가"의 정체.
@@ -39,7 +65,7 @@ export const AssetSchema = z
   })
   .strict()
   .superRefine((asset, ctx) => {
-    if (asset.kind === "plugin" && asset.marketplace === undefined) {
+    if (assetKindRequiresMarketplace(asset.kind) && asset.marketplace === undefined) {
       ctx.addIssue({
         code: "custom",
         message: "kind=plugin인 Asset은 marketplace가 필요하다 (id의 name@marketplace 규약)",
