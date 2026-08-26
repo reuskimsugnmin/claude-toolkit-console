@@ -7,6 +7,7 @@ import {
   matchesForbidden,
   SEALED_LIVE_CLAUDE_JSON_ALLOWED_CHURN_KEYS,
   SESSION_OWNED_NOT_ATTRIBUTABLE,
+  type SessionOwnedRule,
   TIER2_CHURN_ALLOWLIST_SEALED_LIVE,
   verdict as treeDiffVerdict,
   type ClaudeJsonSemanticVerdict,
@@ -100,9 +101,22 @@ export interface SealedLiveAuditResult {
  * 제외하지 않아 최후 방어선을 그대로 둔다 — 현재 수집기로는 `..`가 세그먼트로 나올 수 없지만,
  * forbidden 계층은 정확히 "수집기가 틀렸을 때"를 위한 것이다.
  */
-function sessionUuidOf(relativePath: string): string | undefined {
+function sessionOwnedRuleOf(relativePath: string): SessionOwnedRule | undefined {
   if (matchesForbidden(relativePath) !== undefined) return undefined;
-  if (matchesAllowlist(relativePath, SESSION_OWNED_NOT_ATTRIBUTABLE) === undefined) return undefined;
+  return matchesAllowlist(relativePath, SESSION_OWNED_NOT_ATTRIBUTABLE);
+}
+
+/**
+ * 경로에서 세션 uuid를 뽑는다 — `path_uuid` 축의 규칙에만 해당한다.
+ *
+ * ⚠️ **`undefined`가 "세션 소유가 아니다"를 뜻하지 않는다(2026-08-26).** 예전에는 이 함수
+ * 하나가 두 질문("세션 소유인가" · "어느 세션인가")에 동시에 답했고, 그래서 경로에 uuid가
+ * 없는 등재 항목(`.session-stats.json`)이 **등재돼 있는데도 한 번도 제외되지 못했다.**
+ * 두 질문을 갈라 놓는다 — 소속은 `sessionOwnedRuleOf`가, 신원은 여기가 답한다.
+ */
+function sessionUuidOf(relativePath: string): string | undefined {
+  const rule = sessionOwnedRuleOf(relativePath);
+  if (rule === undefined || rule.attribution !== "path_uuid") return undefined;
   return /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/.exec(relativePath)?.[1];
 }
 
@@ -118,15 +132,30 @@ function sessionUuidOf(relativePath: string): string | undefined {
  * 그래서 **`before`에서 이미 관측된 세션 uuid**에만 귀속 불가를 인정한다. 부모가 대화를 이어
  * 쓰는 경우는 그 uuid가 이미 `before`에 있고, 새 uuid는 위반으로 남는다.
  */
-function makeExcludableCheck(before: readonly FileEntry[]): (relativePath: string) => boolean {
+function makeExcludableCheck(
+  before: readonly FileEntry[],
+  after: readonly FileEntry[],
+): (relativePath: string) => boolean {
   const knownSessions = new Set<string>();
   for (const e of before) {
     const uuid = sessionUuidOf(e.path);
     if (uuid !== undefined) knownSessions.add(uuid);
   }
+  const beforePaths = new Set(before.map((e) => e.path));
+  const afterPaths = new Set(after.map((e) => e.path));
   return (relativePath) => {
-    const uuid = sessionUuidOf(relativePath);
-    return uuid !== undefined && knownSessions.has(uuid);
+    const rule = sessionOwnedRuleOf(relativePath);
+    if (rule === undefined) return false;
+    switch (rule.attribution) {
+      case "path_uuid": {
+        const uuid = sessionUuidOf(relativePath);
+        return uuid !== undefined && knownSessions.has(uuid);
+      }
+      case "preexisting_file":
+        // **양쪽에 있을 때의 수정만** 인정한다. 신규 생성은 자식이 쓴 것이고(H1), 삭제도
+        // 정상 동작이 아니다 — 어느 쪽이든 제외하지 않아 위반으로 남는다.
+        return beforePaths.has(relativePath) && afterPaths.has(relativePath);
+    }
   };
 }
 
@@ -169,6 +198,24 @@ function nonAppendPaths(
 ): Set<string> {
   const shrunk = new Set<string>();
   for (const rel of excludedPaths) {
+    // ⚠️ **append 규칙은 `path_uuid` 축(트랜스크립트)의 성질이다.** 하네스가 통째로 다시 쓰는
+    // 파일에 적용하면 정상 동작이 위반이 된다 — 같은 판정 함수를 두 축이 쓸 때는 각 축에서
+    // 그 규칙이 여전히 옳은지 따로 물어야 한다(CLAUDE.md).
+    //
+    // **`switch`로 쓴다(2026-08-26 재심 L2).** `!== "path_uuid"` 한 줄이면 세 번째 축이 생겼을 때
+    // 아무도 결정하지 않은 채 **조용히 면제**된다. `makeExcludableCheck`는 이미 축이 늘면
+    // 컴파일이 깨지는데 여기만 default-open이면 두 자리 중 한 자리만 고정한 꼴이다.
+    const rule = sessionOwnedRuleOf(rel);
+    if (rule === undefined) continue;
+    const appendChecked = ((): boolean => {
+      switch (rule.attribution) {
+        case "path_uuid":
+          return true; // 트랜스크립트 — append로만 자란다
+        case "preexisting_file":
+          return false; // 하네스가 통째로 다시 쓴다 — 줄어드는 것이 정상이다
+      }
+    })();
+    if (!appendChecked) continue;
     const abs = path.join(configDirAbs, rel);
     const b = beforeCache.get(abs);
     const a = afterCache.get(abs);
@@ -223,7 +270,7 @@ export function auditSealedLiveConfigDir(
 ): SealedLiveAuditResult {
   // 다른 세션이 소유한 경로는 **판정 이전에** 양쪽에서 걷어낸다 — 자식에게 귀속할 수 없는
   // 변경을 자식의 위반으로 보고하지 않기 위해서다(2026-08-24 실측, core/guard/whitelist.ts).
-  const isExcludable = makeExcludableCheck(before.entries);
+  const isExcludable = makeExcludableCheck(before.entries, after.entries);
   const beforeProbe = stripSessionOwned(before.entries, isExcludable);
   const afterProbe = stripSessionOwned(after.entries, isExcludable);
   // append가 아닌(크기가 줄어든) 경로는 제외에서 되돌린다 — 덮어쓰기를 눈감지 않는다.

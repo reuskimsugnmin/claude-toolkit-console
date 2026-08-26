@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { auditSealedLiveConfigDir, captureConfigDirSnapshot, readClaudeJsonRawOrNull, sealedLiveAuditPassed, type ConfigDirSnapshot } from "../src/tree-audit.js";
+import { SESSION_OWNED_NOT_ATTRIBUTABLE } from "@ctk/core";
 
 describe("gen/tree-audit — AC-3.7 (sealed-live 전용 Tier-2 허용목록, AC-0.11 기준)", () => {
   let dir: string;
@@ -378,5 +379,129 @@ describe("gen/tree-audit — forbidden이 세션 제외보다 우선한다 (보�
     const result = auditSealedLiveConfigDir("/tmp/synthetic-config-dir", before, after, null);
     expect(sealedLiveAuditPassed(result)).toBe(true);
     expect(result.sessionOwnedExcluded).toEqual([`projects/-Users-x-repo/${UUID}.jsonl`]);
+  });
+});
+
+describe("gen/tree-audit — `.session-stats.json`: 경로에 uuid가 없는 세션 소유 파일 (2026-08-26 실측)", () => {
+  let dir: string;
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const REL = ".session-stats.json";
+  const stats = (turns: number): string =>
+    JSON.stringify({ "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee": { turns, note: "x".repeat(turns * 8) } });
+
+  // ⚠️ 이 결함은 **등재돼 있는데도 한 번도 제외되지 않던** 것이다. whitelist.ts에 exact로
+  // 올라가 있었지만 제외 판정이 경로에서 uuid를 뽑는 데 의존했고 이 경로에는 uuid가 없다.
+  // 규칙이 존재한다는 것과 규칙이 동작한다는 것은 다르다 — 그래서 **등재 사실이 아니라
+  // 판정 결과**를 단언한다.
+  it("살아 있는 세션이 갱신하면 제외된다 (등재돼 있으나 도달하지 못하던 결함)", () => {
+    dir = mkdtempSync(path.join(tmpdir(), "ctk-tree-stats-modified-"));
+    writeFileSync(path.join(dir, REL), stats(1));
+    const before = captureConfigDirSnapshot(dir);
+    writeFileSync(path.join(dir, REL), stats(2));
+    const after = captureConfigDirSnapshot(dir);
+
+    const result = auditSealedLiveConfigDir(dir, before, after, null);
+    expect(sealedLiveAuditPassed(result), "살아 있는 세션 때문에 gen이 막히면 안 된다").toBe(true);
+    expect(result.sessionOwnedExcluded, "제외를 조용히 하지 않고 노출한다").toContain(REL);
+  });
+
+  // append 규칙은 트랜스크립트(path_uuid 축)의 성질이다. 이 파일은 하네스가 통째로 다시
+  // 쓰므로 줄어드는 것이 정상이다 — 두 축에 같은 규칙을 적용하면 정상이 위반이 된다.
+  it("크기가 줄어도 제외된다 — append 규칙은 이 축의 것이 아니다", () => {
+    dir = mkdtempSync(path.join(tmpdir(), "ctk-tree-stats-shrunk-"));
+    writeFileSync(path.join(dir, REL), stats(40));
+    const before = captureConfigDirSnapshot(dir);
+    writeFileSync(path.join(dir, REL), stats(1));
+    const after = captureConfigDirSnapshot(dir);
+
+    const result = auditSealedLiveConfigDir(dir, before, after, null);
+    expect(sealedLiveAuditPassed(result)).toBe(true);
+    expect(result.sessionOwnedExcluded).toContain(REL);
+  });
+
+  // 아래 둘이 이 수정의 경계다. 넓히면 봉인이 뚫린다.
+  it("**신규 생성**은 위반이다 — before에 없던 파일은 봉인 자식이 쓴 것이다 (H1 유지)", () => {
+    dir = mkdtempSync(path.join(tmpdir(), "ctk-tree-stats-created-"));
+    const before = captureConfigDirSnapshot(dir);
+    writeFileSync(path.join(dir, REL), stats(1));
+    const after = captureConfigDirSnapshot(dir);
+
+    const result = auditSealedLiveConfigDir(dir, before, after, null);
+    expect(sealedLiveAuditPassed(result), "신규 생성이 조용히 통과했다 — 제외가 넓어졌다").toBe(false);
+    expect(result.sessionOwnedExcluded).not.toContain(REL);
+  });
+
+  it("**삭제**도 위반이다 — 하네스의 정상 동작이 아니다", () => {
+    dir = mkdtempSync(path.join(tmpdir(), "ctk-tree-stats-deleted-"));
+    writeFileSync(path.join(dir, REL), stats(1));
+    const before = captureConfigDirSnapshot(dir);
+    rmSync(path.join(dir, REL));
+    const after = captureConfigDirSnapshot(dir);
+
+    const result = auditSealedLiveConfigDir(dir, before, after, null);
+    expect(sealedLiveAuditPassed(result), "삭제가 조용히 통과했다").toBe(false);
+    expect(result.sessionOwnedExcluded).not.toContain(REL);
+  });
+
+  // ⚠️ **수용된 잔여 위험을 테스트로 고정한다(2026-08-26 재심 L3).** 이 축에는 내용 제약이
+  // 없다. 테스트가 없으면 다음 사람은 이것이 **결정된 것인지 빠뜨린 것인지** 구분할 수 없다.
+  it("⚠️ 수용된 잔여 위험 — 내용이 통째로 바뀌어도 제외된다(내용 제약이 없다는 사실을 고정한다)", () => {
+    dir = mkdtempSync(path.join(tmpdir(), "ctk-tree-stats-rewritten-"));
+    writeFileSync(path.join(dir, REL), stats(1));
+    const before = captureConfigDirSnapshot(dir);
+    writeFileSync(path.join(dir, REL), JSON.stringify({ "not-a-session": "arbitrary payload" }));
+    const after = captureConfigDirSnapshot(dir);
+
+    const result = auditSealedLiveConfigDir(dir, before, after, null);
+    // 이 단언이 깨지면 누군가 내용 제약을 넣었다는 뜻이다 — whitelist.ts의 잔여 위험 문단도
+    // 함께 갱신해야 한다(문서와 코드가 갈리면 다음 재심자가 잘못된 전제로 심사한다).
+    expect(sealedLiveAuditPassed(result), "내용 제약은 설계상 없다").toBe(true);
+    expect(result.sessionOwnedExcluded).toContain(REL);
+  });
+
+  // 축이 어긋난 이름을 통과시키지 않는지. exact 규칙이므로 유사 경로는 전부 위반이어야 한다.
+  const MUST_STILL_VIOLATE = [".session-stats.json.bak", "sub/.session-stats.json", ".session-stats.jsonx"];
+  for (const rel of MUST_STILL_VIOLATE) {
+    it(`유사 경로는 여전히 위반이다 — ${rel}`, () => {
+      dir = mkdtempSync(path.join(tmpdir(), "ctk-tree-stats-near-"));
+      const abs = path.join(dir, rel);
+      mkdirSync(path.dirname(abs), { recursive: true });
+      writeFileSync(abs, stats(1));
+      const before = captureConfigDirSnapshot(dir);
+      writeFileSync(abs, stats(2));
+      const after = captureConfigDirSnapshot(dir);
+
+      const result = auditSealedLiveConfigDir(dir, before, after, null);
+      expect(sealedLiveAuditPassed(result), `${rel}이 조용히 통과했다`).toBe(false);
+    });
+  }
+});
+
+describe("gen/tree-audit — 등재된 규칙이 **죽어 있지 않은지** 목록 전체로 묻는다 (2026-08-26 재심 M2)", () => {
+  // ⚠️ 이번 결함은 항목 하나가 아니라 **부류**였다 — 등재됐는데 판정에 도달하지 못하는 규칙.
+  // 항목을 고치는 테스트만 두면 같은 형태가 다시 들어온다. 여기서는 목록을 순회해 묻는다.
+  it("모든 규칙이 자기 축이 요구하는 매처를 갖는다", () => {
+    expect(SESSION_OWNED_NOT_ATTRIBUTABLE.length, "목록이 비면 이 테스트는 아무것도 검사하지 않는다").toBeGreaterThan(0);
+    for (const rule of SESSION_OWNED_NOT_ATTRIBUTABLE) {
+      if (rule.attribution === "path_uuid") {
+        // 경로에서 uuid를 뽑을 수 없는 path_uuid 규칙은 영원히 제외되지 않는다 — 죽은 규칙이다.
+        expect(rule.pattern.source, `${rule.note}: 경로에 uuid 모양이 없다`).toContain("[0-9a-fA-F]{8}");
+      } else {
+        expect(typeof rule.exact, `${rule.note}: preexisting_file은 exact여야 한다`).toBe("string");
+      }
+    }
+  });
+
+  it("각 규칙이 실제로 제외를 일으킨다 — 등재가 아니라 판정 결과를 단언한다", () => {
+    // path_uuid 축은 before에 uuid가 있어야 하고, preexisting_file 축은 파일이 양쪽에 있어야
+    // 한다. 두 축 다 위에서 개별 테스트로 실증했다 — 여기서는 목록이 그 두 축만 쓰는지 본다.
+    const axes = new Set(SESSION_OWNED_NOT_ATTRIBUTABLE.map((r) => r.attribution));
+    expect([...axes].sort(), "새 축이 생겼다면 그 축을 태우는 테스트를 함께 넣어야 한다").toEqual([
+      "path_uuid",
+      "preexisting_file",
+    ]);
   });
 });
