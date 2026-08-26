@@ -1,9 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { z } from "zod";
 import { catalogAbsPath } from "./catalog-boundary.js";
 import {
   annotationMdPath,
   assertNoRawPathLeaks,
+  AssetKindSchema,
   assetJsonPath,
   catalogIndexPath,
   PathTraversalDetectedError,
@@ -84,31 +86,70 @@ export function listAllAssets(catalogRoot: string): Asset[] {
  * 매번 다르다. 그래서 `gen_content_sha256`을 함께 기록하고 **원문이 그대로일 때만** 건너뛴다.
  * 원문이 바뀌면 자동으로 다시 대상이 된다(자기 치유).
  */
-export type GenIndexState = "fresh" | "pending" | "stale" | "policy_blocked";
+export const GenIndexStateSchema = z.enum(["fresh", "pending", "stale", "policy_blocked"]);
+export type GenIndexState = z.infer<typeof GenIndexStateSchema>;
 
-export interface CatalogIndexEntry {
-  id: string;
-  kind: Asset["kind"];
-  name: string;
-  gen_state?: GenIndexState;
-  /** 마지막으로 `gen_state:"fresh"`를 만든 시점의 원본 콘텐츠 sha256 — `gen/src/plan.ts`의
-   * 증분 대상 판정 키다. */
-  gen_content_sha256?: string;
+/**
+ * B1 Step 3 — `catalog/index.json`의 행 스키마. 이전에는 zod가 아닌 평범한 인터페이스였고
+ * 읽는 두 곳(`readExistingIndexOrNull` 아래, `cli/commands/move.ts`)이 전부 `as` 캐스팅이었다
+ * (AC-7이 요구하는 "실제 파서"가 없었다). `parent_asset_id?`는 additive-optional이라
+ * `schema_version`을 올리지 않는다(B1 결정 5) — 옛 행(이 필드가 없던 시절)도 그대로 통과한다.
+ */
+export const CatalogIndexEntrySchema = z
+  .object({
+    id: z.string().min(1),
+    kind: AssetKindSchema,
+    name: z.string().min(1),
+    /** B1 Step 3 — `Asset.parent_asset_id`를 그대로 인덱스 행에 반영(뷰가 파일을 다시 안 읽고도
+     * 계층을 알 수 있도록). Asset 스키마와 달리 kind별 필수/금지 강제는 여기서 하지 않는다 —
+     * 인덱스는 파생 캐시이고 원 판정은 Asset 쪽에서 이미 끝났다. */
+    parent_asset_id: z.string().min(1).optional(),
+    gen_state: GenIndexStateSchema.optional(),
+    /** 마지막으로 `gen_state:"fresh"`를 만든 시점의 원본 콘텐츠 sha256 — `gen/src/plan.ts`의
+     * 증분 대상 판정 키다. */
+    gen_content_sha256: z.string().optional(),
+  })
+  .strict();
+export type CatalogIndexEntry = z.infer<typeof CatalogIndexEntrySchema>;
+
+export const CatalogIndexSchema = z
+  .object({
+    schema_version: z.number(),
+    assets: z.array(CatalogIndexEntrySchema),
+  })
+  .strict();
+export type CatalogIndex = z.infer<typeof CatalogIndexSchema>;
+
+export function parseCatalogIndex(data: unknown): CatalogIndex {
+  return CatalogIndexSchema.parse(data);
 }
 
-export interface CatalogIndex {
-  schema_version: number;
-  assets: CatalogIndexEntry[];
+export interface CatalogIndexReadResult {
+  index: CatalogIndex | null;
+  /**
+   * true면 인덱스 파일은 존재했지만 JSON 파싱 또는 스키마 검증에 실패해 `null`로 **열화**했다.
+   * false + `index:null`은 파일이 아예 없는 "없음"이다 — "없음"과 "실패"를 반환값에서 구분한다
+   * (CLAUDE.md 안전 원칙 7). 열화 자체은 유지한다: 손상 인덱스 하나로 `ctk scan`이 죽으면
+   * 안전 원칙 6(탈출구 없는 fail-closed) 위반이다. `gen_state` 이월이 끊기는 것은 최선일 뿐
+   * 필수 불변식이 아니라는 근거가 `rebuildCatalogIndex`의 주석에 있다.
+   */
+  corrupted: boolean;
+}
+
+/** 인덱스를 읽고 파싱한다 — "없음"(파일 부재)과 "실패"(손상)를 반환값에서 구분해 싣는다. */
+export function readCatalogIndexOrNull(catalogRoot: string): CatalogIndexReadResult {
+  const absPath = catalogAbsPath(catalogRoot, catalogIndexPath());
+  if (!existsSync(absPath)) return { index: null, corrupted: false };
+  try {
+    const raw: unknown = JSON.parse(readFileSync(absPath, "utf8"));
+    return { index: parseCatalogIndex(raw), corrupted: false };
+  } catch {
+    return { index: null, corrupted: true };
+  }
 }
 
 function readExistingIndexOrNull(catalogRoot: string): CatalogIndex | null {
-  const absPath = catalogAbsPath(catalogRoot, catalogIndexPath());
-  if (!existsSync(absPath)) return null;
-  try {
-    return JSON.parse(readFileSync(absPath, "utf8")) as CatalogIndex;
-  } catch {
-    return null; // 손상된 인덱스는 새로 만든다 — gen_state 이월은 최선일 뿐 필수 불변식이 아니다.
-  }
+  return readCatalogIndexOrNull(catalogRoot).index;
 }
 
 /**
@@ -130,6 +171,7 @@ export function rebuildCatalogIndex(catalogRoot: string): { path: string; index:
     .map((asset) => {
       const prior = previousById.get(asset.id);
       const entry: CatalogIndexEntry = { id: asset.id, kind: asset.kind, name: asset.name };
+      if (asset.parent_asset_id !== undefined) entry.parent_asset_id = asset.parent_asset_id;
       if (prior?.gen_state !== undefined) entry.gen_state = prior.gen_state;
       if (prior?.gen_content_sha256 !== undefined) entry.gen_content_sha256 = prior.gen_content_sha256;
       return entry;

@@ -41,13 +41,39 @@ export interface ScanSummary {
   durationMs: number;
 }
 
-function mergeAssets(...groups: Asset[][]): Asset[] {
+/**
+ * `mergeAssets()`가 동일 id를 2회 이상 받았다 — AC-2. 이전 구현은 `Map`으로 모으며 first-wins로
+ * 조용히 흡수했다(`core/snapshot/diff.ts`의 `DuplicateKeyDiffError`와 같은 결함 모양, P2 —
+ * 판정 불가는 추정으로 채우지 않는다). `ctk scan`은 이 오류를 `failure_class: "duplicate_asset_id"`로
+ * run-log에 기록한다(`extractFailureClass`가 `.failureClass`를 읽는다).
+ */
+export class DuplicateAssetIdError extends Error {
+  readonly failureClass = "duplicate_asset_id" as const;
+  readonly duplicateIds: readonly string[];
+
+  constructor(duplicateIds: readonly string[]) {
+    super(
+      `mergeAssets()는 중복 id 입력을 판정 불가로 거부한다 (failure_class: duplicate_asset_id): ` +
+        duplicateIds.join(", "),
+    );
+    this.name = "DuplicateAssetIdError";
+    this.duplicateIds = duplicateIds;
+  }
+}
+
+export function mergeAssets(...groups: Asset[][]): Asset[] {
   const byId = new Map<string, Asset>();
+  const duplicates: string[] = [];
   for (const group of groups) {
     for (const asset of group) {
-      if (!byId.has(asset.id)) byId.set(asset.id, asset);
+      if (byId.has(asset.id)) {
+        duplicates.push(asset.id);
+      } else {
+        byId.set(asset.id, asset);
+      }
     }
   }
+  if (duplicates.length > 0) throw new DuplicateAssetIdError(duplicates);
   return [...byId.values()];
 }
 

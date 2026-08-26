@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "_scope": "machine_independent",
+  "id": "demo-mcp-server",
+  "kind": "mcp",
+  "name": "demo-mcp-server",
+  "description": "합성 데모 MCP 서버 — 실제 툴이 아니다 (B1 이전 옛 형식, parent_asset_id 필드 없음)"
+}

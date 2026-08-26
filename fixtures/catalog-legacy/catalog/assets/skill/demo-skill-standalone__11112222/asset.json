@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "_scope": "machine_independent",
+  "id": "demo-skill-standalone",
+  "kind": "skill",
+  "name": "demo-skill-standalone",
+  "description": "합성 데모 독립 스킬 — 실제 툴이 아니다 (B1 이전 옛 형식, parent_asset_id 필드 없음)",
+  "source_ref": "assets/skill/demo-skill-standalone/SKILL.md"
+}

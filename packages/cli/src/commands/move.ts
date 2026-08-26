@@ -39,7 +39,7 @@ import {
   type RunLogEntry,
   hashPath,
 } from "@ctk/core";
-import { acquireLock, writeJournalEntry, commitAll, writeRunLog } from "@ctk/sync";
+import { acquireLock, parseCatalogIndex, writeJournalEntry, commitAll, writeRunLog } from "@ctk/sync";
 import { readLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
 import { CatalogNotInitializedError } from "./scan.js";
 
@@ -112,16 +112,11 @@ export interface MoveSummary {
   journalPath: string;
 }
 
-interface CatalogIndexEntry {
-  id: string;
-  kind: AssetKind;
-  name: string;
-}
-
 function readCatalogAssetKind(catalogPath: string, assetId: string): AssetKind {
   const indexAbsPath = path.join(catalogPath, "catalog", "index.json");
   if (!existsSync(indexAbsPath)) throw new AssetNotFoundError(assetId);
-  const index = JSON.parse(readFileSync(indexAbsPath, "utf8")) as { assets: CatalogIndexEntry[] };
+  // AC-7 — 캐스팅이 아니라 실제 파서를 통과시킨다(CatalogIndexSchema, packages/sync/src/asset-store.ts).
+  const index = parseCatalogIndex(JSON.parse(readFileSync(indexAbsPath, "utf8")));
   const entry = index.assets.find((a) => a.id === assetId);
   if (!entry) throw new AssetNotFoundError(assetId);
   return entry.kind;
