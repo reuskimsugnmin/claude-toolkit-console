@@ -182,6 +182,8 @@ export interface RunGenOptions {
   timeoutSec: number;
   /** `--no-llm` — claude -p를 전혀 띄우지 않는다. */
   noLlm: boolean;
+  /** `--retry-blocked` — 정책 차단된 자산도 다시 시도한다(가드의 탈출구). */
+  retryPolicyBlocked?: boolean;
   verifiedCliVersion: string;
   /**
    * `--allow-concurrent-sessions` — 살아 있는 다른 Claude Code 세션의 config dir churn을
@@ -226,6 +228,7 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
     maxBudgetUsd,
     timeoutSec,
     noLlm,
+    retryPolicyBlocked,
     verifiedCliVersion,
     routingProbeCommand,
     sealedCwd,
@@ -250,7 +253,7 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
   }
 
   const index: CatalogIndex = readCatalogIndex(catalogRoot);
-  const plan = planGenTargets({ home, assets, index, maxAssets });
+  const plan = planGenTargets({ home, assets, index, maxAssets, retryPolicyBlocked });
 
   const results: RunGenAssetResult[] = [];
   const injectionFindingsTotal: InjectionFindingsSummary = { directive: 0, executable: 0, url: 0, length: 0 };
@@ -400,7 +403,10 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
     } catch (err) {
       if (err instanceof InjectionPatternDetectedError) {
         results.push({ assetId: target.asset.id, outcome: "stale", reason: "injection_pattern_detected" });
-        setAssetGenState(catalogRoot, target.asset.id, "stale");
+        // ⚠️ `stale`이 아니라 `policy_blocked`다. 원문이 정책에 걸리는 것은 **재시도로 풀리지
+        // 않는다** — 실측(2026-08-26)에서 3자산이 매 배치마다 돈을 쓰고 매번 실패했다.
+        // 원문 해시를 함께 남겨 **원문이 바뀌면 자동으로 다시 대상이 되게** 한다(자기 치유).
+        setAssetGenState(catalogRoot, target.asset.id, "policy_blocked", target.sourceContentSha256);
         injectionFindingsTotal.directive += err.result.summary.directive;
         injectionFindingsTotal.executable += err.result.summary.executable;
         injectionFindingsTotal.url += err.result.summary.url;

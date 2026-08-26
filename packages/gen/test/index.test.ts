@@ -192,7 +192,9 @@ describe("gen/index — runGen 전체 배선 (plan → 생성 → citation-check
     expect(summary.results).toEqual([{ assetId: "demo-skill", outcome: "stale", reason: "injection_pattern_detected" }]);
     expect(summary.injectionFindingsTotal.directive).toBeGreaterThan(0);
     const index = readCatalogIndex(catalogRoot);
-    expect(index.assets.find((e) => e.id === "demo-skill")?.gen_state).toBe("stale");
+    // `policy_blocked` — 원문이 정책에 걸리는 것은 재시도로 풀리지 않는다(2026-08-26 실측).
+    // 원문 해시를 함께 기록해 **원문이 바뀌면 자동으로 다시 대상이 된다.**
+    expect(index.assets.find((e) => e.id === "demo-skill")?.gen_state).toBe("policy_blocked");
     // usage.md가 커밋되지 않았어야 한다.
     expect(() => readFileSync(path.join(catalogRoot, "catalog/assets/skill/demo-skill/usage.md"), "utf8")).toThrow();
   });

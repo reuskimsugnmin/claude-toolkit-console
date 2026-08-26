@@ -91,10 +91,12 @@ export interface PlanGenTargetsOptions {
   /** `--max-assets N`(estimate.ts 이전 단계에서 이미 잘라 넘길 수도 있지만, plan 자체도
    * 지원해 둔다 — 대상 산출 자체가 비용이 드는 read I/O이므로). */
   maxAssets?: number;
+  /** `--retry-blocked` — 정책 차단된 자산도 다시 시도한다. 가드의 탈출구다(안전 원칙 6). */
+  retryPolicyBlocked?: boolean;
 }
 
 export function planGenTargets(options: PlanGenTargetsOptions): GenPlanResult {
-  const { home, assets, index, maxAssets } = options;
+  const { home, assets, index, maxAssets, retryPolicyBlocked } = options;
   const indexById = new Map(index.assets.map((e) => [e.id, e]));
 
   const targets: GenPlanTarget[] = [];
@@ -108,7 +110,7 @@ export function planGenTargets(options: PlanGenTargetsOptions): GenPlanResult {
     // ⚠️ 판정은 `judgeAsset` **한 곳**에서만 한다. 단건 조회(`classifyAssetDocState`)와 이
     // 일괄 산출이 각자 판정하면 화면이 말하는 사유와 `gen`이 실제로 하는 일이 갈린다 —
     // 그 드리프트는 조용하고, 두 경로가 같은 함수를 타야 구조적으로 막힌다.
-    const verdict = judgeAsset(home, asset, indexById.get(asset.id));
+    const verdict = judgeAsset(home, asset, indexById.get(asset.id), retryPolicyBlocked);
     switch (verdict.kind) {
       case "blocked":
         skipped.push({ assetId: asset.id, failureClass: verdict.failureClass, reason: verdict.reason });
@@ -153,7 +155,12 @@ type AssetVerdict =
  * 여기서 errno를 다시 볼 필요가 없다 — errno로 잡으면 설정 디렉터리 읽기 실패 같은 진짜
  * 결함까지 묻힌다(심사 L-c).
  */
-function judgeAsset(home: HomeContext, asset: Asset, indexEntry: CatalogIndexEntry | undefined): AssetVerdict {
+function judgeAsset(
+  home: HomeContext,
+  asset: Asset,
+  indexEntry: CatalogIndexEntry | undefined,
+  retryPolicyBlocked?: boolean,
+): AssetVerdict {
   let resolved: ResolvedAssetSource;
   try {
     resolved = resolveAssetSource(home, asset);
@@ -172,6 +179,24 @@ function judgeAsset(home: HomeContext, asset: Asset, indexEntry: CatalogIndexEnt
   }
 
   const sourceContentSha256 = hashSections(resolved.sections);
+  // 원문이 정책에 걸려 차단된 자산. **한 곳에서 판정한다** — 갈라 두면 `--retry-blocked`가
+  // 아래 해시 비교로 흘러 "최신"이 되고, 탈출구가 아무것도 하지 않는다(테스트가 잡았다).
+  if (indexEntry?.gen_state === "policy_blocked") {
+    if (retryPolicyBlocked === true) {
+      // 강제 재시도 — 해시가 같아도 대상이다. 문서는 애초에 쓰이지 않았다.
+      return { kind: "target", reason: "stale", sections: resolved.sections, sourceContentSha256 };
+    }
+    if (indexEntry.gen_content_sha256 === sourceContentSha256) {
+      return {
+        kind: "blocked",
+        failureClass: "injection_pattern_detected",
+        reason:
+          "원문이 인젝션 후검증 규칙에 걸린다(대개 README가 파괴적 명령을 문서화한 경우다). " +
+          "원문이 바뀌면 자동으로 다시 시도한다. 지금 강제하려면 --retry-blocked를 준다",
+      };
+    }
+    // 원문이 바뀌었다 — 아래 `changed` 경로로 흘러 자동으로 다시 시도한다(자기 치유).
+  }
   if (indexEntry?.gen_state === "stale") {
     return { kind: "target", reason: "stale", sections: resolved.sections, sourceContentSha256 };
   }

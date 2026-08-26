@@ -600,4 +600,65 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     });
   });
 
+
+  /**
+   * **정책 차단 자산은 재시도 대상이 아니다 (2026-08-26 실측).**
+   *
+   * 인젝션 후검증에 걸리는 자산 3건이 **매 배치마다 돈을 쓰고 매번 실패했다** — 원문이
+   * `rm -rf`·`sudo` 같은 파괴적 명령을 **문서화**하고 있어서다. `stale`로 기록하면 plan이 항상
+   * 다시 대상에 넣으므로 무한 재시도가 된다.
+   *
+   * ⚠️ **영구 차단은 아니다.** 인젝션 탐지는 확정적이지 않다(모델이 그 토큰을 인용할지가 매번
+   * 다르다). 그래서 **원문이 그대로일 때만** 건너뛰고, 원문이 바뀌면 자동으로 다시 대상이 된다.
+   * 이 두 축을 갈라 재지 않으면 "항상 차단"과 구분되지 않는다.
+   */
+  describe("planGenTargets — policy_blocked는 원문이 그대로일 때만 건너뛴다", () => {
+    function planWith(genContentSha256: string | undefined, opts: { retry?: boolean } = {}) {
+      return planGenTargets({
+        home,
+        assets: [skillAsset("demo-skill")],
+        index: {
+          schema_version: 1,
+          assets: [
+            { id: "demo-skill", kind: "skill", name: "demo-skill", gen_state: "policy_blocked", gen_content_sha256: genContentSha256 },
+          ],
+        },
+        retryPolicyBlocked: opts.retry,
+      });
+    }
+    function currentSha(): string {
+      const p = planGenTargets({
+        home,
+        assets: [skillAsset("demo-skill")],
+        index: { schema_version: 1, assets: [{ id: "demo-skill", kind: "skill", name: "demo-skill" }] },
+      });
+      const sha = p.targets[0]?.sourceContentSha256;
+      expect(sha, "기준 해시를 못 구했다").toBeDefined();
+      return sha as string;
+    }
+    it("원문이 그대로면 대상이 아니고 사유와 함께 skipped에 남는다", () => {
+      init();
+      setupSkill("demo-skill", "rm -rf 를 문서화한 원문");
+      const plan = planWith(currentSha());
+      expect(plan.targets).toHaveLength(0);
+      expect(plan.skipped).toHaveLength(1);
+      expect(plan.skipped[0]?.failureClass).toBe("injection_pattern_detected");
+      expect(plan.skipped[0]?.reason).toContain("--retry-blocked");
+    });
+    /** **축이 갈리는 입력.** 원문이 바뀌면 자동으로 다시 시도해야 한다 — 자기 치유. */
+    it("원문이 바뀌면 다시 대상이 된다 (항상 차단이 아니다)", () => {
+      init();
+      setupSkill("demo-skill", "rm -rf 를 문서화한 원문");
+      const plan = planWith("옛-해시-원문이-바뀌었다");
+      expect(plan.targets, "원문이 바뀌었는데도 건너뛰었다").toHaveLength(1);
+      expect(plan.skipped).toHaveLength(0);
+    });
+    /** 가드에는 빠져나갈 길이 있어야 한다(안전 원칙 6). */
+    it("--retry-blocked면 원문이 그대로여도 다시 시도한다", () => {
+      init();
+      setupSkill("demo-skill", "rm -rf 를 문서화한 원문");
+      const plan = planWith(currentSha(), { retry: true });
+      expect(plan.targets).toHaveLength(1);
+    });
+  });
 });

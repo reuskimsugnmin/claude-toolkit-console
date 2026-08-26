@@ -50,6 +50,8 @@ export interface RunGenCliOptions {
   timeoutSec?: number;
   resume?: boolean;
   noLlm?: boolean;
+  /** `--retry-blocked` — 정책 차단된 자산도 다시 시도한다. */
+  retryBlocked?: boolean;
   allowManagedPolicy?: boolean;
   yes?: boolean;
   routingProbeCommand?: string;
@@ -150,7 +152,7 @@ export interface GenDryRunReport {
 }
 
 /** `--dry-run` — 파일 직독만. API 호출도 서브프로세스 spawn도 하지 않는다(AC-3.8). */
-export function runGenDryRun(options: { maxAssets?: number } = {}): GenDryRunReport {
+export function runGenDryRun(options: { maxAssets?: number; retryBlocked?: boolean } = {}): GenDryRunReport {
   const home = resolveHomeContext();
   const localConfig = readLocalConfig(home);
   if (localConfig === null) throw new CatalogNotInitializedError();
@@ -158,7 +160,7 @@ export function runGenDryRun(options: { maxAssets?: number } = {}): GenDryRunRep
 
   const assets = listAllAssets(catalogPath);
   const index = readCatalogIndex(catalogPath);
-  const plan = planGenTargets({ home, assets, index, maxAssets: options.maxAssets });
+  const plan = planGenTargets({ home, assets, index, maxAssets: options.maxAssets, retryPolicyBlocked: options.retryBlocked });
   const approxBytes = plan.targets.reduce(
     (sum, t) => sum + t.sections.reduce((s, sec) => s + Buffer.byteLength(sec.content, "utf8"), 0),
     0,
@@ -200,7 +202,7 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
   try {
     const assets = listAllAssets(catalogPath);
     const index = readCatalogIndex(catalogPath);
-    const plan = planGenTargets({ home, assets, index, maxAssets: options.maxAssets });
+    const plan = planGenTargets({ home, assets, index, maxAssets: options.maxAssets, retryPolicyBlocked: options.retryBlocked });
 
     // ⚠️ `.policies`만 꺼내면 파싱 실패가 빈 배열로 흘러 "정책 없음"과 같아진다(안전 원칙 7).
     const managed = options.noLlm === true ? { policies: [], parseFailures: [] } : readManagedPolicies();
@@ -269,6 +271,7 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
       allowConcurrentSessions: options.allowConcurrentSessions === true,
       timeoutSec: options.timeoutSec,
       noLlm: options.noLlm === true,
+      retryPolicyBlocked: options.retryBlocked === true,
       verifiedCliVersion: catalogConfig.verified_cli_version,
       routingProbeCommand: options.routingProbeCommand,
       sealedCwd: ensureSealedLiveCwd(),
