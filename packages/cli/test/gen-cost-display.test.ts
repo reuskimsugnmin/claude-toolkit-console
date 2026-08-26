@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { deriveObservedUnitCost, GenCostSchema } from "@ctk/core";
-import { describeActualCost, describeCostEstimate } from "../src/commands/gen.js";
+import { UNGROUPED_PARENT_ID } from "@ctk/gen";
+import { describeActualCost, describeCostEstimate, describeExcludedBundled } from "../src/commands/gen.js";
 
 /**
  * cli/test/gen-cost-display.test.ts — **비용 고지 문구.**
@@ -10,7 +11,14 @@ import { describeActualCost, describeCostEstimate } from "../src/commands/gen.js
  * 이름이 틀렸다. 그래서 여기서 판정하는 것은 **화면이 그 값이 무엇인지 말하는가**이다.
  */
 
-const BASE = { assetCount: 30, callCount: 30, estimatedInputTokens: 96_320, approxBytes: 1_000_000 };
+const BASE = {
+  assetCount: 30,
+  callCount: 30,
+  estimatedInputTokens: 96_320,
+  approxBytes: 1_000_000,
+  // 이 파일의 픽스처는 부모가 없는 배치를 다룬다 — 한 행으로 빠짐없이 분할된다.
+  byParent: [{ parent_id: UNGROUPED_PARENT_ID, callCount: 30 }],
+};
 
 /**
  * **합성 표본** — 값은 지어냈고 모양만 실측을 따른다(평균 $0.200 > 중앙값 $0.160).
@@ -98,6 +106,49 @@ describe("describeCostEstimate — 하한·상한·실측을 갈라 말한다", 
     expect(text).toContain("측정 불가");
     expect(text).toContain("비용 상한");
     expect(text).not.toContain("비용 하한"); // 없는 값을 0으로 적지 않는다
+  });
+
+  /**
+   * B1 Step 4(결정 6) — **집계식 단일화.** 총액은 `estimate.callCount`를 직접 곱하지 않고
+   * `byParent` **행마다** 투사해 더한다. 부모가 여럿으로 갈려도(번들 자식 포함) 행의 합이
+   * `estimate.callCount`와 일치하면 총액은 하나로 곱한 값과 같아야 한다 — 여기서는 그 결과가
+   * "행을 나눠도 합이 안 갈린다"는 것으로 드러난다.
+   */
+  it("byParent가 여러 행으로 갈려도 총액은 한 행일 때와 같다 — 행의 합이 총액이다", () => {
+    const singleRow = describeCostEstimate(
+      { ...BASE, costFloorUsd: 0.289, costCeilingUsd: 13.5, observed: OBSERVED, byParent: [{ parent_id: UNGROUPED_PARENT_ID, callCount: 30 }] },
+      0.45,
+    ).join("\n");
+    const splitRows = describeCostEstimate(
+      {
+        ...BASE,
+        costFloorUsd: 0.289,
+        costCeilingUsd: 13.5,
+        observed: OBSERVED,
+        byParent: [
+          { parent_id: UNGROUPED_PARENT_ID, callCount: 20 },
+          { parent_id: "p1", callCount: 7 },
+          { parent_id: "p2", callCount: 3 },
+        ],
+      },
+      0.45,
+    ).join("\n");
+    expect(splitRows).toContain("$6.00"); // 0.200 × 30 — 여러 행으로 나눠도 합은 같다
+    expect(singleRow).toContain("$6.00");
+  });
+});
+
+describe("describeExcludedBundled — 번들 자식 제외를 조용히 하지 않는다", () => {
+  it("0건이면 아무것도 말하지 않는다 — 아무 일도 없는데 경고하지 않는다", () => {
+    expect(describeExcludedBundled(0)).toBeNull();
+  });
+
+  it("0건보다 많으면 건수와 함께 알린다", () => {
+    const text = describeExcludedBundled(3);
+    expect(text).not.toBeNull();
+    expect(text).toContain("3건");
+    expect(text).toContain("제외");
+    expect(text).toContain("--plugin");
   });
 });
 

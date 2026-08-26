@@ -14,6 +14,7 @@ import {
   summarizeUnresolved,
   describeActualCost,
   describeGenSummary,
+  describeExcludedBundled,
   MissingRequiredFlagError,
 } from "../src/commands/gen.js";
 import { runAgentProbeCli, describeProbeCost } from "../src/commands/agent-probe.js";
@@ -49,6 +50,15 @@ function readFlagValue(args: string[], flag: string): string | undefined {
   return args[index + 1];
 }
 
+/** 반복 가능한 플래그의 모든 값을 모은다 — `--plugin a --plugin b` → `["a", "b"]`. */
+function readFlagValues(args: string[], flag: string): string[] {
+  const values: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === flag && args[i + 1] !== undefined) values.push(args[i + 1] as string);
+  }
+  return values;
+}
+
 async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2);
 
@@ -68,11 +78,18 @@ async function main(): Promise<void> {
         console.log(`ctk scan 완료 (${summary.durationMs}ms)`);
         console.log(`  스냅샷: ${summary.snapshotPath}`);
         console.log(`  실행 로그: ${summary.runLogPath}`);
+        // ⚠️ 종류를 손으로 나열하지 않는다 — 문자열 보간은 타입 축이 닿지 않아 `AssetKind`가
+        // 늘어도 컴파일이 침묵하고 새 종류가 **화면에서만 사라진다**(등재 ≠ 도달).
         console.log(
-          `  자산: plugin=${summary.assetCounts.plugin} skill=${summary.assetCounts.skill} mcp=${summary.assetCounts.mcp} cli=${summary.assetCounts.cli}`,
+          `  자산: ${Object.entries(summary.assetCounts)
+            .map(([kind, count]) => `${kind}=${count}`)
+            .join(" ")}`,
         );
         console.log(`  Installation: ${summary.installationCount}건, Toggle: ${summary.toggleCount}건`);
         console.log(`  스코프 분포: ${JSON.stringify(summary.scopeDistribution)}`);
+        for (const warning of summary.warnings) {
+          console.warn(`  ⚠️ ${warning}`);
+        }
         return;
       }
       case "doctor": {
@@ -358,9 +375,15 @@ async function main(): Promise<void> {
       }
       case "gen": {
         const maxAssets = readFlagValue(rest, "--max-assets");
+        // `--plugin`(반복 가능) — 문서 생성 대상으로 삼을 번들 부모 id. 미지정이면 `[]`
+        // (결정 6 "기본 무동작") — 번들 자식은 문이 이미 닫혀 있다.
+        const bundledParents = readFlagValues(rest, "--plugin");
         if (rest.includes("--dry-run")) {
           // AC-3.8 — 네트워크 호출 0 · 서브프로세스 spawn 0. 파일 직독만 한다.
-          const report = runGenDryRun({ maxAssets: maxAssets !== undefined ? Number(maxAssets) : undefined });
+          const report = runGenDryRun({
+            maxAssets: maxAssets !== undefined ? Number(maxAssets) : undefined,
+            bundledParents,
+          });
           console.log(`ctk gen --dry-run (로컬 전용 미리보기 — 네트워크·spawn 없음)`);
           console.log(`  생성 대상: ${report.assetCount}건 · 원본 크기 합계: ${report.approxBytes} bytes`);
           for (const line of summarizeUnresolved(report.unresolved)) console.log(`  ⚠️ ${line}`);
@@ -371,6 +394,8 @@ async function main(): Promise<void> {
             const summary = [...byClass].map(([k, v]) => `${k} ${v}건`).join(" · ");
             console.log(`  ⚠️ 위생 검사가 거부해 건너뜀: ${report.skipped.length}건 (${summary})`);
           }
+          const excludedNotice = describeExcludedBundled(report.excludedBundled);
+          if (excludedNotice !== null) console.log(`  ⚠️ ${excludedNotice}`);
           return;
         }
         const budget = readFlagValue(rest, "--max-budget-usd");
@@ -385,6 +410,7 @@ async function main(): Promise<void> {
           allowManagedPolicy: rest.includes("--allow-managed-policy"),
           allowConcurrentSessions: rest.includes("--allow-concurrent-sessions"),
           yes: rest.includes("--yes"),
+          bundledParents,
         });
         for (const line of describeGenSummary(summary.results)) console.log(line);
         // 건너뛴 자산은 이유를 그대로 노출한다 — "처리됨"과 "조용히 빠짐"을 구분한다(안전 원칙 6).

@@ -46,7 +46,7 @@ const ASSET_SCHEMA_REL = "packages/core/src/schema/asset.ts";
  * 여전히 조용히 흘리고 있다는 뜻이다.
  */
 const DECLARED_BREAK_FILES = [
-  "packages/core/src/schema/asset.ts", // assetKindRequiresMarketplace — exhaustive switch
+  "packages/core/src/schema/asset.ts", // kindConstraint — exhaustive switch (B1 Step 3, 옛 assetKindRequiresMarketplace를 대체)
   "packages/core/src/view/view-model.ts", // toMcpStateView — exhaustive switch
   "packages/actuator/src/apply/mcp-reject.ts", // classifyMoveRejection — exhaustive switch
   "packages/cli/src/commands/measure.ts", // computeOccupancy — exhaustive switch

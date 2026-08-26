@@ -11,6 +11,19 @@ function skillAsset(id: string): Asset {
   return { schema_version: 1, _scope: "machine_independent", id, kind: "skill", name: id, description: `${id} 설명` };
 }
 
+/** 번들 자식 자산(결정 6) — `parent_asset_id`가 있는 스킬. D2 형식(`<parent>:<suffix>`)을 따른다. */
+function bundledSkillAsset(id: string, parentAssetId: string): Asset {
+  return {
+    schema_version: 1,
+    _scope: "machine_independent",
+    id,
+    kind: "skill",
+    name: id,
+    description: `${id} 설명`,
+    parent_asset_id: parentAssetId,
+  };
+}
+
 describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
   let ctkHome: string;
   let home: HomeContext;
@@ -46,7 +59,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     setupSkill("demo-skill", "v1");
     const asset = skillAsset("demo-skill");
     const emptyIndex: CatalogIndex = { schema_version: 1, assets: [{ id: "demo-skill", kind: "skill", name: "demo-skill" }] };
-    const result = planGenTargets({ home, assets: [asset], index: emptyIndex });
+    const result = planGenTargets({ home, bundledParents: [], assets: [asset], index: emptyIndex });
     expect(result.targets).toHaveLength(1);
     expect(result.targets[0]?.reason).toBe("new");
     expect(result.upToDateCount).toBe(0);
@@ -59,6 +72,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     // 먼저 한 번 계산해 해시를 얻고, 그 값을 인덱스에 넣어 "이미 처리됨"을 시뮬레이션한다.
     const first = planGenTargets({
       home,
+      bundledParents: [],
       assets: [asset],
       index: { schema_version: 1, assets: [{ id: "demo-skill", kind: "skill", name: "demo-skill" }] },
     });
@@ -69,7 +83,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
       schema_version: 1,
       assets: [{ id: "demo-skill", kind: "skill", name: "demo-skill", gen_state: "fresh", gen_content_sha256: sha }],
     };
-    const second = planGenTargets({ home, assets: [asset], index: upToDateIndex });
+    const second = planGenTargets({ home, bundledParents: [], assets: [asset], index: upToDateIndex });
     expect(second.targets).toHaveLength(0);
     expect(second.upToDateCount).toBe(1);
   });
@@ -80,6 +94,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     const asset = skillAsset("demo-skill");
     const first = planGenTargets({
       home,
+      bundledParents: [],
       assets: [asset],
       index: { schema_version: 1, assets: [{ id: "demo-skill", kind: "skill", name: "demo-skill" }] },
     });
@@ -92,7 +107,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
       schema_version: 1,
       assets: [{ id: "demo-skill", kind: "skill", name: "demo-skill", gen_state: "fresh", gen_content_sha256: staleHash }],
     };
-    const second = planGenTargets({ home, assets: [asset], index: changedIndex });
+    const second = planGenTargets({ home, bundledParents: [], assets: [asset], index: changedIndex });
     expect(second.targets).toHaveLength(1);
     expect(second.targets[0]?.reason).toBe("changed");
   });
@@ -103,6 +118,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     const asset = skillAsset("demo-skill");
     const first = planGenTargets({
       home,
+      bundledParents: [],
       assets: [asset],
       index: { schema_version: 1, assets: [{ id: "demo-skill", kind: "skill", name: "demo-skill" }] },
     });
@@ -112,7 +128,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
       schema_version: 1,
       assets: [{ id: "demo-skill", kind: "skill", name: "demo-skill", gen_state: "stale", gen_content_sha256: sha }],
     };
-    const result = planGenTargets({ home, assets: [asset], index: staleIndex });
+    const result = planGenTargets({ home, bundledParents: [], assets: [asset], index: staleIndex });
     expect(result.targets).toHaveLength(1);
     expect(result.targets[0]?.reason).toBe("stale");
   });
@@ -122,6 +138,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     const asset: Asset = { schema_version: 1, _scope: "machine_independent", id: "no-source", kind: "skill", name: "no-source" };
     const result = planGenTargets({
       home,
+      bundledParents: [],
       assets: [asset],
       index: { schema_version: 1, assets: [] },
     });
@@ -135,6 +152,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     setupSkill("b", "b설명");
     const result = planGenTargets({
       home,
+      bundledParents: [],
       assets: [skillAsset("a"), skillAsset("b")],
       index: { schema_version: 1, assets: [] },
       maxAssets: 1,
@@ -163,6 +181,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     setupSymlinkedSkill("linked-skill", "---\nname: linked-skill\n---\n본문\n");
     const result = planGenTargets({
       home,
+      bundledParents: [],
       assets: [skillAsset("linked-skill")],
       index: { schema_version: 1, assets: [] },
     });
@@ -179,6 +198,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     setupSkill("normal-b", "정상 B");
     const result = planGenTargets({
       home,
+      bundledParents: [],
       // 링크 자산을 **맨 앞에** 둔다 — 예전 구현이라면 첫 자산에서 죽어 뒤를 못 봤다.
       assets: [skillAsset("linked-skill"), skillAsset("normal-a"), skillAsset("normal-b")],
       index: { schema_version: 1, assets: [] },
@@ -192,6 +212,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     setupSymlinkedSkill("linked-skill", "본문\n");
     const result = planGenTargets({
       home,
+      bundledParents: [],
       // 디렉터리가 아예 없는 자산 = empty. 링크 자산 = skipped. 둘을 뭉치지 않는다.
       assets: [skillAsset("linked-skill"), skillAsset("missing-skill")],
       index: { schema_version: 1, assets: [] },
@@ -212,6 +233,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
 
     const result = planGenTargets({
       home,
+      bundledParents: [],
       assets: [skillAsset("huge-skill"), skillAsset("normal-a")],
       index: { schema_version: 1, assets: [] },
     });
@@ -235,6 +257,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     setupSkill("b", "B");
     const result = planGenTargets({
       home,
+      bundledParents: [],
       assets: [skillAsset("a"), skillAsset("b")],
       index: { schema_version: 1, assets: [] },
       maxAssets: 0,
@@ -248,6 +271,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     setupSkill("b", "B");
     const result = planGenTargets({
       home,
+      bundledParents: [],
       assets: [skillAsset("a"), skillAsset("b")],
       index: { schema_version: 1, assets: [] },
       maxAssets: 1,
@@ -269,6 +293,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
 
     const result = planGenTargets({
       home,
+      bundledParents: [],
       assets: [skillAsset("proj-skill")],
       index: { schema_version: 1, assets: [] },
     });
@@ -288,6 +313,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     writeFileSync(path.join(skillDir, "SKILL.md"), `---\nname: huge2\ndescription: x\n---\n${"가".repeat(120_000)}`);
     const result = planGenTargets({
       home,
+      bundledParents: [],
       assets: [skillAsset("huge2")],
       index: { schema_version: 1, assets: [] },
     });
@@ -313,6 +339,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
 
       const result = planGenTargets({
         home,
+        bundledParents: [],
         assets: [skillAsset("leaky")],
         index: { schema_version: 1, assets: [] },
       });
@@ -340,6 +367,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
 
       const result = planGenTargets({
         home,
+        bundledParents: [],
         assets: [skillAsset("dirlink")],
         index: { schema_version: 1, assets: [] },
       });
@@ -379,7 +407,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
       const asset: Asset = {
         schema_version: 1, _scope: "machine_independent", id: "demo-plugin", kind: "plugin", name: "demo-plugin",
       };
-      const result = planGenTargets({ home, assets: [asset], index: { schema_version: 1, assets: [] } });
+      const result = planGenTargets({ home, bundledParents: [], assets: [asset], index: { schema_version: 1, assets: [] } });
       expect(result.skipped.map((sk) => sk.assetId), "플러그인 링크가 통과했다").toEqual(["demo-plugin"]);
       expect(result.skipped[0]?.failureClass).toBe("path_traversal_detected");
     });
@@ -396,6 +424,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
 
       const result = planGenTargets({
         home,
+        bundledParents: [],
         assets: [skillAsset("linked-skill")],
         index: { schema_version: 1, assets: [] },
       });
@@ -417,7 +446,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
       init();
       setupSkillAt("dup-a", "dup", "완전히 같은 본문");
       setupSkillAt("dup-b", "dup", "완전히 같은 본문");
-      const result = planGenTargets({ home, assets: [skillAsset("dup")], index: { schema_version: 1, assets: [] } });
+      const result = planGenTargets({ home, bundledParents: [], assets: [skillAsset("dup")], index: { schema_version: 1, assets: [] } });
       expect(result.unresolved).toEqual([]);
       expect(result.targets.map((t) => t.asset.id)).toEqual(["dup"]);
       expect(result.targets[0]?.sections[0]?.content).toContain("완전히 같은 본문");
@@ -427,7 +456,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
       init();
       setupSkillAt("dup-a", "dup", "본문 A");
       setupSkillAt("dup-b", "dup", "본문 B");
-      const result = planGenTargets({ home, assets: [skillAsset("dup")], index: { schema_version: 1, assets: [] } });
+      const result = planGenTargets({ home, bundledParents: [], assets: [skillAsset("dup")], index: { schema_version: 1, assets: [] } });
       expect(result.targets).toEqual([]);
       expect(result.unresolved).toEqual([{ assetId: "dup", reason: "ambiguous_source", locationCount: 2 }]);
     });
@@ -441,7 +470,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
       writeFileSync(outside, "---\nname: dup\ndescription: d\n---\n\n본문\n");
       symlinkSync(outside, path.join(linkedDir, "SKILL.md"));
 
-      const result = planGenTargets({ home, assets: [skillAsset("dup")], index: { schema_version: 1, assets: [] } });
+      const result = planGenTargets({ home, bundledParents: [], assets: [skillAsset("dup")], index: { schema_version: 1, assets: [] } });
       // 링크가 아닌 사본을 골라 우회하지 않는다.
       expect(result.targets).toEqual([]);
       expect(result.skipped.map((sk) => sk.assetId)).toEqual(["dup"]);
@@ -459,6 +488,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
       });
       const result = planGenTargets({
         home,
+        bundledParents: [],
         assets: [bare("some-server", "mcp"), bare("some-cli", "cli")],
         index: { schema_version: 1, assets: [] },
       });
@@ -517,6 +547,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
       // 검증하지 못한다(픽스처가 결과를 지배해야 한다).
       const probe = planGenTargets({
         home,
+        bundledParents: [],
         assets,
         index: {
           schema_version: 1,
@@ -548,7 +579,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
         ],
       };
 
-      const bulk = planGenTargets({ home, assets, index });
+      const bulk = planGenTargets({ home, bundledParents: [], assets, index });
       const indexById = new Map(index.assets.map((e) => [e.id, e]));
 
       // 일괄 산출을 자산 id → 기대 상태로 펼친다.
@@ -616,6 +647,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     function planWith(genContentSha256: string | undefined, opts: { retry?: boolean } = {}) {
       return planGenTargets({
         home,
+        bundledParents: [],
         assets: [skillAsset("demo-skill")],
         index: {
           schema_version: 1,
@@ -629,6 +661,7 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     function currentSha(): string {
       const p = planGenTargets({
         home,
+        bundledParents: [],
         assets: [skillAsset("demo-skill")],
         index: { schema_version: 1, assets: [{ id: "demo-skill", kind: "skill", name: "demo-skill" }] },
       });
@@ -659,6 +692,56 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
       setupSkill("demo-skill", "rm -rf 를 문서화한 원문");
       const plan = planWith(currentSha(), { retry: true });
       expect(plan.targets).toHaveLength(1);
+    });
+  });
+
+  // ── B1 Step 4 (결정 6) — 번들 자식은 부모를 명시해야만 대상이 된다 ─────────────────────
+  //
+  // 자식이 카탈로그에 들어오는 순간(Step 5) 인자 없는 `ctk gen`이 자동으로 대량 백필을
+  // 시작하지 않게 문을 먼저 닫는다. 지금은 자식이 0건이라 안전하게 닫을 수 있다.
+  describe("bundledParents — 번들 자식은 부모를 지정해야만 대상이 된다", () => {
+    it("bundledParents가 빈 배열(기본)이면 parent_asset_id가 있는 자산은 전부 제외되고 건수가 남는다", () => {
+      init();
+      setupSkillAt("child-a-dir", "p1:child-a", "자식 A 본문");
+      setupSkillAt("child-b-dir", "p1:child-b", "자식 B 본문");
+      const result = planGenTargets({
+        home,
+        bundledParents: [],
+        assets: [bundledSkillAsset("p1:child-a", "p1"), bundledSkillAsset("p1:child-b", "p1")],
+        index: { schema_version: 1, assets: [] },
+      });
+      expect(result.targets).toHaveLength(0);
+      expect(result.excludedBundled).toBe(2);
+      // 판정(judgeAsset)까지 가지 않는다 — unresolved/skipped 어느 쪽에도 남지 않는다.
+      expect(result.unresolved).toHaveLength(0);
+      expect(result.skipped).toHaveLength(0);
+    });
+
+    it("bundledParents에 부모를 지정하면 그 자식만 대상이 되고 다른 부모의 자식은 여전히 제외된다", () => {
+      init();
+      setupSkillAt("child-a-dir", "p1:child-a", "자식 A 본문");
+      setupSkillAt("child-b-dir", "p2:child-b", "자식 B 본문");
+      const result = planGenTargets({
+        home,
+        bundledParents: ["p1"],
+        assets: [bundledSkillAsset("p1:child-a", "p1"), bundledSkillAsset("p2:child-b", "p2")],
+        index: { schema_version: 1, assets: [] },
+      });
+      expect(result.targets.map((t) => t.asset.id)).toEqual(["p1:child-a"]);
+      expect(result.excludedBundled).toBe(1); // p2:child-b만 제외됐다
+    });
+
+    it("parent_asset_id가 없는 최상위 자산은 bundledParents와 무관하게 그대로 대상이 된다(회귀)", () => {
+      init();
+      setupSkill("top-level", "최상위 스킬");
+      const result = planGenTargets({
+        home,
+        bundledParents: [], // 기본값이어도 최상위 자산은 좁히지 않는다 — 좁히는 축은 번들 자식뿐.
+        assets: [skillAsset("top-level")],
+        index: { schema_version: 1, assets: [] },
+      });
+      expect(result.targets.map((t) => t.asset.id)).toEqual(["top-level"]);
+      expect(result.excludedBundled).toBe(0);
     });
   });
 });

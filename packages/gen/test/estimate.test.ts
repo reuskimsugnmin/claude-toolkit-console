@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
+import type { Asset } from "@ctk/core";
 import type { HomeContext } from "@ctk/probe";
-import { CredentialMissingError, estimateGenCost } from "../src/estimate.js";
+import { CredentialMissingError, estimateGenCost, UNGROUPED_PARENT_ID } from "../src/estimate.js";
 import type { GenPlanTarget } from "../src/plan.js";
 
 const HOME: HomeContext = { ctkHome: "/synthetic/home", ctkConfigDir: "/synthetic/home/.claude", configDirExplicit: true };
 
-function target(content: string): GenPlanTarget {
+function target(content: string, asset: Partial<Asset> = {}): GenPlanTarget {
   return {
-    asset: { schema_version: 1, _scope: "machine_independent", id: "x", kind: "skill", name: "x" },
+    asset: { schema_version: 1, _scope: "machine_independent", id: "x", kind: "skill", name: "x", ...asset },
     reason: "new",
     sections: [{ label: "SKILL.md", content }],
     sourceContentSha256: "deadbeef",
@@ -115,5 +116,41 @@ describe("gen/estimate — 비용은 하한·상한·실측 셋으로 갈라 보
     expect(result.estimatedInputTokens).toBe(0);
     expect(result.costFloorUsd).toBe(0);
     expect(result.costCeilingUsd).toBe(0); // 호출이 0회면 상한도 0이다 — maxBudgetUsd가 아니라.
+  });
+
+  /**
+   * B1 Step 4(결정 6) — `byParent`는 `targets`를 **빠짐없이** 분할해야 한다. cli 표시 계층이
+   * "행마다 투사해 더한 값"을 총액으로 쓰므로(구조적 단일화), 분할이 새면 총액이 조용히
+   * 줄어든다 — `estimate.callCount`와 `byParent` 합이 항상 같아야 하는 이유다.
+   */
+  describe("byParent — targets를 부모별로 빠짐없이 분할한다", () => {
+    it("parent_asset_id가 없는 최상위 대상은 전부 UNGROUPED_PARENT_ID 한 행으로 묶인다", async () => {
+      const checkAuthFn = async () => ({ loggedIn: true });
+      const result = await estimateGenCost({
+        home: HOME, targets: [target("a"), target("b")], tokenizerModel: "m", cwd: "/tmp", timeoutSec: 5, checkAuthFn, maxBudgetUsd: 0.5,
+      });
+      expect(result.byParent).toEqual([{ parent_id: UNGROUPED_PARENT_ID, callCount: 2 }]);
+    });
+
+    it("번들 자식은 실제 부모 id로 갈리고, 최상위와 번들이 섞여도 전체 건수가 보존된다", async () => {
+      const checkAuthFn = async () => ({ loggedIn: true });
+      const targets = [
+        target("top", {}), // 최상위(부모 없음)
+        target("c1", { id: "p1:c1", parent_asset_id: "p1" }),
+        target("c2", { id: "p1:c2", parent_asset_id: "p1" }),
+        target("c3", { id: "p2:c1", parent_asset_id: "p2" }),
+      ];
+      const result = await estimateGenCost({
+        home: HOME, targets, tokenizerModel: "m", cwd: "/tmp", timeoutSec: 5, checkAuthFn, maxBudgetUsd: 0.5,
+      });
+      const byId = new Map(result.byParent.map((r) => [r.parent_id, r.callCount]));
+      expect(byId.get(UNGROUPED_PARENT_ID)).toBe(1);
+      expect(byId.get("p1")).toBe(2);
+      expect(byId.get("p2")).toBe(1);
+      // ⚠️ 이 합이 곧 "행의 합 = 총액"이 구조적으로 보장되는 근거다.
+      const sum = result.byParent.reduce((s, r) => s + r.callCount, 0);
+      expect(sum).toBe(result.callCount);
+      expect(result.callCount).toBe(targets.length);
+    });
   });
 });

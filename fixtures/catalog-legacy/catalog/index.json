@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "assets": [
+    {
+      "id": "demo-plugin@demo-marketplace",
+      "kind": "plugin",
+      "name": "demo-plugin",
+      "gen_state": "fresh",
+      "gen_content_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "id": "demo-skill-standalone",
+      "kind": "skill",
+      "name": "demo-skill-standalone",
+      "gen_state": "pending"
+    },
+    {
+      "id": "demo-plugin@demo-marketplace:demo-skill-bundled",
+      "kind": "skill",
+      "name": "demo-skill-bundled",
+      "parent_asset_id": "demo-plugin@demo-marketplace",
+      "gen_state": "stale",
+      "gen_content_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "id": "demo-mcp-server",
+      "kind": "mcp",
+      "name": "demo-mcp-server",
+      "gen_state": "policy_blocked"
+    },
+    {
+      "id": "demo-cli-tool",
+      "kind": "cli",
+      "name": "demo-cli-tool"
+    },
+    {
+      "id": "demo-plugin@demo-marketplace:demo-agent",
+      "kind": "agent",
+      "name": "demo-agent",
+      "parent_asset_id": "demo-plugin@demo-marketplace",
+      "gen_state": "fresh",
+      "gen_content_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    {
+      "id": "demo-plugin@demo-marketplace:demo-command",
+      "kind": "command",
+      "name": "demo-command",
+      "parent_asset_id": "demo-plugin@demo-marketplace",
+      "gen_state": "pending"
+    }
+  ]
+}

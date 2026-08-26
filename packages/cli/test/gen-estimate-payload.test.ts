@@ -38,6 +38,7 @@ function handlers(observed = OBSERVED) {
       approxBytes: 1000,
       skipped: [],
       unresolved: [],
+      excludedBundled: 0,
     }),
     observedCostFn: () => observed,
   });
@@ -81,5 +82,53 @@ describe("genEstimate — 서버가 실어 보내는 실측 단가와 총액 투
     };
     expect(result.data.per_call_budget_usd).toBeCloseTo(2 / CALL_COUNT, 10);
     expect(result.data.max_total_usd).toBe(2);
+  });
+});
+
+/**
+ * B1 Step 4(결정 6) — **네 호출부 일치.** `genEstimate`가 계획을 세울 때 쓴 `bundledParents`가
+ * 토큰에 실려 `genExecute`의 실행 계획에 **그대로** 도착해야 한다. 갈리면 "승인한 대상 ≠
+ * 실행한 대상"이 조용히 생긴다 — 이 결정이 막으려던 것이다.
+ *
+ * `execFn`(M-4식 테스트 이음매)이 없으면 이 경로는 실제 카탈로그·`claude -p`를 태워야만
+ * 검증할 수 있다 — 그래서 `dryRunFn`과 대칭으로 이음매를 추가했다.
+ */
+describe("genEstimate → genExecute — 승인 시점 계획이 실행 시점에 그대로 도착한다", () => {
+  it("estimate가 쓴 bundledParents·callCount가 execute의 실행 계획과 일치한다", async () => {
+    const execCalls: unknown[] = [];
+    const handlersWithExec = createActionHandlers({
+      estimates: new EstimateTokenStore(),
+      dryRunFn: () => ({ assetCount: CALL_COUNT, approxBytes: 1000, skipped: [], unresolved: [], excludedBundled: 0 }),
+      observedCostFn: () => OBSERVED,
+      execFn: (async (opts: unknown) => {
+        execCalls.push(opts);
+        return {
+          plan: { targets: [], unresolved: [], skipped: [], upToDateCount: 0, excludedBundled: 0 },
+          results: [],
+          stoppedEarly: false,
+          injectionFindingsTotal: { directive: 0, executable: 0, url: 0, length: 0 },
+        };
+      }) as unknown as typeof import("../src/commands/gen.js").runGenCli,
+    });
+
+    const estimate = (await handlersWithExec.genEstimate({ maxAssets: MAX_ASSETS, maxTotalUsd: 2 })) as {
+      estimateToken: string;
+      data: { call_count: number };
+    };
+    expect(estimate.data.call_count).toBe(CALL_COUNT);
+
+    await handlersWithExec.genExecute({
+      maxAssets: MAX_ASSETS,
+      maxTotalUsd: 2,
+      estimateToken: estimate.estimateToken,
+    });
+
+    expect(execCalls).toHaveLength(1);
+    const executed = execCalls[0] as { maxAssets: number; maxBudgetUsd: number; bundledParents: readonly string[] };
+    // 승인 시점 계획의 callCount(=estimate.data.call_count)가 그대로 실행 계획에 반영된다.
+    expect(executed.maxAssets).toBe(Math.min(MAX_ASSETS, CALL_COUNT));
+    expect(executed.maxBudgetUsd).toBeCloseTo(2 / CALL_COUNT, 10);
+    // 견적 시점에 계획한 bundledParents가 실행에도 그대로 도착한다 — 갈리지 않는다.
+    expect(executed.bundledParents).toEqual([]);
   });
 });

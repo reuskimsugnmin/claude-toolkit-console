@@ -39,15 +39,47 @@ export interface ScanSummary {
   toggleCount: number;
   scopeDistribution: Record<string, number>;
   durationMs: number;
+  /**
+   * 스캔은 성공했지만 사용자가 알아야 하는 열화 — 손상된 인덱스, 파싱 못 한 자산 파일 등.
+   * **빈 배열이 "없음"이다.** 이 통로가 없으면 `rebuildCatalogIndex`가 돌려주는 열화 사실을
+   * 받을 자리가 없어 조용히 버려진다(안전 원칙 5 — 만든 것과 배선한 것은 다르다).
+   */
+  warnings: string[];
 }
 
-function mergeAssets(...groups: Asset[][]): Asset[] {
+/**
+ * `mergeAssets()`가 동일 id를 2회 이상 받았다 — AC-2. 이전 구현은 `Map`으로 모으며 first-wins로
+ * 조용히 흡수했다(`core/snapshot/diff.ts`의 `DuplicateKeyDiffError`와 같은 결함 모양, P2 —
+ * 판정 불가는 추정으로 채우지 않는다). `ctk scan`은 이 오류를 `failure_class: "duplicate_asset_id"`로
+ * run-log에 기록한다(`extractFailureClass`가 `.failureClass`를 읽는다).
+ */
+export class DuplicateAssetIdError extends Error {
+  readonly failureClass = "duplicate_asset_id" as const;
+  readonly duplicateIds: readonly string[];
+
+  constructor(duplicateIds: readonly string[]) {
+    super(
+      `mergeAssets()는 중복 id 입력을 판정 불가로 거부한다 (failure_class: duplicate_asset_id): ` +
+        duplicateIds.join(", "),
+    );
+    this.name = "DuplicateAssetIdError";
+    this.duplicateIds = duplicateIds;
+  }
+}
+
+export function mergeAssets(...groups: Asset[][]): Asset[] {
   const byId = new Map<string, Asset>();
+  const duplicates: string[] = [];
   for (const group of groups) {
     for (const asset of group) {
-      if (!byId.has(asset.id)) byId.set(asset.id, asset);
+      if (byId.has(asset.id)) {
+        duplicates.push(asset.id);
+      } else {
+        byId.set(asset.id, asset);
+      }
     }
   }
+  if (duplicates.length > 0) throw new DuplicateAssetIdError(duplicates);
   return [...byId.values()];
 }
 
@@ -102,6 +134,7 @@ export interface RunScanOptions {
 }
 
 export async function runScan(options: RunScanOptions = {}): Promise<ScanSummary> {
+  const warnings: string[] = [];
   const startedAt = new Date();
   const home = resolveHomeContext();
   const localConfig = readLocalConfig(home);
@@ -162,7 +195,20 @@ export async function runScan(options: RunScanOptions = {}): Promise<ScanSummary
     for (const asset of assets) {
       upsertAsset(catalogPath, asset);
     }
-    rebuildCatalogIndex(catalogPath);
+    // ⚠️ 반환값을 버리지 않는다. 열화 사실을 만들어 놓고 아무도 읽지 않으면 손상 인덱스가
+    // 조용히 삼켜지고 `gen_state` 이월이 끊겨 **다음 `ctk gen`이 이미 만든 문서를 유료로 다시
+    // 만든다**(안전 원칙 5 — 방어를 만든 것과 배선한 것은 다르다).
+    const rebuilt = rebuildCatalogIndex(catalogPath);
+    if (rebuilt.priorIndexCorrupted) {
+      warnings.push(
+        "이전 카탈로그 인덱스가 손상돼 gen 상태 이월이 끊겼다 — 다음 `ctk gen`이 이미 만든 문서를 다시 만들 수 있다(비용).",
+      );
+    }
+    if (rebuilt.unparseableAssetFiles.length > 0) {
+      warnings.push(
+        `자산 파일 ${rebuilt.unparseableAssetFiles.length}건이 파싱되지 않아 인덱스에서 빠졌다: ${rebuilt.unparseableAssetFiles.join(", ")}`,
+      );
+    }
 
     const snapshot = writeSnapshot(catalogPath, machine.machine_id, startedAt.toISOString(), [
       ...installations,
@@ -200,6 +246,7 @@ export async function runScan(options: RunScanOptions = {}): Promise<ScanSummary
       toggleCount: toggles.length,
       scopeDistribution: countScopes(installations),
       durationMs: finishedAt.getTime() - startedAt.getTime(),
+      warnings,
     };
   } catch (err) {
     exitCode = 1;
