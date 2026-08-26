@@ -74,7 +74,17 @@ export function listAllAssets(catalogRoot: string): Asset[] {
  * `"fresh"`, 아직 처리되지 않은 자산은 `"pending"`, 원본이 바뀌었으나 재생성에 실패한 자산은
  * `"stale"`이다. 이 값이 없으면(Step 2까지의 자산) `gen`이 아직 그 자산을 다루지 않은 것이다.
  */
-export type GenIndexState = "fresh" | "pending" | "stale";
+/**
+ * `policy_blocked` — **원문 자체가 정책에 걸려 재시도해도 같은 결과가 나오는 상태.**
+ * `stale`(다음 실행이 다시 시도한다)과 갈라야 한다: 인젝션 후검증에 걸리는 자산은
+ * 원문이 `rm -rf`·`sudo` 같은 파괴적 명령을 **문서화**하고 있어서, 돌릴 때마다 돈을 쓰고
+ * 매번 실패했다(실측 2026-08-26: 3자산이 매 배치에서 반복 실패).
+ *
+ * ⚠️ **영구 차단이 아니다.** 인젝션 탐지는 확정적이지 않다 — 모델이 그 토큰을 인용할지가
+ * 매번 다르다. 그래서 `gen_content_sha256`을 함께 기록하고 **원문이 그대로일 때만** 건너뛴다.
+ * 원문이 바뀌면 자동으로 다시 대상이 된다(자기 치유).
+ */
+export type GenIndexState = "fresh" | "pending" | "stale" | "policy_blocked";
 
 export interface CatalogIndexEntry {
   id: string;

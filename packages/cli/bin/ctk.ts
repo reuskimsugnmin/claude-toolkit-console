@@ -380,6 +380,7 @@ async function main(): Promise<void> {
           timeoutSec: timeout !== undefined ? Number(timeout) : undefined,
           resume: rest.includes("--resume"),
           noLlm: rest.includes("--no-llm"),
+          retryBlocked: rest.includes("--retry-blocked"),
           allowManagedPolicy: rest.includes("--allow-managed-policy"),
           allowConcurrentSessions: rest.includes("--allow-concurrent-sessions"),
           yes: rest.includes("--yes"),

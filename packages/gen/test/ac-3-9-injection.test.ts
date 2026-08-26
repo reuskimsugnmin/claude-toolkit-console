@@ -124,7 +124,10 @@ describe("AC-3.9 — 악성 픽스처 5종에 대한 프롬프트 인젝션 부�
       expect(summary.injectionFindingsTotal.directive + summary.injectionFindingsTotal.executable + summary.injectionFindingsTotal.url).toBeGreaterThan(0);
 
       const index = readCatalogIndex(catalogRoot);
-      expect(index.assets.find((e) => e.id === assetId)?.gen_state).toBe("stale");
+      // ⚠️ **`policy_blocked`이지 `stale`이 아니다**(2026-08-26). 보안 속성은 그대로다 —
+      // usage.md는 커밋되지 않는다. 달라진 것은 **다음 실행이 다시 시도하지 않는다**는 것이고,
+      // 악성 원문에 대해서는 그쪽이 더 낫다(반복 유료 시도를 하지 않는다).
+      expect(index.assets.find((e) => e.id === assetId)?.gen_state).toBe("policy_blocked");
       expect(() => readFileSync(path.join(catalogRoot, "catalog", "assets", "skill", assetId, "usage.md"), "utf8")).toThrow();
       expect(() => readFileSync(path.join(catalogRoot, "catalog", "assets", "skill", assetId, "annotation.md"), "utf8")).toThrow();
     });
