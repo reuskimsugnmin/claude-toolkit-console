@@ -90,7 +90,13 @@ export class SealedLiveConfigDirAuditViolationError extends Error {
   }
 }
 
-export type GenAssetOutcome = "fresh" | "pending" | "stale";
+/**
+ * ⚠️ **`policy_blocked`는 `stale`과 갈라야 한다(2026-08-26 실측).** 이 유니온에 그 값이 없어서
+ * 인덱스에는 `policy_blocked`를 쓰면서 결과 객체에는 `stale`을 넣고 있었다 — **값 계층은
+ * 갈렸는데 표시 계층이 안 갈렸다.** 그 결과 #25가 재시도 루프를 실제로 끊어 놓고도 화면은
+ * "갱신필요 3건"이라고 말해 **재시도를 권했다.** 좁힌 타입이 축을 지운 형태다(CLAUDE.md).
+ */
+export type GenAssetOutcome = "fresh" | "pending" | "stale" | "policy_blocked";
 export type GenAssetSkipReason =
   | "budget_exceeded"
   | "injection_pattern_detected"
@@ -402,7 +408,7 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
       findings = assertOutputFieldsClean(target.asset.id, scrub.fields); // ③
     } catch (err) {
       if (err instanceof InjectionPatternDetectedError) {
-        results.push({ assetId: target.asset.id, outcome: "stale", reason: "injection_pattern_detected" });
+        results.push({ assetId: target.asset.id, outcome: "policy_blocked", reason: "injection_pattern_detected" });
         // ⚠️ `stale`이 아니라 `policy_blocked`다. 원문이 정책에 걸리는 것은 **재시도로 풀리지
         // 않는다** — 실측(2026-08-26)에서 3자산이 매 배치마다 돈을 쓰고 매번 실패했다.
         // 원문 해시를 함께 남겨 **원문이 바뀌면 자동으로 다시 대상이 되게** 한다(자기 치유).
