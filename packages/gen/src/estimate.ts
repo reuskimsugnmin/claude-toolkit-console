@@ -75,12 +75,38 @@ export interface EstimateResult {
    * 머신별 영역에 쌓이고, 제품 코드에 상수로 박히지 않는다.
    */
   observed: ObservedUnitCost | null;
+  /**
+   * `targets`를 부모별로 나눈 호출 수 — **모든 대상을 빠짐없이 분할한다.** 번들 자식은 실제
+   * 부모 id로, `parent_asset_id`가 없는 최상위 자산은 전부 `UNGROUPED_PARENT_ID`("")로 묶인다.
+   *
+   * 이렇게 완전히 분할해 두는 이유: 표시 계층(`cli/gen.ts`)이 총액을 **행마다**
+   * `projectGenTotalUsd(observed, row.callCount)`를 불러 더하게 하기 위해서다 — 그러면
+   * "행의 합 = 총액"이 별도 검산이 아니라 구조적으로 보장된다(core/view/gen-cost-projection.ts
+   * 주석: "표시 계층이 직접 곱하면 같은 결함이 다시 갈라진다").
+   */
+  byParent: Array<{ parent_id: string; callCount: number }>;
 }
+
+/**
+ * `byParent`에서 `parent_asset_id`가 없는(최상위) 대상을 묶는 자리 표시자. 실제 자산 id는
+ * 스키마상 빈 문자열일 수 없으므로(`AssetSchema.id: z.string().min(1)`) 충돌하지 않는다.
+ */
+export const UNGROUPED_PARENT_ID = "";
 
 const DEFAULT_APPROX_USD_PER_MILLION_INPUT_TOKENS = 3; // Claude Sonnet급 input 요율 근사치(공개 가격 참고치, 정확한 청구 근거 아님).
 
 function totalSectionBytes(target: GenPlanTarget): number {
   return target.sections.reduce((sum, s) => sum + Buffer.byteLength(s.content, "utf8"), 0);
+}
+
+/** `targets`를 부모별로 나눈다 — 모든 대상이 정확히 한 행에 들어간다(빠짐없이 분할). */
+function groupByParent(targets: readonly GenPlanTarget[]): Array<{ parent_id: string; callCount: number }> {
+  const counts = new Map<string, number>();
+  for (const t of targets) {
+    const key = t.asset.parent_asset_id ?? UNGROUPED_PARENT_ID;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts].map(([parent_id, callCount]) => ({ parent_id, callCount }));
 }
 
 /**
@@ -131,6 +157,7 @@ export async function estimateGenCost(options: EstimateOptions): Promise<Estimat
     costFloorUsd,
     costCeilingUsd: targets.length * maxBudgetUsd,
     observed: toObserved(observedCost),
+    byParent: groupByParent(targets),
   };
 }
 

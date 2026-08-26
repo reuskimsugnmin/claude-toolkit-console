@@ -62,6 +62,13 @@ export interface GenPlanResult {
    */
   skipped: GenSkippedAsset[];
   upToDateCount: number;
+  /**
+   * 번들 자식(`parent_asset_id`가 있는 자산)인데 그 부모가 `bundledParents`에 없어 대상에서
+   * 빠진 건수. **조용한 `continue`를 만들지 않는다** — 문을 닫아도 몇 건이 닫혔는지는 항상
+   * 보여준다(결정 6 · AC-6). 사유별로 다시 나눌 필요가 없다: 이 축은 "부모를 지정했는가"
+   * 하나뿐이다.
+   */
+  excludedBundled: number;
 }
 
 /**
@@ -93,19 +100,41 @@ export interface PlanGenTargetsOptions {
   maxAssets?: number;
   /** `--retry-blocked` — 정책 차단된 자산도 다시 시도한다. 가드의 탈출구다(안전 원칙 6). */
   retryPolicyBlocked?: boolean;
+  /**
+   * 문서 생성 대상으로 삼을 번들 부모(플러그인) `Asset.id` 목록 — `--plugin`(반복 가능)의
+   * CLI 표면. **선택 필드가 아니다.** 빈 배열이 기본이고, 그러면 `parent_asset_id`가 있는
+   * 자식은 전부 대상에서 빠진다(결정 6 · AC-6 "기본 무동작").
+   *
+   * `parent_asset_id`가 없는 최상위 자산(오늘의 카탈로그 전부)은 이 값과 무관하게 그대로
+   * 대상이 된다 — 이 필드가 좁히는 것은 **번들 자식 축뿐**이다.
+   *
+   * **필수 필드로 두는 이유**: `planGenTargets`를 부르는 네 곳(`cli/gen.ts`의 dry-run·비용
+   * 고지, `gen/index.ts`의 실제 실행, `cli/web-actions.ts`의 웹 승인)이 각자 무엇을 넘길지
+   * 명시하게 강제한다 — 선택 필드였다면 하나가 빠져도 컴파일이 통과해 "고지한 건수 ≠ 실행한
+   * 건수"가 조용히 생긴다(안전 원칙 5).
+   */
+  bundledParents: readonly string[];
 }
 
 export function planGenTargets(options: PlanGenTargetsOptions): GenPlanResult {
-  const { home, assets, index, maxAssets, retryPolicyBlocked } = options;
+  const { home, assets, index, maxAssets, retryPolicyBlocked, bundledParents } = options;
   const indexById = new Map(index.assets.map((e) => [e.id, e]));
 
   const targets: GenPlanTarget[] = [];
   const unresolved: GenUnresolvedAsset[] = [];
   const skipped: GenSkippedAsset[] = [];
   let upToDateCount = 0;
+  let excludedBundled = 0;
 
   for (const asset of assets) {
     if (maxAssets !== undefined && targets.length >= maxAssets) break;
+
+    // 번들 자식인데 그 부모가 지정되지 않았다 — 판정(judgeAsset)까지 가지 않고 여기서 빠진다.
+    // **건수를 반드시 싣는다**(excludedBundled) — 조용한 continue를 만들지 않는다(결정 6).
+    if (asset.parent_asset_id !== undefined && !bundledParents.includes(asset.parent_asset_id)) {
+      excludedBundled++;
+      continue;
+    }
 
     // ⚠️ 판정은 `judgeAsset` **한 곳**에서만 한다. 단건 조회(`classifyAssetDocState`)와 이
     // 일괄 산출이 각자 판정하면 화면이 말하는 사유와 `gen`이 실제로 하는 일이 갈린다 —
@@ -136,7 +165,7 @@ export function planGenTargets(options: PlanGenTargetsOptions): GenPlanResult {
     }
   }
 
-  return { targets, unresolved, skipped, upToDateCount };
+  return { targets, unresolved, skipped, upToDateCount, excludedBundled };
 }
 
 /** `judgeAsset`의 내부 판정 결과. 일괄 산출과 단건 조회가 **둘 다 이것을** 근거로 삼는다. */

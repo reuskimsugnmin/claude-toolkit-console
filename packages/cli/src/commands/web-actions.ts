@@ -41,6 +41,12 @@ export interface ApprovedGenPlan {
   maxTotalUsd: number;
   /** dry-run이 센 실제 대상 자산 수 = `claude -p` 호출 수. 호출당 예산의 분모다. */
   callCount: number;
+  /**
+   * 견적 시점에 계획을 세운 번들 부모 id 목록(결정 6). **실행이 견적과 다른 값을 쓰면**
+   * 승인한 대상과 실제로 돈이 나가는 대상이 갈린다 — 그것이 이 필드가 막는 것이다. 웹 UI에
+   * 아직 부모 선택 화면이 없으므로(Step 5 이전) 지금은 항상 `[]`다.
+   */
+  bundledParents: readonly string[];
 }
 
 /** 미소비 토큰 보유 상한 — 발급만 반복해 맵을 불리는 것을 막는다(심사 M3). */
@@ -205,6 +211,12 @@ export interface CreateActionHandlersOptions {
    */
   dryRunFn?: typeof runGenDryRun;
   observedCostFn?: () => GenCost | null;
+  /**
+   * `genExecute`의 **테스트 이음매**(`dryRunFn`과 같은 이유, M-4). 기본값은 실제
+   * `runGenCli`(실제 카탈로그·`claude -p` 호출) — 이것이 없으면 "승인 시점 계획과 실행 시점
+   * 계획이 같은 `bundledParents`를 받는가"(결정 6)를 실제 spawn 없이 검증할 수 없다.
+   */
+  execFn?: typeof runGenCli;
 }
 
 /**
@@ -232,6 +244,7 @@ export function createActionHandlers(options: CreateActionHandlersOptions = {}):
   const cumulativeCap = options.cumulativeUsdCap ?? SESSION_CUMULATIVE_USD_CAP;
   const dryRunFn = options.dryRunFn ?? runGenDryRun;
   const observedCostFn = options.observedCostFn ?? readObservedGenCost;
+  const execFn = options.execFn ?? runGenCli;
   let cumulativeApprovedUsd = 0;
 
   return {
@@ -255,7 +268,10 @@ export function createActionHandlers(options: CreateActionHandlersOptions = {}):
 
     // ⓐ dry-run 경로를 그대로 쓴다 — 동기 함수이며 API 호출도 서브프로세스 spawn도 하지 않는다(AC-3.8).
     genEstimate: async (params) => {
-      const data = await rethrowClassified(async () => dryRunFn({ maxAssets: params.maxAssets }));
+      // 웹에는 아직 번들 부모 선택 화면이 없다(Step 5 이전) — 항상 `[]`. `dryRunFn`이
+      // `planGenTargets`를 거치므로 번들 자식은 이미 대상에서 빠진 채로 견적이 나온다.
+      const bundledParents: readonly string[] = [];
+      const data = await rethrowClassified(async () => dryRunFn({ maxAssets: params.maxAssets, bundledParents }));
       const callCount = data.assetCount;
       const perCallBudgetUsd = toPerCallBudgetUsd(params.maxTotalUsd, callCount);
       // 이 머신의 지난 실행이 남긴 실측 단가. **없으면 null이고 지어내지 않는다.**
@@ -266,7 +282,7 @@ export function createActionHandlers(options: CreateActionHandlersOptions = {}):
       // 곱해 총액을 10~21% 낮게 말하던 결함이 여기서 갈라져 있었다).
       const observedUnit = deriveObservedUnitCost(observedCost);
       return {
-        estimateToken: estimates.issue({ ...params, callCount }),
+        estimateToken: estimates.issue({ ...params, callCount, bundledParents }),
         // 승인 화면이 보여줄 값에 **적용될 상한**을 함께 싣는다. 이름을 총액/호출당으로
         // 갈라 적는다 — 한 이름으로 뭉치면 사용자가 승인한 숫자와 실제 상한이 갈린다(H2).
         data: {
@@ -314,12 +330,16 @@ export function createActionHandlers(options: CreateActionHandlersOptions = {}):
       cumulativeApprovedUsd += approved.maxTotalUsd;
 
       return rethrowClassified(async () =>
-        genView(await runGenCli({
+        genView(await execFn({
           // 승인 시점에 센 호출 수를 상한으로 되꽂는다 — 그 사이 대상이 늘어도 총액은 유지된다.
           maxAssets: Math.min(approved.maxAssets, approved.callCount),
           // `runGen`이 받는 값은 **호출당** 상한이다. 총액을 호출 수로 나눈 값을 넘겨야
           // 사용자가 승인한 총액이 실제 상한과 같아진다.
           maxBudgetUsd: toPerCallBudgetUsd(approved.maxTotalUsd, approved.callCount),
+          // 견적 시점과 **같은 값**을 실행에 넘긴다 — 갈리면 승인한 대상과 실행 대상이
+          // 달라진다(결정 6). 웹은 견적·실행 둘 다 지금은 `[]`를 쓰지만, 이 필드가 승인
+          // 토큰에 실려 있어야 나중에 부모 선택이 생겨도 같은 값이 왕복함을 타입으로 고정한다.
+          bundledParents: approved.bundledParents,
           timeoutSec,
           // ⚠️ `yes: true`는 "승인을 건너뛴다"가 **아니다.** 비대화형에서 gen은 프롬프트를
           // 띄울 수 없어 그냥 취소되는데, 웹에서는 승인이 이미 일어났다 — 그 증거가 방금

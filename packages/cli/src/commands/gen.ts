@@ -57,6 +57,11 @@ export interface RunGenCliOptions {
   allowManagedPolicy?: boolean;
   yes?: boolean;
   routingProbeCommand?: string;
+  /**
+   * `--plugin`(반복 가능) — 문서 생성 대상으로 삼을 번들 부모 id. 미지정이면 `[]`(결정 6
+   * "기본 무동작") — `parent_asset_id`가 있는 자식은 전부 대상에서 빠진다.
+   */
+  bundledParents?: readonly string[];
 }
 
 /**
@@ -105,12 +110,28 @@ export function describeCostEstimate(estimate: EstimateResult, maxBudgetUsd: num
       `실측 단가(지난 실행 ${estimate.observed.sampleSize}건): 자산당 평균 $${estimate.observed.meanUsd.toFixed(3)}` +
         ` · 중앙값 $${estimate.observed.medianUsd.toFixed(3)} · 최대 $${estimate.observed.maxUsd.toFixed(3)}`,
     );
+    // ⚠️ 총액을 estimate.callCount에서 직접 곱하지 않는다 — **행마다** 투사해 더한다.
+    // byParent가 targets 전체를 빠짐없이 분할하므로 행의 합은 항상 estimate.callCount와
+    // 같지만, 계산 자체를 행 단위로 강제해 "총액"과 "부모별 합"이 서로 다른 공식으로
+    // 갈라지는 것을 구조적으로 막는다(core/view/gen-cost-projection.ts).
+    const observed = estimate.observed;
+    const projectedTotal = estimate.byParent.reduce((sum, row) => sum + projectGenTotalUsd(observed, row.callCount), 0);
     lines.push(
-      `이번 ${estimate.callCount}건 예상 총액: 약 $${projectGenTotalUsd(estimate.observed, estimate.callCount).toFixed(2)}` +
+      `이번 ${estimate.callCount}건 예상 총액: 약 $${projectedTotal.toFixed(2)}` +
         ` (평균 × 건수 — 상한이 아니라 예상치다)${partial}`,
     );
   }
   return lines;
+}
+
+/**
+ * 번들 자식이 미지정으로 제외됐다는 사실을 고지한다. **제외는 조용히 하지 않는다** — 0건이면
+ * 아무것도 말하지 않지만, 0건이 아니면 항상 이 줄이 나와야 한다(AC-6 "기본 무동작"은
+ * 무동작을 말하는 것까지가 요구다).
+ */
+export function describeExcludedBundled(excludedBundled: number): string | null {
+  if (excludedBundled <= 0) return null;
+  return `번들 자산 ${excludedBundled}건은 미지정으로 제외됨 — --plugin으로 지정한 부모의 자식만 대상이 된다`;
 }
 
 /** 실행이 끝난 뒤 **실제로 나간 돈**을 적는다. 미보고가 있으면 총액이 아니라 하한이라고 말한다. */
@@ -151,10 +172,14 @@ export interface GenDryRunReport {
   unresolved: GenUnresolvedAsset[];
   /** 파일 위생(심볼릭 링크·크기 상한)에 걸려 건너뛴 자산. 조용히 빼지 않는다. */
   skipped: { assetId: string; failureClass: string; reason: string }[];
+  /** 번들 자식인데 부모가 `bundledParents`에 없어 대상에서 빠진 건수. 조용히 빼지 않는다. */
+  excludedBundled: number;
 }
 
 /** `--dry-run` — 파일 직독만. API 호출도 서브프로세스 spawn도 하지 않는다(AC-3.8). */
-export function runGenDryRun(options: { maxAssets?: number; retryBlocked?: boolean } = {}): GenDryRunReport {
+export function runGenDryRun(
+  options: { maxAssets?: number; retryBlocked?: boolean; bundledParents?: readonly string[] } = {},
+): GenDryRunReport {
   const home = resolveHomeContext();
   const localConfig = readLocalConfig(home);
   if (localConfig === null) throw new CatalogNotInitializedError();
@@ -162,12 +187,25 @@ export function runGenDryRun(options: { maxAssets?: number; retryBlocked?: boole
 
   const assets = listAllAssets(catalogPath);
   const index = readCatalogIndex(catalogPath);
-  const plan = planGenTargets({ home, assets, index, maxAssets: options.maxAssets, retryPolicyBlocked: options.retryBlocked });
+  const plan = planGenTargets({
+    home,
+    assets,
+    index,
+    maxAssets: options.maxAssets,
+    retryPolicyBlocked: options.retryBlocked,
+    bundledParents: options.bundledParents ?? [],
+  });
   const approxBytes = plan.targets.reduce(
     (sum, t) => sum + t.sections.reduce((s, sec) => s + Buffer.byteLength(sec.content, "utf8"), 0),
     0,
   );
-  return { assetCount: plan.targets.length, approxBytes, unresolved: plan.unresolved, skipped: plan.skipped };
+  return {
+    assetCount: plan.targets.length,
+    approxBytes,
+    unresolved: plan.unresolved,
+    skipped: plan.skipped,
+    excludedBundled: plan.excludedBundled,
+  };
 }
 
 async function confirmInteractively(promptText: string): Promise<boolean> {
@@ -202,9 +240,17 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
   });
 
   try {
+    const bundledParents = options.bundledParents ?? [];
     const assets = listAllAssets(catalogPath);
     const index = readCatalogIndex(catalogPath);
-    const plan = planGenTargets({ home, assets, index, maxAssets: options.maxAssets, retryPolicyBlocked: options.retryBlocked });
+    const plan = planGenTargets({
+      home,
+      assets,
+      index,
+      maxAssets: options.maxAssets,
+      retryPolicyBlocked: options.retryBlocked,
+      bundledParents,
+    });
 
     // ⚠️ `.policies`만 꺼내면 파싱 실패가 빈 배열로 흘러 "정책 없음"과 같아진다(안전 원칙 7).
     const managed = options.noLlm === true ? { policies: [], parseFailures: [] } : readManagedPolicies();
@@ -231,6 +277,8 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
         for (const s of plan.skipped) console.log(`    - ${s.assetId} (${s.failureClass})`);
       }
       for (const line of summarizeUnresolved(plan.unresolved)) console.log(`  ${line}`);
+      const excludedNotice = describeExcludedBundled(plan.excludedBundled);
+      if (excludedNotice !== null) console.log(`  ⚠️ ${excludedNotice}`);
 
       const grade = gradeManagedPolicy(managedPolicies);
       if (grade.hasRisk) {
@@ -274,6 +322,9 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
       timeoutSec: options.timeoutSec,
       noLlm: options.noLlm === true,
       retryPolicyBlocked: options.retryBlocked === true,
+      // 위에서 승인·고지에 쓴 계획과 **같은 값**을 넘긴다 — runGen이 내부에서 다시 계획을
+      // 세우므로(gen/index.ts) 여기서 갈리면 "고지한 건수 ≠ 실행한 건수"가 된다(결정 6).
+      bundledParents,
       verifiedCliVersion: catalogConfig.verified_cli_version,
       routingProbeCommand: options.routingProbeCommand,
       sealedCwd: ensureSealedLiveCwd(),

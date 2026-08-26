@@ -16,7 +16,7 @@ import { EstimateTokenStore, createSessionToken } from "../src/commands/web-acti
  * 검증 **전에** 삭제하기 때문이다. 리팩터로 순서가 바뀌면 조용히 깨지므로 여기서 못 박는다.
  */
 
-const PLAN = { maxAssets: 3, maxTotalUsd: 2, callCount: 3 };
+const PLAN = { maxAssets: 3, maxTotalUsd: 2, callCount: 3, bundledParents: [] };
 const EXPECTED = { maxAssets: 3, maxTotalUsd: 2 };
 
 describe("EstimateTokenStore — 1회용", () => {
@@ -60,7 +60,7 @@ describe("EstimateTokenStore — 승인 내용에 묶인다", () => {
 
   it("소비 시 **발급 시점의** 호출 수를 돌려준다 — 호출당 예산의 분모다", () => {
     const store = new EstimateTokenStore();
-    const token = store.issue({ maxAssets: 25, maxTotalUsd: 2, callCount: 7 });
+    const token = store.issue({ maxAssets: 25, maxTotalUsd: 2, callCount: 7, bundledParents: [] });
     expect(store.consume(token, { maxAssets: 25, maxTotalUsd: 2 })?.callCount).toBe(7);
   });
 });

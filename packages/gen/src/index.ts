@@ -190,6 +190,14 @@ export interface RunGenOptions {
   noLlm: boolean;
   /** `--retry-blocked` — 정책 차단된 자산도 다시 시도한다(가드의 탈출구). */
   retryPolicyBlocked?: boolean;
+  /**
+   * `--plugin`(반복 가능) — 문서 생성 대상으로 삼을 번들 부모 id. 미지정이면 `[]`(결정 6
+   * "기본 무동작") — `planGenTargets`가 요구하는 필수 필드로, 여기서 호출자가 명시하지 않으면
+   * 빈 배열을 넘긴다. **승인 시점 계획(`cli/gen.ts`)과 이 실행이 다시 세우는 계획이 같은
+   * 값을 받아야** "고지한 건수 = 실행한 건수"가 유지된다 — 호출자(`cli`)가 같은 값을
+   * 여기와 자신의 사전 계획 양쪽에 넘긴다.
+   */
+  bundledParents?: readonly string[];
   verifiedCliVersion: string;
   /**
    * `--allow-concurrent-sessions` — 살아 있는 다른 Claude Code 세션의 config dir churn을
@@ -235,6 +243,7 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
     timeoutSec,
     noLlm,
     retryPolicyBlocked,
+    bundledParents = [],
     verifiedCliVersion,
     routingProbeCommand,
     sealedCwd,
@@ -259,7 +268,7 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
   }
 
   const index: CatalogIndex = readCatalogIndex(catalogRoot);
-  const plan = planGenTargets({ home, assets, index, maxAssets, retryPolicyBlocked });
+  const plan = planGenTargets({ home, assets, index, maxAssets, retryPolicyBlocked, bundledParents });
 
   const results: RunGenAssetResult[] = [];
   const injectionFindingsTotal: InjectionFindingsSummary = { directive: 0, executable: 0, url: 0, length: 0 };
