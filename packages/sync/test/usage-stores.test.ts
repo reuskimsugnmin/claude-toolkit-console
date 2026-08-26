@@ -101,11 +101,11 @@ describe("sync — Step 3 캐시·occupancy 저장소", () => {
       occupancy_divergence: false,
       occupancy_divergence_ratio: null,
     };
-    upsertOccupancy(catalogRoot, "skill", "demo-skill", occ);
-    const readBack = readOccupancy(catalogRoot, "skill", "demo-skill");
+    upsertOccupancy(catalogRoot, "skill", "demo-skill", "demo-skill", occ);
+    const readBack = readOccupancy(catalogRoot, "skill", "demo-skill", "demo-skill");
     expect(readBack).toEqual(occ);
 
-    expect(readOccupancy(catalogRoot, "skill", "never-scanned")).toBeNull();
+    expect(readOccupancy(catalogRoot, "skill", "never-scanned", "never-scanned")).toBeNull();
 
     const all = listAllOccupancy(catalogRoot);
     expect(all).toHaveLength(1);
@@ -125,11 +125,11 @@ describe("sync — Step 3 캐시·occupancy 저장소", () => {
       occupancy_divergence: false,
       occupancy_divergence_ratio: null,
     };
-    upsertOccupancy(catalogRoot, "skill", "demo-skill", first);
+    upsertOccupancy(catalogRoot, "skill", "demo-skill", "demo-skill", first);
     const second: Occupancy = { ...first, idle: { state: "measured", value_tokens: 99, tokenizer_model: "claude-demo", measured_at: "2026-08-02T00:00:00.000Z" } };
-    upsertOccupancy(catalogRoot, "skill", "demo-skill", second);
+    upsertOccupancy(catalogRoot, "skill", "demo-skill", "demo-skill", second);
 
-    const readBack = readOccupancy(catalogRoot, "skill", "demo-skill");
+    const readBack = readOccupancy(catalogRoot, "skill", "demo-skill", "demo-skill");
     expect(readBack?.idle).toEqual(second.idle);
   });
 });

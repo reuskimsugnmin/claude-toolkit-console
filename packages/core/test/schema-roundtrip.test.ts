@@ -16,7 +16,7 @@ import { readFixtureJson, readFixtureJsonl } from "./support/fixtures.js";
 
 describe("스키마 라운드트립 — 합성 카탈로그 픽스처 (fixtures/catalog)", () => {
   it("Asset — parse가 통과하고 재직렬화가 동일하다", () => {
-    const raw = readFixtureJson("catalog/catalog/assets/plugin/demo-plugin/asset.json");
+    const raw = readFixtureJson("catalog/catalog/assets/plugin/demo-plugin__a325448b/asset.json");
     const parsed = AssetSchema.parse(raw);
     expect(JSON.parse(JSON.stringify(parsed))).toEqual(raw);
   });
@@ -63,7 +63,7 @@ describe("스키마 라운드트립 — 합성 카탈로그 픽스처 (fixtures/
   });
 
   it("schema_version 누락 시 parse가 실패한다", () => {
-    const raw = readFixtureJson("catalog/catalog/assets/plugin/demo-plugin/asset.json") as Record<
+    const raw = readFixtureJson("catalog/catalog/assets/plugin/demo-plugin__a325448b/asset.json") as Record<
       string,
       unknown
     >;
@@ -101,7 +101,7 @@ describe("스키마 라운드트립 — 합성 카탈로그 픽스처 (fixtures/
   });
 
   it("미지의 키가 섞이면 strict 스키마가 실패한다 (R13)", () => {
-    const raw = readFixtureJson("catalog/catalog/assets/plugin/demo-plugin/asset.json") as Record<
+    const raw = readFixtureJson("catalog/catalog/assets/plugin/demo-plugin__a325448b/asset.json") as Record<
       string,
       unknown
     >;

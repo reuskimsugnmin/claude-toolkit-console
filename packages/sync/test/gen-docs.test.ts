@@ -60,10 +60,11 @@ describe("sync/asset-store — Step 4 gen 문서 쓰기 + gen_state 이월", () 
   });
 
   it("writeAnnotationDoc/writeUsageDoc는 core/catalog/layout.ts의 경로 빌더로만 경로를 만들고 렌더링된 마크다운을 쓴다", () => {
-    const { path: annotationPath } = writeAnnotationDoc(catalogRoot, "skill", "demo-skill", annotation);
-    const { path: usagePath } = writeUsageDoc(catalogRoot, "skill", "demo-skill", docPage);
-    expect(annotationPath).toBe(path.join(catalogRoot, "catalog/assets/skill/demo-skill/annotation.md"));
-    expect(usagePath).toBe(path.join(catalogRoot, "catalog/assets/skill/demo-skill/usage.md"));
+    const { path: annotationPath } = writeAnnotationDoc(catalogRoot, "skill", "demo-skill", "demo-skill", annotation);
+    const { path: usagePath } = writeUsageDoc(catalogRoot, "skill", "demo-skill", "demo-skill", docPage);
+    // 경로 세그먼트는 id에서 유도한다(B1 Step 1) — `<name>__<id의 sha256 앞 8자>`.
+    expect(annotationPath).toBe(path.join(catalogRoot, "catalog/assets/skill/demo-skill__92d551f4/annotation.md"));
+    expect(usagePath).toBe(path.join(catalogRoot, "catalog/assets/skill/demo-skill__92d551f4/usage.md"));
     expect(existsSync(annotationPath)).toBe(true);
     const content = readFileSync(usagePath, "utf8");
     expect(content).toContain("출처: 서드파티 원문 기반 · 자동 생성");

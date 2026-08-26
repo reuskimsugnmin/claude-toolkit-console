@@ -178,7 +178,7 @@ export async function runClaudePForTarget(options: RunClaudePOptions): Promise<R
     schema_version: 1,
     _scope: "machine_independent",
     asset_id: target.asset.id,
-    catalog_relative_path: usageMdPath(target.asset.kind, target.asset.name),
+    catalog_relative_path: usageMdPath(target.asset.kind, target.asset.name, target.asset.id),
     title: payload.usage_title,
     body: payload.usage_body,
     citations: payload.citations,

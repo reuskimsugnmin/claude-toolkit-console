@@ -206,7 +206,7 @@ export function ruleExtract(asset: Asset, sections: readonly PromptEnvelopeSecti
     schema_version: 1,
     _scope: "machine_independent",
     asset_id: asset.id,
-    catalog_relative_path: usageMdPath(asset.kind, asset.name),
+    catalog_relative_path: usageMdPath(asset.kind, asset.name, asset.id),
     title: `${asset.name} 사용법`,
     body: bodySections.join("\n\n"),
     citations,

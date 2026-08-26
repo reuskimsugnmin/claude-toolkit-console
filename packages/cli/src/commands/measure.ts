@@ -443,7 +443,7 @@ export async function runMeasure(options: RunMeasureOptions = {}): Promise<Measu
         occupancy_divergence: occupancyDivergence,
         occupancy_divergence_ratio: occupancyDivergenceRatio,
       });
-      upsertOccupancy(catalogPath, asset.kind, asset.name, occupancyRecords[occupancyRecords.length - 1]!);
+      upsertOccupancy(catalogPath, asset.kind, asset.name, asset.id, occupancyRecords[occupancyRecords.length - 1]!);
     }
 
     // ── 캐시 신규분 flush (sync가 유일한 쓰기 주체) ──
