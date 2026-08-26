@@ -39,6 +39,12 @@ export interface ScanSummary {
   toggleCount: number;
   scopeDistribution: Record<string, number>;
   durationMs: number;
+  /**
+   * 스캔은 성공했지만 사용자가 알아야 하는 열화 — 손상된 인덱스, 파싱 못 한 자산 파일 등.
+   * **빈 배열이 "없음"이다.** 이 통로가 없으면 `rebuildCatalogIndex`가 돌려주는 열화 사실을
+   * 받을 자리가 없어 조용히 버려진다(안전 원칙 5 — 만든 것과 배선한 것은 다르다).
+   */
+  warnings: string[];
 }
 
 /**
@@ -128,6 +134,7 @@ export interface RunScanOptions {
 }
 
 export async function runScan(options: RunScanOptions = {}): Promise<ScanSummary> {
+  const warnings: string[] = [];
   const startedAt = new Date();
   const home = resolveHomeContext();
   const localConfig = readLocalConfig(home);
@@ -188,7 +195,20 @@ export async function runScan(options: RunScanOptions = {}): Promise<ScanSummary
     for (const asset of assets) {
       upsertAsset(catalogPath, asset);
     }
-    rebuildCatalogIndex(catalogPath);
+    // ⚠️ 반환값을 버리지 않는다. 열화 사실을 만들어 놓고 아무도 읽지 않으면 손상 인덱스가
+    // 조용히 삼켜지고 `gen_state` 이월이 끊겨 **다음 `ctk gen`이 이미 만든 문서를 유료로 다시
+    // 만든다**(안전 원칙 5 — 방어를 만든 것과 배선한 것은 다르다).
+    const rebuilt = rebuildCatalogIndex(catalogPath);
+    if (rebuilt.priorIndexCorrupted) {
+      warnings.push(
+        "이전 카탈로그 인덱스가 손상돼 gen 상태 이월이 끊겼다 — 다음 `ctk gen`이 이미 만든 문서를 다시 만들 수 있다(비용).",
+      );
+    }
+    if (rebuilt.unparseableAssetFiles.length > 0) {
+      warnings.push(
+        `자산 파일 ${rebuilt.unparseableAssetFiles.length}건이 파싱되지 않아 인덱스에서 빠졌다: ${rebuilt.unparseableAssetFiles.join(", ")}`,
+      );
+    }
 
     const snapshot = writeSnapshot(catalogPath, machine.machine_id, startedAt.toISOString(), [
       ...installations,
@@ -226,6 +246,7 @@ export async function runScan(options: RunScanOptions = {}): Promise<ScanSummary
       toggleCount: toggles.length,
       scopeDistribution: countScopes(installations),
       durationMs: finishedAt.getTime() - startedAt.getTime(),
+      warnings,
     };
   } catch (err) {
     exitCode = 1;

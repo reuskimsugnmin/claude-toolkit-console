@@ -132,6 +132,56 @@ describe("sync/asset-store — 열화 구분: '없음' vs '실패'(안전 원칙
     expect(rebuilt.assets[0]?.id).toBe("ok");
   });
 
+  // ⚠️ 배선 테스트 — `corrupted`를 만들어 두고 아무도 읽지 않으면 방어가 아니다(안전 원칙 5).
+  // 열화 사실이 `rebuildCatalogIndex`의 반환값까지 **실제로 실려 나오는지**를 태운다.
+  it("손상된 인덱스는 rebuildCatalogIndex 반환값에 priorIndexCorrupted: true로 실려 나온다", () => {
+    writeFileSync(path.join(catalogRoot, "catalog", "index.json"), "{ broken", "utf8");
+    mkdirSync(path.join(catalogRoot, "catalog", "assets", "skill", "ok__deadbeef"), { recursive: true });
+    writeFileSync(
+      path.join(catalogRoot, "catalog", "assets", "skill", "ok__deadbeef", "asset.json"),
+      JSON.stringify({ schema_version: 1, _scope: "machine_independent", id: "ok", kind: "skill", name: "ok" }),
+      "utf8",
+    );
+    expect(rebuildCatalogIndex(catalogRoot).priorIndexCorrupted).toBe(true);
+  });
+
+  // 반대 축 — 이 arm이 없으면 "항상 true를 돌려주는" 구현도 위 테스트를 통과한다.
+  it("정상 인덱스에서는 priorIndexCorrupted가 false이고 건너뛴 자산 파일도 없다", () => {
+    mkdirSync(path.join(catalogRoot, "catalog", "assets", "skill", "ok__deadbeef"), { recursive: true });
+    writeFileSync(
+      path.join(catalogRoot, "catalog", "assets", "skill", "ok__deadbeef", "asset.json"),
+      JSON.stringify({ schema_version: 1, _scope: "machine_independent", id: "ok", kind: "skill", name: "ok" }),
+      "utf8",
+    );
+    rebuildCatalogIndex(catalogRoot); // 인덱스를 정상 생성
+    const again = rebuildCatalogIndex(catalogRoot);
+    expect(again.priorIndexCorrupted).toBe(false);
+    expect(again.unparseableAssetFiles).toEqual([]);
+  });
+
+  it("파싱 못 하는 asset.json은 인덱스에서 빠지되 조용히 사라지지 않고 목록으로 보고된다", () => {
+    const bad = path.join(catalogRoot, "catalog", "assets", "skill", "bad__deadbeef");
+    const good = path.join(catalogRoot, "catalog", "assets", "skill", "ok__cafebabe");
+    mkdirSync(bad, { recursive: true });
+    mkdirSync(good, { recursive: true });
+    // `kind`가 유니온에 없는 값 — JSON으로는 멀쩡하지만 실제 파서는 거부해야 한다.
+    writeFileSync(
+      path.join(bad, "asset.json"),
+      JSON.stringify({ schema_version: 1, _scope: "machine_independent", id: "bad", kind: "nope", name: "bad" }),
+      "utf8",
+    );
+    writeFileSync(
+      path.join(good, "asset.json"),
+      JSON.stringify({ schema_version: 1, _scope: "machine_independent", id: "ok", kind: "skill", name: "ok" }),
+      "utf8",
+    );
+
+    const result = rebuildCatalogIndex(catalogRoot);
+    expect(result.index.assets.map((e) => e.id)).toEqual(["ok"]); // 깨진 것은 인덱스에서 빠진다
+    expect(result.unparseableAssetFiles).toHaveLength(1); // 그러나 "없음"이 아니라 "실패"로 보고된다
+    expect(result.unparseableAssetFiles[0]).toContain("bad__deadbeef");
+  });
+
   it("rebuildCatalogIndex는 asset.json의 parent_asset_id를 인덱스 행에 반영한다", () => {
     mkdirSync(path.join(catalogRoot, "catalog", "assets", "agent", "child__aaaa1111"), { recursive: true });
     writeFileSync(

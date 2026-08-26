@@ -8,6 +8,7 @@ import {
   AssetKindSchema,
   assetJsonPath,
   catalogIndexPath,
+  parseAsset,
   PathTraversalDetectedError,
   renderAnnotationMarkdown,
   renderDocPageMarkdown,
@@ -160,14 +161,38 @@ function readExistingIndexOrNull(catalogRoot: string): CatalogIndex | null {
  * 지워버리면 매 scan 후 모든 자산이 "미생성"으로 보이는 조용한 회귀가 된다(§4 Step 4 부분
  * 실패 규약과 충돌). 기존 인덱스를 먼저 읽어 id별 gen 상태를 이월하고, 새로 등장한 자산에는
  * 필드를 아예 넣지 않는다(생성물 없음 = "gen이 아직 안 다뤘다"를 필드 부재로 표현).
+ *
+ * ⚠️ **열화 사실을 반환값에 싣고 호출자가 반드시 드러낸다.** `corrupted`를 만들어 두고 아무도
+ * 읽지 않으면 "방어를 만든 것과 배선한 것은 다르다"(안전 원칙 5)에 걸린다 — 손상 인덱스를
+ * 조용히 삼키면 `gen_state` 이월이 끊기고 **다음 `ctk gen`이 이미 만든 문서를 유료로 다시
+ * 만든다.** `asset.json`도 캐스팅이 아니라 `parseAsset`으로 태우되, 하나가 깨졌다고 `ctk scan`을
+ * 죽이지 않고(안전 원칙 6) **건너뛴 파일을 목록으로 돌려준다** — "없음"과 "실패"를 가른다.
  */
-export function rebuildCatalogIndex(catalogRoot: string): { path: string; index: CatalogIndex } {
+export interface RebuildCatalogIndexResult {
+  path: string;
+  index: CatalogIndex;
+  /** 이전 인덱스가 손상돼 `gen_state` 이월이 끊겼다. 호출자는 이 사실을 사용자에게 드러내야 한다. */
+  priorIndexCorrupted: boolean;
+  /** 파싱에 실패해 인덱스에서 빠진 `asset.json`의 카탈로그 상대경로 — 빈 배열이 "없음"이다. */
+  unparseableAssetFiles: string[];
+}
+
+export function rebuildCatalogIndex(catalogRoot: string): RebuildCatalogIndexResult {
   const assetsRoot = path.join(catalogRoot, "catalog", "assets");
-  const previous = readExistingIndexOrNull(catalogRoot);
+  const { index: previous, corrupted: priorIndexCorrupted } = readCatalogIndexOrNull(catalogRoot);
   const previousById = new Map((previous?.assets ?? []).map((e) => [e.id, e]));
 
-  const entries: CatalogIndexEntry[] = listAssetJsonFiles(assetsRoot)
-    .map((file) => JSON.parse(readFileSync(file, "utf8")) as Asset)
+  const unparseableAssetFiles: string[] = [];
+  const parsed: Asset[] = [];
+  for (const file of listAssetJsonFiles(assetsRoot)) {
+    try {
+      parsed.push(parseAsset(JSON.parse(readFileSync(file, "utf8"))));
+    } catch {
+      unparseableAssetFiles.push(path.relative(catalogRoot, file));
+    }
+  }
+
+  const entries: CatalogIndexEntry[] = parsed
     .map((asset) => {
       const prior = previousById.get(asset.id);
       const entry: CatalogIndexEntry = { id: asset.id, kind: asset.kind, name: asset.name };
@@ -183,7 +208,7 @@ export function rebuildCatalogIndex(catalogRoot: string): { path: string; index:
   const absPath = catalogAbsPath(catalogRoot, relPath);
   mkdirSync(path.dirname(absPath), { recursive: true });
   writeFileSync(absPath, `${JSON.stringify(index, null, 2)}\n`, "utf8");
-  return { path: absPath, index };
+  return { path: absPath, index, priorIndexCorrupted, unparseableAssetFiles };
 }
 
 /**

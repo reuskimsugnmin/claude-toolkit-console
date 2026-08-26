@@ -68,11 +68,18 @@ async function main(): Promise<void> {
         console.log(`ctk scan 완료 (${summary.durationMs}ms)`);
         console.log(`  스냅샷: ${summary.snapshotPath}`);
         console.log(`  실행 로그: ${summary.runLogPath}`);
+        // ⚠️ 종류를 손으로 나열하지 않는다 — 문자열 보간은 타입 축이 닿지 않아 `AssetKind`가
+        // 늘어도 컴파일이 침묵하고 새 종류가 **화면에서만 사라진다**(등재 ≠ 도달).
         console.log(
-          `  자산: plugin=${summary.assetCounts.plugin} skill=${summary.assetCounts.skill} mcp=${summary.assetCounts.mcp} cli=${summary.assetCounts.cli}`,
+          `  자산: ${Object.entries(summary.assetCounts)
+            .map(([kind, count]) => `${kind}=${count}`)
+            .join(" ")}`,
         );
         console.log(`  Installation: ${summary.installationCount}건, Toggle: ${summary.toggleCount}건`);
         console.log(`  스코프 분포: ${JSON.stringify(summary.scopeDistribution)}`);
+        for (const warning of summary.warnings) {
+          console.warn(`  ⚠️ ${warning}`);
+        }
         return;
       }
       case "doctor": {

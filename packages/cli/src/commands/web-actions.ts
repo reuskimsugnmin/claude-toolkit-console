@@ -127,6 +127,8 @@ function scanView(s: Awaited<ReturnType<typeof runScan>>) {
     toggle_count: s.toggleCount,
     scope_distribution: s.scopeDistribution,
     duration_ms: s.durationMs,
+    // 웹 경로에서도 열화를 드러낸다 — CLI에만 실으면 웹 사용자는 손상 인덱스를 못 본다.
+    warnings: s.warnings,
   };
 }
 
