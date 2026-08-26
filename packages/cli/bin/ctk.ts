@@ -13,6 +13,7 @@ import {
   runGenDryRun,
   summarizeUnresolved,
   describeActualCost,
+  describeGenSummary,
   MissingRequiredFlagError,
 } from "../src/commands/gen.js";
 import { runAgentProbeCli } from "../src/commands/agent-probe.js";
@@ -385,10 +386,7 @@ async function main(): Promise<void> {
           allowConcurrentSessions: rest.includes("--allow-concurrent-sessions"),
           yes: rest.includes("--yes"),
         });
-        const fresh = summary.results.filter((r) => r.outcome === "fresh").length;
-        const pending = summary.results.filter((r) => r.outcome === "pending").length;
-        const stale = summary.results.filter((r) => r.outcome === "stale").length;
-        console.log(`ctk gen 완료 — 최신 ${fresh}건 · 미처리 ${pending}건 · 갱신필요 ${stale}건`);
+        for (const line of describeGenSummary(summary.results)) console.log(line);
         // 건너뛴 자산은 이유를 그대로 노출한다 — "처리됨"과 "조용히 빠짐"을 구분한다(안전 원칙 6).
         for (const r of summary.results.filter((x) => x.reason !== undefined)) {
           console.log(`    ${r.assetId}: ${r.reason}`);

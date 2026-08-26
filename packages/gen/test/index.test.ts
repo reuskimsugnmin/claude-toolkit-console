@@ -161,7 +161,7 @@ describe("gen/index — runGen 전체 배선 (plan → 생성 → citation-check
     ).rejects.toThrow(/config dir/);
   });
 
-  it("인젝션 패턴이 검출되면 해당 자산은 stale로 남고 sync에 커밋되지 않는다(B1-3)", async () => {
+  it("인젝션 패턴이 검출되면 해당 자산은 policy_blocked로 남고 sync에 커밋되지 않는다(B1-3)", async () => {
     init();
     setupSkill("demo-skill", "PDF를 마크다운으로 바꾼다");
     seedCatalog(skillAsset("demo-skill"));
@@ -189,7 +189,12 @@ describe("gen/index — runGen 전체 배선 (plan → 생성 → citation-check
       spawnFn: spawnFn as never,
     });
 
-    expect(summary.results).toEqual([{ assetId: "demo-skill", outcome: "stale", reason: "injection_pattern_detected" }]);
+    // ⚠️ **결과 객체와 인덱스가 같은 값을 말해야 한다(2026-08-26).** 바로 아래 인덱스 단언은
+    // `policy_blocked`인데 여기만 `stale`이었고 **그대로 통과했다** — 한 테스트 안에서 두 계층이
+    // 어긋나 있었다. 이 값이 재시도 여부를 가르므로 뭉치면 사용자가 돈을 다시 쓴다.
+    expect(summary.results).toEqual([
+      { assetId: "demo-skill", outcome: "policy_blocked", reason: "injection_pattern_detected" },
+    ]);
     expect(summary.injectionFindingsTotal.directive).toBeGreaterThan(0);
     const index = readCatalogIndex(catalogRoot);
     // `policy_blocked` — 원문이 정책에 걸리는 것은 재시도로 풀리지 않는다(2026-08-26 실측).

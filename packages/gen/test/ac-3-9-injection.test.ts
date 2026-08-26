@@ -120,7 +120,12 @@ describe("AC-3.9 — 악성 픽스처 5종에 대한 프롬프트 인젝션 부�
         allowManagedPolicy: false,
       });
 
-      expect(summary.results).toEqual([{ assetId, outcome: "stale", reason: "injection_pattern_detected" }]);
+      // ⚠️ **이 단언이 결함을 고정하고 있었다(2026-08-26).** #25가 인덱스를 `policy_blocked`로
+      // 바꿀 때 여기는 `stale` 그대로였고, 그래서 "값 계층은 갈렸는데 표시 계층은 안 갈렸다"가
+      // 테스트를 통과했다. **재시도 여부를 가르는 값이므로 뭉치면 사용자가 돈을 다시 쓴다.**
+      expect(summary.results).toEqual([
+        { assetId, outcome: "policy_blocked", reason: "injection_pattern_detected" },
+      ]);
       expect(summary.injectionFindingsTotal.directive + summary.injectionFindingsTotal.executable + summary.injectionFindingsTotal.url).toBeGreaterThan(0);
 
       const index = readCatalogIndex(catalogRoot);

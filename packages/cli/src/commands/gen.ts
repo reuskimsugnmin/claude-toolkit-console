@@ -24,6 +24,8 @@ import {
   summarizeGenCost,
   GenRunAbortedError,
   type EstimateResult,
+  type GenAssetOutcome,
+  type RunGenAssetResult,
   type GenUnresolvedAsset,
   type RunGenSummary,
 } from "@ctk/gen";
@@ -337,4 +339,56 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
   } finally {
     lock.release();
   }
+}
+
+/**
+ * cli/src/commands/gen.ts — `gen` 실행 요약 문구.
+ *
+ * ⚠️ **`bin/ctk.ts` 안에 인라인으로 있던 것을 함수로 뺐다(2026-08-26).** 그 자리에 있는 동안
+ * **어떤 테스트도 이 문자열을 태우지 않았고**, 그 사이에 `policy_blocked` outcome이 어느
+ * 카운터에도 잡히지 않아 3건이 요약에서 통째로 사라지는 회귀가 생겼다. 못 태우는 축이 있으면
+ * 이음매를 넣어 태운다(CLAUDE.md).
+ */
+export function countGenOutcomes(results: readonly RunGenAssetResult[]): Record<GenAssetOutcome, number> {
+  const counts: Record<GenAssetOutcome, number> = { fresh: 0, pending: 0, stale: 0, policy_blocked: 0 };
+  for (const r of results) {
+    // ⚠️ `switch`다 — outcome이 늘면 여기서 컴파일이 깨져 "이걸 어떻게 보여줄지"를 반드시 정하게
+    // 된다. `filter(...).length`를 쓰던 때는 새 값이 **조용히 어디에도 안 잡혔다.**
+    switch (r.outcome) {
+      case "fresh":
+        counts.fresh += 1;
+        break;
+      case "pending":
+        counts.pending += 1;
+        break;
+      case "stale":
+        counts.stale += 1;
+        break;
+      case "policy_blocked":
+        counts.policy_blocked += 1;
+        break;
+    }
+  }
+  return counts;
+}
+
+/**
+ * 요약 줄과, 필요하면 그 뒤에 붙는 안내를 만든다.
+ *
+ * **`stale`과 `policy_blocked`를 뭉치지 않는다** — 전자는 "다음 실행이 다시 시도한다"이고
+ * 후자는 "원문이 그대로면 다시 시도해도 같은 결과"다. 뭉치면 사용자가 돈을 다시 쓴다.
+ */
+export function describeGenSummary(results: readonly RunGenAssetResult[]): string[] {
+  const c = countGenOutcomes(results);
+  const lines = [
+    `ctk gen 완료 — 최신 ${c.fresh}건 · 미처리 ${c.pending}건 · 갱신필요 ${c.stale}건 · ` +
+      `정책차단 ${c.policy_blocked}건`,
+  ];
+  if (c.policy_blocked > 0) {
+    lines.push(
+      "  ℹ️ 정책차단은 재시도로 풀리지 않는다 — 원문이 바뀌면 자동으로 다시 대상이 된다. " +
+        "지금 강제하려면 `--retry-blocked`를 준다",
+    );
+  }
+  return lines;
 }
