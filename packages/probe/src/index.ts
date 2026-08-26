@@ -15,6 +15,7 @@ export * from "./sources/errors.js";
 export * from "./sources/known-projects.js";
 export * from "./sources/plugins.js";
 export * from "./sources/skills.js";
+export * from "./sources/bundled.js";
 export * from "./sources/mcp.js";
 export * from "./sources/cli-path.js";
 export * from "./sources/settings.js";

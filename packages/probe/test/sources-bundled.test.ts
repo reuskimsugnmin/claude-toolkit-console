@@ -1,0 +1,327 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { collectBundled, type BundledSourceResult } from "../src/sources/bundled.js";
+import type { HomeContext } from "../src/home.js";
+
+/**
+ * probe/test/sources-bundled.test.ts — B1 Step 5.
+ *
+ * 픽스처는 매 테스트마다 독립된 `mkdtempSync` 홈을 만든다(공유 픽스처를 쓰지 않는다) — 경로
+ * 순회 주입 테스트는 "주입 하나에 실행 하나"가 원칙이라 각 테스트가 자기만의 최소 트리를 짓는다.
+ * 모든 값은 합성이다(CLAUDE.md — public 저장소 위생).
+ */
+
+function buildHome(): { home: HomeContext; cleanup: () => void } {
+  const ctkHome = mkdtempSync(path.join(tmpdir(), "ctk-probe-bundled-"));
+  const ctkConfigDir = path.join(ctkHome, ".claude");
+  mkdirSync(ctkConfigDir, { recursive: true });
+  return {
+    home: { ctkHome, ctkConfigDir, configDirExplicit: false },
+    cleanup: () => rmSync(ctkHome, { recursive: true, force: true }),
+  };
+}
+
+function writeInstalledPlugins(home: HomeContext, entries: Record<string, string>): void {
+  const plugins: Record<string, unknown[]> = {};
+  for (const [id, installPath] of Object.entries(entries)) {
+    plugins[id] = [
+      {
+        scope: "user",
+        installPath,
+        version: "1.0.0",
+        installedAt: "2026-08-01T00:00:00.000Z",
+        lastUpdated: "2026-08-01T00:00:00.000Z",
+      },
+    ];
+  }
+  const dir = path.join(home.ctkConfigDir, "plugins");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, "installed_plugins.json"), JSON.stringify({ version: 2, plugins }), "utf8");
+}
+
+/** `<config>/plugins` 경계 안의 정상적인 플러그인 설치 디렉터리를 만든다. */
+function makePluginDir(home: HomeContext, name: string): string {
+  const dir = path.join(home.ctkConfigDir, "plugins", "cache", "synth-marketplace", name, "1.0.0");
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function writeSkill(pluginDirAbs: string, dirName: string, frontmatterName: string | null, description = "합성 스킬"): void {
+  const dir = path.join(pluginDirAbs, "skills", dirName);
+  mkdirSync(dir, { recursive: true });
+  const nameLine = frontmatterName === null ? "" : `name: ${frontmatterName}\n`;
+  writeFileSync(path.join(dir, "SKILL.md"), `---\n${nameLine}description: ${description}\n---\n\n# ${dirName}\n`, "utf8");
+}
+
+function writeFlatMd(pluginDirAbs: string, kindDir: "commands" | "agents", fileName: string, frontmatterName: string | null): void {
+  const dir = path.join(pluginDirAbs, kindDir);
+  mkdirSync(dir, { recursive: true });
+  const nameLine = frontmatterName === null ? "" : `name: ${frontmatterName}\n`;
+  writeFileSync(path.join(dir, fileName), `---\n${nameLine}description: 합성 ${kindDir}\n---\n\n본문\n`, "utf8");
+}
+
+describe("probe/sources/bundled — 플러그인 번들 스킬·커맨드·에이전트 편입 (B1 Step 5)", () => {
+  let fixture: { home: HomeContext; cleanup: () => void };
+  afterEach(() => fixture?.cleanup());
+
+  it("AC-1 유형별 건수 — 스킬 2 · 커맨드 2(+중첩 1디렉터리 2건 unmeasured) · 에이전트 1이 정확히 잡힌다", () => {
+    fixture = buildHome();
+    const pluginDir = makePluginDir(fixture.home, "demo-plugin");
+    writeInstalledPlugins(fixture.home, { "demo-plugin@synth-marketplace": pluginDir });
+
+    writeSkill(pluginDir, "alpha-skill", null);
+    writeSkill(pluginDir, "beta-skill", null);
+    writeFlatMd(pluginDir, "commands", "one.md", null);
+    writeFlatMd(pluginDir, "commands", "two.md", null);
+    mkdirSync(path.join(pluginDir, "commands", "nested"), { recursive: true });
+    writeFileSync(path.join(pluginDir, "commands", "nested", "a.md"), "---\n---\n본문", "utf8");
+    writeFileSync(path.join(pluginDir, "commands", "nested", "b.md"), "---\n---\n본문", "utf8");
+    writeFlatMd(pluginDir, "agents", "helper.md", null);
+
+    const result: BundledSourceResult = collectBundled({ home: fixture.home, pluginIds: ["demo-plugin@synth-marketplace"] });
+
+    const report = result.perParent.find((r) => r.parentId === "demo-plugin@synth-marketplace");
+    expect(report?.state).toBe("ok");
+    expect(report?.skills).toBe(2);
+    expect(report?.commands).toBe(2);
+    expect(report?.agents).toBe(1);
+    expect(report?.nestedUnmeasured).toBe(2);
+
+    expect(result.assets.filter((a) => a.kind === "skill").map((a) => a.id).sort()).toEqual([
+      "demo-plugin@synth-marketplace:alpha-skill",
+      "demo-plugin@synth-marketplace:beta-skill",
+    ]);
+    expect(result.assets.filter((a) => a.kind === "command")).toHaveLength(2);
+    expect(result.assets.filter((a) => a.kind === "agent").map((a) => a.id)).toEqual([
+      "demo-plugin@synth-marketplace:helper",
+    ]);
+    // 중첩 커맨드는 자산으로 편입되지 않는다.
+    expect(result.assets.some((a) => a.id.includes("nested"))).toBe(false);
+    // parent_asset_id가 전부 채워진다.
+    expect(result.assets.every((a) => a.parent_asset_id === "demo-plugin@synth-marketplace")).toBe(true);
+  });
+
+  it("AC-1 축 — agents/ 디렉터리 자체가 없으면 agents는 null이 아니라 0이다(다른 유형은 그대로)", () => {
+    fixture = buildHome();
+    const pluginDir = makePluginDir(fixture.home, "demo-plugin");
+    writeInstalledPlugins(fixture.home, { "demo-plugin@synth-marketplace": pluginDir });
+    writeSkill(pluginDir, "alpha-skill", null);
+    // commands/agents 디렉터리를 아예 만들지 않는다.
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["demo-plugin@synth-marketplace"] });
+    const report = result.perParent[0];
+    expect(report?.state).toBe("ok");
+    expect(report?.skills).toBe(1);
+    expect(report?.commands).toBe(0);
+    expect(report?.agents).toBe(0);
+  });
+
+  it("AC-1 실패 축 — installPath가 디스크에 없으면 skills/commands/agents가 0이 아니라 null이고 state는 install_path_missing이다", () => {
+    fixture = buildHome();
+    const missingDir = path.join(fixture.home.ctkConfigDir, "plugins", "cache", "synth-marketplace", "ghost-plugin", "1.0.0");
+    writeInstalledPlugins(fixture.home, { "ghost-plugin@synth-marketplace": missingDir }); // 디렉터리를 만들지 않는다.
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["ghost-plugin@synth-marketplace"] });
+    const report = result.perParent[0];
+    expect(report?.state).toBe("install_path_missing");
+    expect(report?.skills).toBeNull();
+    expect(report?.commands).toBeNull();
+    expect(report?.agents).toBeNull();
+    expect(report?.reasons.length).toBeGreaterThan(0);
+    expect(result.assets).toHaveLength(0);
+  });
+
+  it("AC-2 — 서로 다른 두 부모가 같은 이름의 스킬을 번들해도 두 id가 모두 살아남는다(네임스페이싱, 하나도 사라지지 않는다)", () => {
+    fixture = buildHome();
+    const dirA = makePluginDir(fixture.home, "plugin-a");
+    const dirB = makePluginDir(fixture.home, "plugin-b");
+    writeInstalledPlugins(fixture.home, {
+      "plugin-a@synth-marketplace": dirA,
+      "plugin-b@synth-marketplace": dirB,
+    });
+    writeSkill(dirA, "shared-name", null);
+    writeSkill(dirB, "shared-name", null);
+
+    const result = collectBundled({
+      home: fixture.home,
+      pluginIds: ["plugin-a@synth-marketplace", "plugin-b@synth-marketplace"],
+    });
+    const skillIds = result.assets.filter((a) => a.kind === "skill").map((a) => a.id).sort();
+    expect(skillIds).toEqual([
+      "plugin-a@synth-marketplace:shared-name",
+      "plugin-b@synth-marketplace:shared-name",
+    ]);
+  });
+
+  it("AC-4 타입 — BundledSourceResult에 installations 필드가 없다(반환값에 키 자체가 없다)", () => {
+    fixture = buildHome();
+    const pluginDir = makePluginDir(fixture.home, "demo-plugin");
+    writeInstalledPlugins(fixture.home, { "demo-plugin@synth-marketplace": pluginDir });
+    writeSkill(pluginDir, "alpha-skill", null);
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["demo-plugin@synth-marketplace"] });
+    expect(Object.keys(result)).toEqual(["assets", "perParent"]);
+    expect("installations" in result).toBe(false);
+  });
+
+  it("AC-8 비활성 — 부모가 어떤 settings.json에서도 활성화되지 않아도 자식은 그대로 수집된다(D6, 활성 여부를 아예 조회하지 않는다)", () => {
+    fixture = buildHome();
+    const pluginDir = makePluginDir(fixture.home, "demo-plugin");
+    writeInstalledPlugins(fixture.home, { "demo-plugin@synth-marketplace": pluginDir });
+    // settings.json을 아예 쓰지 않는다 — enabledPlugins가 없으니 이 플러그인은 어디서도 "활성"이 아니다.
+    writeSkill(pluginDir, "alpha-skill", null);
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["demo-plugin@synth-marketplace"] });
+    expect(result.perParent[0]?.state).toBe("ok");
+    expect(result.assets.map((a) => a.id)).toEqual(["demo-plugin@synth-marketplace:alpha-skill"]);
+  });
+
+  it("경로 순회 ⓐ — installPath가 리터럴 '../../etc'(순회 문자열)면 거부되고 사유가 남는다", () => {
+    fixture = buildHome();
+    writeInstalledPlugins(fixture.home, { "evil-plugin@synth-marketplace": "../../etc" });
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["evil-plugin@synth-marketplace"] });
+    const report = result.perParent[0];
+    expect(report?.state).toBe("install_path_rejected");
+    expect(report?.reasons.join(" ")).toMatch(/절대경로가 아니다/);
+    expect(result.assets).toHaveLength(0);
+  });
+
+  it("경로 순회 ⓑ — installPath가 (순회 문자열 없이) 그냥 상대경로여도 거부된다", () => {
+    fixture = buildHome();
+    writeInstalledPlugins(fixture.home, { "evil-plugin@synth-marketplace": "relative/cache/evil-plugin" });
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["evil-plugin@synth-marketplace"] });
+    const report = result.perParent[0];
+    expect(report?.state).toBe("install_path_rejected");
+    expect(report?.reasons.join(" ")).toMatch(/절대경로가 아니다/);
+    expect(result.assets).toHaveLength(0);
+  });
+
+  it("경로 순회 ⓒ — installPath가 <config>/plugins 밖의 실재 디렉터리를 절대경로로 직접 가리키면 거부된다", () => {
+    fixture = buildHome();
+    const outsideDir = mkdtempSync(path.join(tmpdir(), "ctk-outside-boundary-"));
+    writeInstalledPlugins(fixture.home, { "evil-plugin@synth-marketplace": outsideDir });
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["evil-plugin@synth-marketplace"] });
+    const report = result.perParent[0];
+    expect(report?.state).toBe("install_path_rejected");
+    expect(result.assets).toHaveLength(0);
+    rmSync(outsideDir, { recursive: true, force: true });
+  });
+
+  it("경로 순회 ⓓ — installPath가 경계 안 심볼릭 링크이고 realpath가 경계 밖이면 거부된다(따라가지 않는다)", () => {
+    fixture = buildHome();
+    const outsideDir = mkdtempSync(path.join(tmpdir(), "ctk-outside-target-"));
+    writeFileSync(path.join(outsideDir, "secret.txt"), "not for the catalog");
+    const linkAbs = path.join(fixture.home.ctkConfigDir, "plugins", "cache", "synth-marketplace", "linked-plugin", "1.0.0");
+    mkdirSync(path.dirname(linkAbs), { recursive: true });
+    symlinkSync(outsideDir, linkAbs);
+    writeInstalledPlugins(fixture.home, { "evil-plugin@synth-marketplace": linkAbs });
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["evil-plugin@synth-marketplace"] });
+    const report = result.perParent[0];
+    expect(report?.state).toBe("install_path_rejected");
+    expect(result.assets).toHaveLength(0);
+    rmSync(outsideDir, { recursive: true, force: true });
+  });
+
+  it("경로 순회 ⓔ — 정상 부모 안에서 스킬 하위 디렉터리 하나만 경계 밖 심볼릭 링크면 그 항목만 건너뛰고 나머지는 편입된다(반대 축 — 전부 거부가 아니다)", () => {
+    fixture = buildHome();
+    const outsideDir = mkdtempSync(path.join(tmpdir(), "ctk-outside-skill-"));
+    writeFileSync(path.join(outsideDir, "SKILL.md"), "---\nname: leaked\n---\n\n외부 파일", "utf8");
+    const pluginDir = makePluginDir(fixture.home, "demo-plugin");
+    writeInstalledPlugins(fixture.home, { "demo-plugin@synth-marketplace": pluginDir });
+    mkdirSync(path.join(pluginDir, "skills"), { recursive: true });
+    symlinkSync(outsideDir, path.join(pluginDir, "skills", "linked-skill"));
+    writeSkill(pluginDir, "real-skill", null); // 정상 스킬 하나는 같이 둔다 — 반대 축.
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["demo-plugin@synth-marketplace"] });
+    const report = result.perParent[0];
+    expect(report?.state).toBe("ok"); // 부모 전체가 거부되지 않는다 — 항목 하나만 건너뛴다.
+    expect(report?.symlinksSkipped).toBe(1);
+    expect(report?.skills).toBe(1); // linked-skill은 세지 않는다.
+    expect(result.assets.map((a) => a.id)).toEqual(["demo-plugin@synth-marketplace:real-skill"]);
+    expect(result.assets.some((a) => a.description === undefined && a.id.includes("leaked"))).toBe(false);
+    rmSync(outsideDir, { recursive: true, force: true });
+  });
+
+  it("심볼릭 링크 — 커맨드 파일 하나가 심볼릭 링크면 건너뛰고 사유가 남는다(다른 정상 커맨드는 그대로 편입된다)", () => {
+    fixture = buildHome();
+    const outsideFile = path.join(mkdtempSync(path.join(tmpdir(), "ctk-outside-cmd-")), "payload.md");
+    writeFileSync(outsideFile, "---\nname: payload\n---\n\n외부 파일", "utf8");
+    const pluginDir = makePluginDir(fixture.home, "demo-plugin");
+    writeInstalledPlugins(fixture.home, { "demo-plugin@synth-marketplace": pluginDir });
+    mkdirSync(path.join(pluginDir, "commands"), { recursive: true });
+    symlinkSync(outsideFile, path.join(pluginDir, "commands", "linked.md"));
+    writeFlatMd(pluginDir, "commands", "real.md", null);
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["demo-plugin@synth-marketplace"] });
+    const report = result.perParent[0];
+    expect(report?.symlinksSkipped).toBe(1);
+    expect(report?.commands).toBe(1);
+    expect(result.assets.map((a) => a.id)).toEqual(["demo-plugin@synth-marketplace:real"]);
+    rmSync(path.dirname(outsideFile), { recursive: true, force: true });
+  });
+
+  it("자칭 name 경로 순회 — frontmatter name이 '../../evil'이면 그 항목만 건너뛰고 unsafeNamesSkipped에 잡힌다(반대 축 — 정상 name은 그대로 편입)", () => {
+    fixture = buildHome();
+    const pluginDir = makePluginDir(fixture.home, "demo-plugin");
+    writeInstalledPlugins(fixture.home, { "demo-plugin@synth-marketplace": pluginDir });
+    writeSkill(pluginDir, "evil-dir", "../../evil");
+    writeSkill(pluginDir, "benign-dir", "benign-skill");
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["demo-plugin@synth-marketplace"] });
+    const report = result.perParent[0];
+    expect(report?.unsafeNamesSkipped).toBe(1);
+    expect(report?.skills).toBe(1);
+    expect(result.assets.map((a) => a.id)).toEqual(["demo-plugin@synth-marketplace:benign-skill"]);
+    // 안전하지 않은 이름이 id에 그대로 남지 않는다(경로 순회 문자열이 카탈로그에 실리지 않는다).
+    expect(result.assets.some((a) => a.id.includes(".."))).toBe(false);
+  });
+
+  it("dirName과 자칭 name이 다르면 경로는 dirName을 쓰고 정체(id)는 자칭 name을 쓴다", () => {
+    fixture = buildHome();
+    const pluginDir = makePluginDir(fixture.home, "demo-plugin");
+    writeInstalledPlugins(fixture.home, { "demo-plugin@synth-marketplace": pluginDir });
+    // 디렉터리명은 "actual-dir-name"이지만 SKILL.md는 "claimed-name"을 자칭한다(라우터 스킬 실측 사례와 동형).
+    writeSkill(pluginDir, "actual-dir-name", "claimed-name");
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["demo-plugin@synth-marketplace"] });
+    // 실제 파일을 dirName으로 읽어냈으므로(경로가 맞았으므로) description이 채워진다 = 읽기에 성공했다는 뜻.
+    expect(result.assets).toHaveLength(1);
+    expect(result.assets[0]?.id).toBe("demo-plugin@synth-marketplace:claimed-name");
+    expect(result.assets[0]?.id.includes("actual-dir-name")).toBe(false);
+    expect(result.assets[0]?.description).toBe("합성 스킬");
+  });
+
+  it("중첩 커맨드는 자산으로 편입되지 않고 unmeasured 건수로만 보고된다(자산 목록에 나타나지 않는다)", () => {
+    fixture = buildHome();
+    const pluginDir = makePluginDir(fixture.home, "demo-plugin");
+    writeInstalledPlugins(fixture.home, { "demo-plugin@synth-marketplace": pluginDir });
+    mkdirSync(path.join(pluginDir, "commands", "tasks"), { recursive: true });
+    writeFileSync(path.join(pluginDir, "commands", "tasks", "build.md"), "---\nname: build\n---\n본문", "utf8");
+    writeFileSync(path.join(pluginDir, "commands", "tasks", "plan.md"), "---\nname: plan\n---\n본문", "utf8");
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["demo-plugin@synth-marketplace"] });
+    const report = result.perParent[0];
+    expect(report?.commands).toBe(0); // 평면 커맨드는 0건 — 중첩은 세지 않는다.
+    expect(report?.nestedUnmeasured).toBe(2);
+    expect(result.assets.filter((a) => a.kind === "command")).toHaveLength(0);
+    expect(report?.reasons.some((r) => r.includes("unmeasured"))).toBe(true);
+  });
+
+  it("위생 — source_ref에 홈 절대경로 원문이 남지 않는다(정규화됨)", () => {
+    fixture = buildHome();
+    const pluginDir = makePluginDir(fixture.home, "demo-plugin");
+    writeInstalledPlugins(fixture.home, { "demo-plugin@synth-marketplace": pluginDir });
+    writeSkill(pluginDir, "alpha-skill", null);
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["demo-plugin@synth-marketplace"] });
+    const asset = result.assets[0];
+    expect(asset?.source_ref).not.toContain(fixture.home.ctkHome);
+    expect(asset?.source_ref?.startsWith("~/")).toBe(true);
+  });
+});

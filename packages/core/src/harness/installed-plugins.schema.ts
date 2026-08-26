@@ -18,6 +18,11 @@ import { z } from "zod";
 export const InstalledPluginEntrySchema = z
   .object({
     scope: z.enum(["user", "project", "local"]),
+    // ⚠️ B1 Step 5 보안 심사 — 이 값은 이제 `probe/src/sources/bundled.ts`의 `readdirSync` 순회
+    // 루트로 승격된다. 여기서는 절대경로인지도 `..`를 담는지도 검사하지 않는다(의도적 — `core`는
+    // 순수 로직이라 `realpathSync` 같은 I/O를 할 수 없다). 그 검증은 순회 직전에 `bundled.ts`의
+    // `validateInstallPath()`(ⓐ `path.isAbsolute` ⓑ `realpathSync` 후 `<config>/plugins` 소속
+    // 확인)가 한다 — 이 스키마가 그 값을 신뢰 승격시킨다는 사실 자체가 심사 대상이다.
     installPath: z.string(),
     version: z.string(),
     installedAt: z.string(),

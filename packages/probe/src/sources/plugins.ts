@@ -243,6 +243,26 @@ export function findPluginInstallPath(home: HomeContext, assetId: string): strin
 }
 
 /**
+ * B1 Step 5(`probe/src/sources/bundled.ts`) 전용 — `findPluginInstallPath`는 자산 하나당
+ * `installed_plugins.json`을 다시 읽는다(Step 4 시점엔 호출부가 최대 1건이라 문제가 없었다).
+ * 번들 하위 툴 수집은 활성 플러그인 전수를 순회하므로 파일을 한 번만 읽어 맵으로 돌려준다.
+ * 같은 id가 여러 스코프에 설치돼 있으면 첫 항목을 대표값으로 쓴다(`findPluginInstallPath`와
+ * 동일 정책 — 어느 설치를 "정답"으로 볼지가 번들 내용에 영향을 주지 않는다).
+ */
+export function listPluginInstallPaths(home: HomeContext): Map<string, string> {
+  const installedPluginsAbsPath = path.join(home.ctkConfigDir, "plugins", "installed_plugins.json");
+  const raw = readJsonOrNull(installedPluginsAbsPath);
+  if (raw === null) return new Map();
+  const parsed = parseInstalledPluginsFile(raw);
+  const result = new Map<string, string>();
+  for (const [id, entries] of Object.entries(parsed.plugins)) {
+    const first = entries[0];
+    if (first !== undefined) result.set(id, first.installPath);
+  }
+  return result;
+}
+
+/**
  * `claude plugin details <id>` 파싱 — Step 3 확장(AC-4.8 5D 교차검증, harness_alwayson_tokens).
  * `--json` 옵션이 없어(AC-0.5 실측) 텍스트를 정규식으로 파싱한다. `ctk scan`이 아니라 `ctk measure`
  * 전용 경로다 — 플러그인 자산마다 서브프로세스를 1회씩 추가로 띄우므로 매 스캔에 끼워 넣지 않는다.
