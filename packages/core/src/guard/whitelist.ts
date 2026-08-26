@@ -11,7 +11,12 @@ export interface AllowlistRule {
   note: string;
 }
 
-export function matchesAllowlist(relativePath: string, rules: readonly AllowlistRule[]): AllowlistRule | undefined {
+/**
+ * 제네릭이다 — 호출자가 넘긴 규칙 타입을 그대로 돌려준다. `AllowlistRule`로 좁혀 돌려주면
+ * 호출부가 `as`로 되넓혀야 하고, 그 순간 축이 어긋나도 컴파일이 통과한다(CLAUDE.md
+ * 「좁힌 타입은 축을 지운다」).
+ */
+export function matchesAllowlist<T extends AllowlistRule>(relativePath: string, rules: readonly T[]): T | undefined {
   return rules.find((rule) => {
     if (rule.exact !== undefined) return rule.exact === relativePath;
     if (rule.pattern !== undefined) return rule.pattern.test(relativePath);
@@ -149,18 +154,60 @@ export const TIER2_CHURN_ALLOWLIST_KNOWN_UNMEASURED: readonly AllowlistRule[] = 
  * 입력**이다 — 위조되면 ① tool_result 원문이 `count_tokens`로 오프머신 전송되고
  * ② `assertNoRawPathLeaks`를 유발해 이후 모든 `measure`를 중단시킬 수 있으며(fail-closed DoS)
  * ③ 사용량 집계를 오염시킨다(안전 원칙 8). 처음에 "대화 로그라 위협도가 낮다"고 적었던 것은
- * 낙관적이었다. 신규 생성이 다시 잡히므로 위험의 대부분은 닫히고, 남는 것은 **기존 파일
- * 덮어쓰기**이며 그것은 append 단조성 검사가 담당한다.
+ * 낙관적이었다. 신규 생성이 다시 잡히므로 위험의 대부분은 닫힌다.
+ *
+ * **⚠️ 남는 위험은 축마다 다르다(2026-08-26 재심 M1).** 아래 한 문단이 목록 전체에 걸린 것처럼
+ * 읽히면 다음 재심자가 덮어쓰기까지 커버된다고 믿는다 — 그래서 갈라 적는다.
+ * - **`path_uuid` 축** — 남는 것은 기존 파일 덮어쓰기이고 **append 단조성 검사가 담당한다**.
+ * - **`preexisting_file` 축** — **내용 제약이 없다.** 하네스가 통째로 다시 쓰므로 append도
+ *   크기도 쓸 수 없다. 즉 자식이 `.session-stats.json`을 임의 내용으로 바꿔도 감사가 침묵한다.
+ *   **수용된 잔여 위험**이며 근거는 소비자다 — 이 파일을 읽는 것은 하네스뿐이고 `ctk` 코드에는
+ *   참조가 없다(2026-08-26 확인). 트랜스크립트와 달리 `ctk measure`의 입력이 아니라서 위 ①②③이
+ *   성립하지 않는다. **이 파일을 읽는 `ctk` 코드가 생기면 이 판단을 다시 한다.**
  *
  * **범위를 UUID 모양까지 고정한다.** `^projects/` 같은 넓은 패턴을 쓰면 그 아래 무엇이 바뀌어도
  * 통과하고, 그때부터 이 축은 아무것도 막지 못한다(Pre-mortem H — 허용목록의 반사적 확장).
  */
 const SESSION_UUID = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
 
-export const SESSION_OWNED_NOT_ATTRIBUTABLE: readonly AllowlistRule[] = [
+/**
+ * 세션 소유 경로를 **무엇을 근거로** 다른 세션의 것이라고 인정할지. 규칙마다 축이 다르다.
+ *
+ * - `path_uuid` — 경로 자체가 세션 uuid를 담는다. `before`에서 이미 관측된 uuid에만 귀속을
+ *   인정하고, 그 파일은 **append로만 자라야** 한다(트랜스크립트의 성질).
+ * - `preexisting_file` — 경로에 uuid가 없다. uuid는 **파일 내용의 키**로 들어가므로 경로
+ *   축으로는 뽑을 수 없다. `before`·`after` **양쪽에 존재할 때의 수정**만 인정한다 —
+ *   신규 생성은 자식이 쓴 것이므로 위반으로 남는다(H1).
+ *   **삭제는 미측정이다(2026-08-26 재심 L1)** — 같은 목록의 `hooks/state/<uuid>.start`는 삭제가
+ *   정상 동작임이 실측됐으므로 이 파일도 그럴 여지가 있다. 판정할 수 없으므로 안전한 쪽(위반)을
+ *   택한다. 실환경에서 이 경로로 중단되면 **그것이 실측 데이터**이고, 그때 축을 다시 정한다.
+ *   하네스가 통째로 다시 쓰는 파일이라 **append 검사를 적용하지 않는다**(줄어드는 것이 정상).
+ *
+ * ⚠️ **필수 필드다.** 선택으로 두면 새 규칙이 축을 밝히지 않은 채 등재되고, 그 순간 어느
+ * 축으로 검증되는지 아무도 모르게 된다(안전 원칙 5 — 선택 필드는 누락을 통과시킨다).
+ */
+export type SessionOwnedAttribution = "path_uuid" | "preexisting_file";
+
+/**
+ * **판별 유니온이다 — 축과 매처 모양을 묶는다(2026-08-26 재심 M2).**
+ *
+ * 축만 필수로 달아 두면 `{ exact: "foo.json", attribution: "path_uuid" }`가 그대로 컴파일되고,
+ * 그것이 **이번에 고친 결함과 동형**이다(경로에서 uuid를 못 뽑아 영원히 제외되지 않는 죽은 규칙).
+ * 매처가 아예 없는 규칙도 `matchesAllowlist`가 `false`로 떨어뜨려 조용히 죽는다.
+ * 안전 원칙 5는 배선에서 멈추지 말고 **타입으로 고정하라**고 적고 있다.
+ *
+ * - `path_uuid`는 `pattern`만 받는다 — uuid를 뽑으려면 경로에 그 모양이 있어야 한다.
+ * - `preexisting_file`은 `exact`만 받는다 — 넓은 패턴에 무제약 제외를 걸 수 없게 한다.
+ */
+export type SessionOwnedRule =
+  | { attribution: "path_uuid"; pattern: RegExp; exact?: never; note: string }
+  | { attribution: "preexisting_file"; exact: string; pattern?: never; note: string };
+
+export const SESSION_OWNED_NOT_ATTRIBUTABLE: readonly SessionOwnedRule[] = [
   {
     // projects/<프로젝트 디렉터리 1단>/<세션 uuid>.jsonl — 다른 세션의 트랜스크립트.
     pattern: new RegExp(`^projects/-[^/]*/${SESSION_UUID}\\.jsonl$`),
+    attribution: "path_uuid",
     note: "2026-08-24 실측 — 살아 있는 다른 Claude Code 세션이 갱신하는 트랜스크립트. 자식은 --no-session-persistence로 쓰지 않는다",
   },
   {
@@ -169,15 +216,22 @@ export const SESSION_OWNED_NOT_ATTRIBUTABLE: readonly AllowlistRule[] = [
     // ⚠️ 디렉터리 이름이 **세션 uuid**여야만 매치한다 — `^projects/`로 넓히면 그 아래 무엇이
     // 바뀌어도 통과한다. 자식은 세션을 영속하지 않으므로 이 이름 공간에 참여하지 않는다.
     pattern: new RegExp(`^projects/-[^/]*/${SESSION_UUID}/`),
+    attribution: "path_uuid",
     note: "2026-08-24 실측 — 다른 세션의 서브에이전트 트랜스크립트(subagents/agent-*.jsonl · .meta.json)",
   },
   {
     exact: ".session-stats.json",
+    // ⚠️ 2026-08-26 실측 — 이 항목은 등재돼 있었는데도 **한 번도 제외되지 못했다.**
+    // 제외 판정이 경로에서 uuid를 뽑는 데 의존했고 이 경로에는 uuid가 없다(내용의 키다).
+    // 목록에 있으나 도달할 수 없는 죽은 항목이었고, 그 결과 살아 있는 Claude Code 세션이
+    // 있으면 `gen`이 항상 whitelist_violation으로 중단됐다.
+    attribution: "preexisting_file",
     note: "2026-08-24 실측 — 하네스가 세션 uuid를 키로 갱신하는 세션 통계. 설정이 아니다",
   },
   {
     // hooks/state/<세션 uuid>.start — 세션별 훅 상태(정의가 아니다).
     pattern: new RegExp(`^hooks/state/${SESSION_UUID}\\.start$`),
+    attribution: "path_uuid",
     note: "2026-08-24 실측 — 하네스가 세션별로 쓰고 지우는 훅 **상태** 파일(그 디렉터리 167개 전부 .start 하나뿐이었다). 훅 정의(settings.json)는 그대로 감시된다",
   },
 ];
