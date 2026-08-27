@@ -5,6 +5,7 @@
 
 export * from "./home.js";
 export * from "./frontmatter.js";
+export * from "./frontmatter-scan.js";
 export * from "./tree-collect.js";
 export * from "./harness/seal-profiles.js";
 export * from "./harness/spawn-claude.js";

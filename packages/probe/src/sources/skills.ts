@@ -1,8 +1,9 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { normalizePath, type Asset, type Installation } from "@ctk/core";
 import type { HomeContext } from "../home.js";
 import { parseSimpleFrontmatter } from "../frontmatter.js";
+import { readForFrontmatterScan } from "../frontmatter-scan.js";
 import { listKnownProjectPaths } from "./known-projects.js";
 
 /**
@@ -54,13 +55,13 @@ function readSkillDir(skillsRootAbs: string, scope: "user" | "project", projectP
     const skillDirAbs = path.join(skillsRootAbs, dirent.name);
     if (isPluginDirectory(skillDirAbs)) continue; // P2-6 — 플러그인 디렉터리를 스킬로 오분류하지 않는다.
     const skillMdAbs = path.join(skillDirAbs, "SKILL.md");
-    let content: string;
-    try {
-      content = readFileSync(skillMdAbs, "utf8");
-    } catch {
-      continue; // SKILL.md 없음 — 유효한 스킬 디렉터리가 아니다.
-    }
-    const frontmatter = parseSimpleFrontmatter(content);
+    // ⚠️ 보안 3차 심사 M-A — `readFileSync`를 직접 부르지 않는다. 이 스캐너는 M-1을 고칠 때
+    // **세지 않은 세 번째 스캐너**였고(번들 쪽 둘만 고쳤다), FIFO를 `SKILL.md`로 심으면
+    // `ctk scan`·`ctk gen`·`ctk web`의 자산 상세 조회가 전부 영구 정지했다(EXIT=137로 실증).
+    // 독립 스킬은 번들보다 모집단이 더 크다. 판정은 `frontmatter-scan.ts` 한 곳에 모여 있다.
+    const read = readForFrontmatterScan(skillMdAbs);
+    if (!read.ok) continue; // SKILL.md 없음·일반 파일 아님 — 유효한 스킬 디렉터리가 아니다.
+    const frontmatter = parseSimpleFrontmatter(read.content);
     // ⚠️ 자칭 `name`에 `:`가 있으면 기각하고 실제 디렉터리명을 쓴다(재심 S-2). `:`는 번들 자식
     // id의 구분자이므로(`<부모id>:<kind>:<suffix>`, B1 Step 5), 독립 스킬이 그 형태를 자칭하면
     // 번들 자식과 id가 겹친다. 그때 `findSkillDirsById`는 **이 공격자 디렉터리 하나만** 후보로
