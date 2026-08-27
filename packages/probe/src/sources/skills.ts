@@ -61,7 +61,13 @@ function readSkillDir(skillsRootAbs: string, scope: "user" | "project", projectP
       continue; // SKILL.md 없음 — 유효한 스킬 디렉터리가 아니다.
     }
     const frontmatter = parseSimpleFrontmatter(content);
-    const id = frontmatter.name && frontmatter.name.length > 0 ? frontmatter.name : dirent.name;
+    // ⚠️ 자칭 `name`에 `:`가 있으면 기각하고 실제 디렉터리명을 쓴다(재심 S-2). `:`는 번들 자식
+    // id의 구분자이므로(`<부모id>:<kind>:<suffix>`, B1 Step 5), 독립 스킬이 그 형태를 자칭하면
+    // 번들 자식과 id가 겹친다. 그때 `findSkillDirsById`는 **이 공격자 디렉터리 하나만** 후보로
+    // 내놓는다 — 번들 스킬의 진짜 원본은 `skillsRoots()` 밖(플러그인 캐시)이라 후보에 오르지
+    // 않기 때문이다. 모호성 신호 없이 `resolved: true`가 되어 `gen`이 그 파일을 읽는다.
+    const claimedName = frontmatter.name ?? "";
+    const id = claimedName.length > 0 && !claimedName.includes(":") ? claimedName : dirent.name;
     found.push({ id, dirName: dirent.name, absPath: skillDirAbs, description: frontmatter.description, scope, projectPath });
   }
   return found;

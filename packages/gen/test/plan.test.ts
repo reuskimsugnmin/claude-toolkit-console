@@ -12,6 +12,27 @@ function skillAsset(id: string): Asset {
 }
 
 /** 번들 자식 자산(결정 6) — `parent_asset_id`가 있는 스킬. D2 형식(`<parent>:<suffix>`)을 따른다. */
+/**
+ * ⚠️ 번들 **에이전트**를 쓴다 — `gen`의 `resolveAssetSource`는 `agent`/`command`를
+ * `descriptionOnlySource`로 해석하므로 원문 파일 없이도 대상이 된다. 번들 **스킬**은
+ * `findSkillDirsById`(= `skillsRoots()` 안만 본다)로 해석되는데 그 원본은 플러그인 캐시에
+ * 있어 후보에 오르지 않는다(보안 재심 L-3 — 번들 스킬 리졸버 미배선). 예전 픽스처는 그것을
+ * 우회하려고 **독립 스킬이 번들 자식 id를 자칭하게** 만들었는데, 그 동작 자체가 재심 S-2의
+ * 공격 시나리오였고 이제 `skills.ts`가 막는다. 이 테스트의 대상은 `bundledParents` 필터이지
+ * 원문 해석이 아니므로, 우회에 기대지 않는 kind로 바꾼다.
+ */
+function bundledAgentAsset(id: string, parentAssetId: string): Asset {
+  return {
+    schema_version: 1,
+    _scope: "machine_independent",
+    id,
+    kind: "agent",
+    name: id,
+    description: `${id} 설명`,
+    parent_asset_id: parentAssetId,
+  };
+}
+
 function bundledSkillAsset(id: string, parentAssetId: string): Asset {
   return {
     schema_version: 1,
@@ -702,12 +723,10 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
   describe("bundledParents — 번들 자식은 부모를 지정해야만 대상이 된다", () => {
     it("bundledParents가 빈 배열(기본)이면 parent_asset_id가 있는 자산은 전부 제외되고 건수가 남는다", () => {
       init();
-      setupSkillAt("child-a-dir", "p1:child-a", "자식 A 본문");
-      setupSkillAt("child-b-dir", "p1:child-b", "자식 B 본문");
       const result = planGenTargets({
         home,
         bundledParents: [],
-        assets: [bundledSkillAsset("p1:child-a", "p1"), bundledSkillAsset("p1:child-b", "p1")],
+        assets: [bundledAgentAsset("p1:child-a", "p1"), bundledAgentAsset("p1:child-b", "p1")],
         index: { schema_version: 1, assets: [] },
       });
       expect(result.targets).toHaveLength(0);
@@ -719,12 +738,10 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
 
     it("bundledParents에 부모를 지정하면 그 자식만 대상이 되고 다른 부모의 자식은 여전히 제외된다", () => {
       init();
-      setupSkillAt("child-a-dir", "p1:child-a", "자식 A 본문");
-      setupSkillAt("child-b-dir", "p2:child-b", "자식 B 본문");
       const result = planGenTargets({
         home,
         bundledParents: ["p1"],
-        assets: [bundledSkillAsset("p1:child-a", "p1"), bundledSkillAsset("p2:child-b", "p2")],
+        assets: [bundledAgentAsset("p1:child-a", "p1"), bundledAgentAsset("p2:child-b", "p2")],
         index: { schema_version: 1, assets: [] },
       });
       expect(result.targets.map((t) => t.asset.id)).toEqual(["p1:child-a"]);

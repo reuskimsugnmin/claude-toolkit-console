@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  collectBundled,
   collectCliTools,
   collectMcp,
   collectPlugins,
@@ -125,7 +126,10 @@ async function collectAll(
   const cliTools = collectCliTools({ home, machineId });
   const installedPluginNames = new Set(plugins.assets.map((a) => a.name));
   const mcp = collectMcp({ home, machineId, installedPluginNames });
-  return { plugins, skills, cliTools, mcp };
+  // B1 Step 5 — 플러그인이 번들한 스킬·커맨드·에이전트. `pluginIds`는 collectPlugins가 이미
+  // 정체성을 확정한 id만 넘긴다(installed_plugins.json에만 있는 고아 id는 대상이 아니다).
+  const bundled = collectBundled({ home, pluginIds: plugins.assets.map((a) => a.id) });
+  return { plugins, skills, cliTools, mcp, bundled };
 }
 
 export interface RunScanOptions {
@@ -177,7 +181,11 @@ export async function runScan(options: RunScanOptions = {}): Promise<ScanSummary
       collected.skills.assets,
       collected.mcp.assets,
       collected.cliTools.assets,
+      collected.bundled.assets,
     );
+    // ⚠️ AC-4 — `collected.bundled`는 `installations` 필드가 아예 없다(반환 타입이 그것을
+    // 증명한다). 번들 하위 툴은 Installation을 만들지 않는다(D6) — 여기에 무언가를 더하려는
+    // 시도 자체가 컴파일 에러가 난다.
     const installations: Installation[] = [
       ...collected.plugins.installations,
       ...collected.skills.installations,
@@ -208,6 +216,19 @@ export async function runScan(options: RunScanOptions = {}): Promise<ScanSummary
       warnings.push(
         `자산 파일 ${rebuilt.unparseableAssetFiles.length}건이 파싱되지 않아 인덱스에서 빠졌다: ${rebuilt.unparseableAssetFiles.join(", ")}`,
       );
+    }
+
+    // B1 Step 5 — 번들 편입 실패·거부·미측정 사실을 조용히 버리지 않는다(안전 원칙 5).
+    // state가 "ok"가 아니면 그 부모의 하위 툴은 0건이 아니라 "읽지 못했다"(perParent가 null로
+    // 이미 구분한다) — 여기서는 사용자가 볼 수 있는 문장으로만 옮긴다.
+    for (const report of collected.bundled.perParent) {
+      if (report.state === "install_path_missing") {
+        warnings.push(`번들 편입 실패 — ${report.parentId}: installPath를 읽지 못했다(${report.reasons.join("; ")})`);
+      } else if (report.state === "install_path_rejected") {
+        warnings.push(`번들 편입 거부 — ${report.parentId}: installPath가 안전하지 않다(${report.reasons.join("; ")})`);
+      } else if (report.reasons.length > 0) {
+        warnings.push(`번들 편입 참고 — ${report.parentId}: ${report.reasons.join("; ")}`);
+      }
     }
 
     const snapshot = writeSnapshot(catalogPath, machine.machine_id, startedAt.toISOString(), [
