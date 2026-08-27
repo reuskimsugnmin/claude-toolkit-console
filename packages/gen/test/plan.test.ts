@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,35 +11,18 @@ function skillAsset(id: string): Asset {
   return { schema_version: 1, _scope: "machine_independent", id, kind: "skill", name: id, description: `${id} 설명` };
 }
 
-/** 번들 자식 자산(결정 6) — `parent_asset_id`가 있는 스킬. D2 형식(`<parent>:<suffix>`)을 따른다. */
 /**
- * ⚠️ 번들 **에이전트**를 쓴다 — `gen`의 `resolveAssetSource`는 `agent`/`command`를
- * `descriptionOnlySource`로 해석하므로 원문 파일 없이도 대상이 된다. 번들 **스킬**은
- * `findSkillDirsById`(= `skillsRoots()` 안만 본다)로 해석되는데 그 원본은 플러그인 캐시에
- * 있어 후보에 오르지 않는다(보안 재심 L-3 — 번들 스킬 리졸버 미배선). 예전 픽스처는 그것을
- * 우회하려고 **독립 스킬이 번들 자식 id를 자칭하게** 만들었는데, 그 동작 자체가 재심 S-2의
- * 공격 시나리오였고 이제 `skills.ts`가 막는다. 이 테스트의 대상은 `bundledParents` 필터이지
- * 원문 해석이 아니므로, 우회에 기대지 않는 kind로 바꾼다.
+ * 번들 자식 자산(결정 6) — `parent_asset_id`가 있는 agent. D2 형식(`<parent>:<kind>:<suffix>`)을
+ * 따른다. `name`은 `findBundledToolPath`의 매칭 키다 — id 전체가 아니라 D2 접미사와 같아야
+ * 실제 파일을 찾는다(보안 재심 L-3 처방 이후, `bundledChildSource`가 실제 원문을 읽는다).
  */
-function bundledAgentAsset(id: string, parentAssetId: string): Asset {
+function bundledAgentAsset(id: string, parentAssetId: string, name: string): Asset {
   return {
     schema_version: 1,
     _scope: "machine_independent",
     id,
     kind: "agent",
-    name: id,
-    description: `${id} 설명`,
-    parent_asset_id: parentAssetId,
-  };
-}
-
-function bundledSkillAsset(id: string, parentAssetId: string): Asset {
-  return {
-    schema_version: 1,
-    _scope: "machine_independent",
-    id,
-    kind: "skill",
-    name: id,
+    name,
     description: `${id} 설명`,
     parent_asset_id: parentAssetId,
   };
@@ -67,6 +50,32 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     const skillDir = path.join(home.ctkConfigDir, "skills", dirName);
     mkdirSync(skillDir, { recursive: true });
     writeFileSync(path.join(skillDir, "SKILL.md"), `---\nname: ${declaredName}\ndescription: d\n---\n\n${body}\n`);
+  }
+
+  /** 번들 부모의 `installed_plugins.json` 항목을 만든다(probe/test/sources-bundled.test.ts와 동형). */
+  function writeInstalledPlugin(parentId: string, installPath: string): void {
+    const dir = path.join(home.ctkConfigDir, "plugins");
+    mkdirSync(dir, { recursive: true });
+    const registryPath = path.join(dir, "installed_plugins.json");
+    let plugins: Record<string, unknown[]> = {};
+    try {
+      plugins = (JSON.parse(readFileSync(registryPath, "utf8")) as { plugins: Record<string, unknown[]> }).plugins;
+    } catch {
+      // 첫 등록.
+    }
+    plugins[parentId] = [
+      { scope: "user", installPath, version: "1.0.0", installedAt: "2026-08-01T00:00:00.000Z", lastUpdated: "2026-08-01T00:00:00.000Z" },
+    ];
+    writeFileSync(registryPath, JSON.stringify({ version: 2, plugins }), "utf8");
+  }
+
+  /** 번들 에이전트 실 파일을 만든다 — `findBundledToolPath`가 찾는 실제 위치(`<installPath>/agents/<file>.md`). */
+  function writeBundledAgent(parentId: string, suffix: string): string {
+    const installPath = path.join(home.ctkConfigDir, "plugins", "cache", "synth-marketplace", parentId, "1.0.0");
+    mkdirSync(path.join(installPath, "agents"), { recursive: true });
+    writeFileSync(path.join(installPath, "agents", `${suffix}.md`), `---\nname: ${suffix}\n---\n\n번들 에이전트 본문\n`, "utf8");
+    writeInstalledPlugin(parentId, installPath);
+    return installPath;
   }
 
   function init(): void {
@@ -723,10 +732,12 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
   describe("bundledParents — 번들 자식은 부모를 지정해야만 대상이 된다", () => {
     it("bundledParents가 빈 배열(기본)이면 parent_asset_id가 있는 자산은 전부 제외되고 건수가 남는다", () => {
       init();
+      // 실 파일을 두지 않는다 — 이 축은 부모 지정 여부만 보고, `excludedBundled`가 걸리면
+      // `judgeAsset`(원문 해석)까지 가지 않으므로 파일이 없어도 통과해야 정확한 검증이다.
       const result = planGenTargets({
         home,
         bundledParents: [],
-        assets: [bundledAgentAsset("p1:child-a", "p1"), bundledAgentAsset("p1:child-b", "p1")],
+        assets: [bundledAgentAsset("p1:child-a", "p1", "child-a"), bundledAgentAsset("p1:child-b", "p1", "child-b")],
         index: { schema_version: 1, assets: [] },
       });
       expect(result.targets).toHaveLength(0);
@@ -738,13 +749,16 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
 
     it("bundledParents에 부모를 지정하면 그 자식만 대상이 되고 다른 부모의 자식은 여전히 제외된다", () => {
       init();
+      // p1 쪽은 bundledParents에 들어가므로 judgeAsset까지 도달한다 — 실제 번들 에이전트 파일을
+      // 준비해야 `bundledChildSource`가 원문을 읽고 target으로 판정한다(재심 L-3 처방 이후).
+      writeBundledAgent("p1", "child-a");
       const result = planGenTargets({
         home,
         bundledParents: ["p1"],
-        assets: [bundledAgentAsset("p1:child-a", "p1"), bundledAgentAsset("p2:child-b", "p2")],
+        assets: [bundledAgentAsset("p1:agent:child-a", "p1", "child-a"), bundledAgentAsset("p2:agent:child-b", "p2", "child-b")],
         index: { schema_version: 1, assets: [] },
       });
-      expect(result.targets.map((t) => t.asset.id)).toEqual(["p1:child-a"]);
+      expect(result.targets.map((t) => t.asset.id)).toEqual(["p1:agent:child-a"]);
       expect(result.excludedBundled).toBe(1); // p2:child-b만 제외됐다
     });
 

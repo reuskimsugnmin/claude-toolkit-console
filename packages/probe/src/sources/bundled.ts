@@ -399,6 +399,64 @@ function buildBundledAsset(home: HomeContext, parentId: string, kind: AssetKind,
   };
 }
 
+/** `findBundledToolPath`가 다루는 kind — 번들로만 존재하는 셋(plugin·mcp·cli는 대상이 아니다). */
+export type BundledChildKind = "skill" | "agent" | "command";
+
+function kindDirName(kind: BundledChildKind): "skills" | "commands" | "agents" {
+  switch (kind) {
+    case "skill":
+      return "skills";
+    case "agent":
+      return "agents";
+    case "command":
+      return "commands";
+  }
+}
+
+export interface BundledToolLocation {
+  /** 원문 파일의 실제 절대경로. 스킬은 **디렉터리**(SKILL.md의 부모) — `collectBundled`의
+   * `DiscoveredBundledTool.absPath`와 같은 관용구다. agent·command는 `.md` 파일 자체. */
+  absPath: string;
+  /** 이 부모의 검증된 installPath 자체 — 읽기 봉쇄 루트로 쓴다. 전역 `<config>/plugins`가
+   * 아니다(플러그인 A의 자식이 플러그인 B의 캐시를 읽지 못하게 경계를 좁힌다, M-1과 동형). */
+  containmentRoot: string;
+}
+
+/**
+ * `gen/src/source-resolve.ts`가 번들 자식(agent·command, 그리고 `parent_asset_id`가 있는
+ * skill)의 실제 원문 경로를 되찾을 때 쓴다(보안 재심 L-3).
+ *
+ * ⚠️ **새로 구현하지 않는다** — `collectBundled`가 이미 만든 방어를 그대로 재사용한다:
+ * `validateInstallPath`(절대성·존재·realpath 경계), `isKindDirRejected`(M-1, kind 디렉터리
+ * 자체의 경계), `scanBundledSkills`/`scanFlatMdKind`(H6 — 경로는 `dirent.name`으로만 짓고
+ * 자칭 name은 매칭에만 쓴다).
+ *
+ * `name`은 `Asset.name`(= 자칭 name, `buildBundledAsset`의 `tool.suffix`)과 비교한다 — 경로
+ * 세그먼트로는 쓰지 않는다(H6).
+ *
+ * 반환은 배열이다 — `findSkillDirsById`와 같은 관용구. 0건이면 못 찾은 것(호출자가
+ * `source_missing`으로), 1건이면 확정, **2건 이상이면 판정 불가**(호출자가 `ambiguous_source`로
+ * — 어느 쪽이 진짜인지 이 함수는 판정하지 않는다, H-1과 같은 태도). `collectBundled`의
+ * `dedupeSameKindNames`(승자를 고르지 않고 충돌을 전부 제외)는 여기서 쓰지 않는다 — 그러면
+ * 호출자가 건수를 볼 수 없게 된다.
+ */
+export function findBundledToolPath(
+  home: HomeContext,
+  parentAssetId: string,
+  kind: BundledChildKind,
+  name: string,
+): BundledToolLocation[] {
+  const installPaths = listPluginInstallPaths(home);
+  const validated = validateInstallPath(home, installPaths.get(parentAssetId));
+  if (!validated.ok) return [];
+
+  const kindDirAbs = path.join(validated.absPath, kindDirName(kind));
+  if (isKindDirRejected(kindDirAbs, validated.absPath)) return [];
+
+  const found = kind === "skill" ? scanBundledSkills(validated.absPath).found : scanFlatMdKind(kindDirAbs).found;
+  return found.filter((tool) => tool.suffix === name).map((tool) => ({ absPath: tool.absPath, containmentRoot: validated.absPath }));
+}
+
 export function collectBundled(options: CollectBundledOptions): BundledSourceResult {
   const { home, pluginIds } = options;
   const installPaths = listPluginInstallPaths(home);
