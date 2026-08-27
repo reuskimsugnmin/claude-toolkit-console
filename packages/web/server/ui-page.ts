@@ -198,6 +198,21 @@ let actionBusy = false;
 let CURRENT_ASSET = null;
 
 /**
+ * 펼쳐진 부모 자산 id — **모듈 스코프 \`Set\`이다**(B1 Step 6, 결정 7).
+ *
+ * 브라우저 저장소 API를 쓰지 않는 이유: origin이 포트를 포함하고 포트는 호출자가 고르는 값이라
+ * (\`cli/web.ts\`) **신뢰할 수 없는 지속성**이다(그리고 그 API 이름이 페이지에 등장하는 것 자체를
+ * \`readonly-server.test.ts\`가 금지한다 — 토큰 유출 축의 회귀 방지다). 서버가 아닌 이유: \`readonly-routes.ts\`가
+ * GET/HEAD로 잠겨 있어 토글 하나 때문에 변형 경로를 뚫는 것은 계층 경계 위반이다.
+ * 모듈 스코프인 이유: \`renderAssets()\`가 매 렌더에 tbody를 비우므로 DOM에 두면 지워진다 —
+ * 같은 파일이 이미 \`VM\`·\`CURRENT_ASSET\`을 이렇게 든다.
+ */
+const EXPANDED = new Set();
+
+/** \`parent_id\` → 자식 행 목록. 매 렌더에 다시 만든다(정렬 인접성에 기대지 않는 묶기의 근거). */
+const CHILDREN = new Map();
+
+/**
  * 열려 있는 확인 패널. **패널은 한 번에 하나만 뜬다.**
  *
  * 처음에는 새 패널이 열릴 때 \`action-area\`를 비웠는데, 그러면 앞 패널의 버튼이 DOM에서
@@ -496,42 +511,116 @@ function uniqueJoin(values) {
   return kept.length === 0 ? "—" : kept.join(", ");
 }
 
+/**
+ * 설치 정보 3-arm(\`AssetInstallationsView\`)을 화면 값으로 편다.
+ *
+ * ⚠️ \`inherited_unavailable\`을 **빈 배열처럼 그리면 안 된다** — "미설치"로 읽힌다.
+ * 부모를 해석하지 못한 것은 "없음"이 아니라 "판정 불가"다(안전 원칙 7).
+ */
+function installationsOf(a) {
+  const v = a.installations;
+  if (v.source === "inherited_unavailable") return null;
+  return v.installations;
+}
+
+/** 자식 행이 부모에게서 설치 정보를 상속했음을 **명시**한다 — 빈 값으로 두면 자기 것처럼 보인다. */
+function installCellText(a, pick) {
+  const list = installationsOf(a);
+  if (list === null) return "상속 정보 확인 불가";
+  const joined = uniqueJoin(list.map(pick));
+  if (a.installations.source === "inherited_from_parent") return joined === "—" ? "부모 상속" : joined + " (부모 상속)";
+  return joined;
+}
+
+function assetRow(a, depth) {
+  const tr = document.createElement("tr");
+  const nameTd = document.createElement("td");
+
+  // 부모 행에는 펼치기 버튼이 **첫 자식**으로 온다(테스트가 nameTd.children[0]으로 집는다).
+  const kids = CHILDREN.get(a.id);
+  if (depth === 0 && kids && kids.length > 0) {
+    const toggle = document.createElement("button");
+    toggle.className = "row-link";
+    toggle.setAttribute("aria-expanded", String(EXPANDED.has(a.id)));
+    toggle.textContent = EXPANDED.has(a.id) ? "▾" : "▸";
+    toggle.addEventListener("click", () => {
+      if (EXPANDED.has(a.id)) EXPANDED.delete(a.id); else EXPANDED.add(a.id);
+      renderAssets();
+    });
+    nameTd.appendChild(toggle);
+  }
+
+  const btn = document.createElement("button");
+  btn.className = "row-link";
+  btn.textContent = (depth > 0 ? "└ " : "") + a.name;
+  btn.addEventListener("click", () => showDetail(a));
+  nameTd.appendChild(btn);
+  tr.appendChild(nameTd);
+
+  const kindTd = document.createElement("td");
+  const kindSpan = document.createElement("span");
+  kindSpan.className = "kind"; kindSpan.textContent = a.kind;
+  kindTd.appendChild(kindSpan); tr.appendChild(kindTd);
+
+  cell(tr, installCellText(a, (i) => i.install_scope));
+  cell(tr, installCellText(a, (i) => i.enabled_at));
+
+  const mcpTd = document.createElement("td");
+  const list = installationsOf(a);
+  mcpTd.appendChild(mcpBadge(list === null ? [] : list.map((i) => i.mcp_state)));
+  tr.appendChild(mcpTd);
+
+  repoCell(tr, a.repo);
+  cell(tr, [a.has_annotation ? "주석" : null, a.has_usage_doc ? "사용법" : null].filter(Boolean).join(" · ") || "—",
+    a.has_annotation || a.has_usage_doc ? "" : "muted");
+  return tr;
+}
+
+/**
+ * 자산 목록을 그린다 — **번들 자식은 부모 아래로 접히고 검색은 계층을 관통한다**(B1 Step 6).
+ *
+ * ⚠️ **정렬 인접성에 기대지 않는다.** \`view-model\`의 정렬은 \`localeCompare\`이고 \`@\`·\`:\`의
+ * 상대 순서는 로케일 의존이다 — 반드시 \`parent_id\`로 묶는다(CHILDREN 맵).
+ *
+ * ⚠️ \`filter-count\`는 **\`matched.length\`를 센다.** 관통 때문에 컨테이너로 끌려온 부모가
+ * 렌더 행에 섞이므로, 렌더 행 수를 세면 숫자가 거짓말한다(안전 원칙 8).
+ */
 function renderAssets() {
   const q = $("q").value.trim().toLowerCase();
   const kind = $("kind").value;
   const body = $("assets-body");
   body.textContent = "";
-  const rows = VM.assets.filter((a) =>
+
+  CHILDREN.clear();
+  for (const a of VM.assets) {
+    if (a.parent_id === null || a.parent_id === undefined) continue;
+    const list = CHILDREN.get(a.parent_id);
+    if (list === undefined) CHILDREN.set(a.parent_id, [a]); else list.push(a);
+  }
+  const byId = new Map(VM.assets.map((a) => [a.id, a]));
+
+  const matched = VM.assets.filter((a) =>
     (kind === "" || a.kind === kind) &&
     (q === "" || a.name.toLowerCase().includes(q) || a.id.toLowerCase().includes(q)));
+  const matchedIds = new Set(matched.map((a) => a.id));
+  // 매치된 자식은 부모를 컨테이너로 끌고 온다 — 안 그러면 자식이 매달릴 데가 없다.
+  const visibleTops = new Set(matched.map((a) => (a.parent_id === null || a.parent_id === undefined ? a.id : a.parent_id)));
 
-  for (const a of rows) {
-    const tr = document.createElement("tr");
-    const nameTd = document.createElement("td");
-    const btn = document.createElement("button");
-    btn.className = "row-link"; btn.textContent = a.name;
-    btn.addEventListener("click", () => showDetail(a));
-    nameTd.appendChild(btn);
-    tr.appendChild(nameTd);
+  for (const topId of visibleTops) {
+    const top = byId.get(topId);
+    // 부모가 카탈로그에 없으면(부재 주입) 자식만이라도 보여준다 — 조용히 사라지게 두지 않는다.
+    if (top !== undefined) body.appendChild(assetRow(top, 0));
 
-    const kindTd = document.createElement("td");
-    const kindSpan = document.createElement("span");
-    kindSpan.className = "kind"; kindSpan.textContent = a.kind;
-    kindTd.appendChild(kindSpan); tr.appendChild(kindTd);
-
-    cell(tr, uniqueJoin(a.installations.map((i) => i.install_scope)));
-    cell(tr, uniqueJoin(a.installations.map((i) => i.enabled_at)));
-
-    const mcpTd = document.createElement("td");
-    mcpTd.appendChild(mcpBadge(a.installations.map((i) => i.mcp_state)));
-    tr.appendChild(mcpTd);
-
-    repoCell(tr, a.repo);
-    cell(tr, [a.has_annotation ? "주석" : null, a.has_usage_doc ? "사용법" : null].filter(Boolean).join(" · ") || "—",
-      a.has_annotation || a.has_usage_doc ? "" : "muted");
-    body.appendChild(tr);
+    const kids = CHILDREN.get(topId);
+    if (kids === undefined) continue;
+    // 검색 중이면 매치된 자식만 펼쳐 보이고, 검색어가 없으면 EXPANDED일 때만 전부 보인다(접힘 기본).
+    const shown = q === "" && kind === ""
+      ? (EXPANDED.has(topId) ? kids : [])
+      : kids.filter((c) => matchedIds.has(c.id));
+    for (const c of shown) body.appendChild(assetRow(c, 1));
   }
-  $("filter-count").textContent = rows.length + " / " + VM.assets.length + "건";
+
+  $("filter-count").textContent = matched.length + " / " + VM.assets.length + "건";
 }
 
 async function showDetail(asset) {

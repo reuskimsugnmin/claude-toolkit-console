@@ -1,4 +1,4 @@
-import type { Asset, AssetKind } from "../schema/asset.js";
+import { bundledParentId, type Asset, type AssetKind } from "../schema/asset.js";
 import type { Installation, InstallScope, McpStateSource } from "../schema/installation.js";
 import type { Occupancy, OccupancyValue } from "../schema/occupancy.js";
 import type { UsageMetric } from "../schema/usage.js";
@@ -62,6 +62,33 @@ export interface InstallationView {
   mcp_state_source: McpStateSource | null;
 }
 
+/**
+ * B1 Step 6, 결정 4(b) — 설치 출처 3-arm 판별 유니온. **`installations: InstallationView[]`를
+ * 병기가 아니라 교체한다.**
+ *
+ * 번들 자식(agent·command, 번들 skill)은 `Installation` 레코드를 스스로 갖지 않는다
+ * (Step 5) — "설치 정보 없음"은 부모에게서 상속해야 할 사실이지 그 자산이 "미설치"라는
+ * 뜻이 아니다. 이것을 빈 배열로 내면 두 사실이 같은 모양이 된다(안전 원칙 7).
+ *
+ * 세 번째 arm(`inherited_unavailable`)이 핵심이다 — 부모를 해석하지 못했을 때도 빈 배열을
+ * 내면 "없음"과 "실패"가 다시 뭉개진다. 선례: `toRepoView`(아래) · `RankingQualityView` ·
+ * `McpStateView`(위).
+ */
+export type AssetInstallationsView =
+  | { source: "own"; installations: InstallationView[] }
+  | { source: "inherited_from_parent"; parent_id: string; installations: InstallationView[] }
+  | {
+      source: "inherited_unavailable";
+      parent_id: string;
+      /**
+       * `parent_not_in_catalog` — `parent_id`가 이번 스냅샷의 자산 목록에 아예 없다(부모가
+       * 삭제됐거나 카탈로그가 갈라졌다). `parent_row_missing` — 부모 자산 자체는 있지만
+       * 그 부모의 설치 정보를 내부적으로 못 찾았다(구성 불일치에 대한 방어적 분기). 둘 다
+       * "부모가 없다"로 뭉치면 원인을 구분할 수 없다.
+       */
+      reason: "parent_not_in_catalog" | "parent_row_missing";
+    };
+
 export interface AssetRowView {
   id: string;
   kind: AssetKind;
@@ -70,8 +97,18 @@ export interface AssetRowView {
   description: string | null;
   /** `null` = 이 자산 유형에 저장소 개념이 없거나 아직 수집되지 않았다(링크 없음과 구분된다). */
   repo: RepoLinkView | null;
+  /**
+   * 번들 부모 자산의 id. 최상위 자산(독립 skill·mcp·cli·plugin)은 `null`이다.
+   *
+   * **평면 배열 + `parent_id`다 — 중첩 트리가 아니다.** `child_ids`도 두지 않는다(간선
+   * 이중 저장). 소비자가 `web` 하나뿐이라는 사실은 "트리로 바꿔도 된다"가 아니라 "평면을
+   * 유지할 자유가 있다"다: 검색이 평면 순회 한 번으로 끝나고, 접기는 렌더 시점에 `parent_id`로
+   * 묶기만 하면 된다(D4). 정렬은 `localeCompare`라 `@`·`:`의 상대 순서가 로케일 의존이므로,
+   * 소비자는 정렬 인접성이 아니라 이 필드로 명시적으로 묶어야 한다.
+   */
+  parent_id: string | null;
   /** 자산 하나가 여러 스코프·프로젝트에 설치될 수 있다 — 병합하지 않는다(P1-13). */
-  installations: InstallationView[];
+  installations: AssetInstallationsView;
   /** 생성 문서 존재 여부. 상세 화면이 무엇을 보여줄 수 있는지 결정한다. */
   has_annotation: boolean;
   has_usage_doc: boolean;
@@ -192,9 +229,22 @@ export function buildConsoleViewModel(input: BuildViewModelInput): ConsoleViewMo
     else list.push(installation);
   }
 
+  // 부모 해석에 쓰는 두 조회 자료구조. **같은 `input.assets` 순회에서 함께 만들어야** 두 맵의
+  // 키 집합이 일치한다 — `assetsById`에는 있는데 `ownInstallationsByAssetId`에는 없는 경우가
+  // "내부 구성 불일치"(parent_row_missing)이고, `assetsById`에 아예 없는 경우가 "부모가 카탈로그에
+  // 없음"(parent_not_in_catalog)이다. 두 실패를 구분하지 않으면 원인을 되짚을 수 없다(안전 원칙 7).
+  const assetsById = new Map(input.assets.map((asset) => [asset.id, asset] as const));
+  const ownInstallationsByAssetId = new Map<string, InstallationView[]>(
+    input.assets.map((asset) => [
+      asset.id,
+      (installationsByAsset.get(asset.id) ?? []).map((installation) => toInstallationView(asset, installation)),
+    ]),
+  );
+
   const assets: AssetRowView[] = input.assets
     .map((asset) => {
       const docs = input.docPresence.get(asset.id);
+      const parentId = bundledParentId(asset);
       return {
         id: asset.id,
         kind: asset.kind,
@@ -202,13 +252,8 @@ export function buildConsoleViewModel(input: BuildViewModelInput): ConsoleViewMo
         marketplace: asset.marketplace ?? null,
         description: asset.description ?? null,
         repo: toRepoView(asset),
-        installations: (installationsByAsset.get(asset.id) ?? []).map((installation) => ({
-          install_scope: installation.install_scope,
-          enabled_at: installation.enabled_at,
-          project_path_hash: installation.project_path_hash,
-          mcp_state: toMcpStateView(asset.kind, installation.mcp_enabled_state),
-          mcp_state_source: installation.mcp_state_source,
-        })),
+        parent_id: parentId,
+        installations: resolveInstallationsView(asset.id, parentId, assetsById, ownInstallationsByAssetId),
         has_annotation: docs?.annotation ?? false,
         has_usage_doc: docs?.usage ?? false,
       };
@@ -251,6 +296,45 @@ export function buildConsoleViewModel(input: BuildViewModelInput): ConsoleViewMo
       ranking_quality: assessRankingQuality(measuredIdleTokens, excludedUnmeasuredAssetIds.length),
     },
   };
+}
+
+function toInstallationView(asset: Asset, installation: Installation): InstallationView {
+  return {
+    install_scope: installation.install_scope,
+    enabled_at: installation.enabled_at,
+    project_path_hash: installation.project_path_hash,
+    mcp_state: toMcpStateView(asset.kind, installation.mcp_enabled_state),
+    mcp_state_source: installation.mcp_state_source,
+  };
+}
+
+/**
+ * 결정 4(b) 3-arm을 채운다. `parentId === null`이면 이 자산 자체의 설치 정보(own)를 낸다 —
+ * 최상위 자산이 설치 기록 0건인 것은 정상 상태이고 `installations: []`로 정확히 표현된다.
+ *
+ * `parentId !== null`이면(번들 자식) 부모의 own-installations를 그대로 상속한다. 부모를 두
+ * 단계로 조회하는 이유는 실패 지점을 구분하기 위해서다 — `assetsById`에 없으면 부모 자산
+ * 자체가 카탈로그에 없는 것이고, `ownInstallationsByAssetId`에 없으면(현재 구성에서는
+ * 도달하지 않지만 방어적으로 남긴다) 내부 조회가 어긋난 것이다. 둘 다 빈 배열로 뭉개면
+ * "부모에 설치가 0건"과 "부모를 못 찾았다"가 같은 모양이 된다.
+ */
+function resolveInstallationsView(
+  assetId: string,
+  parentId: string | null,
+  assetsById: ReadonlyMap<string, Asset>,
+  ownInstallationsByAssetId: ReadonlyMap<string, InstallationView[]>,
+): AssetInstallationsView {
+  if (parentId === null) {
+    return { source: "own", installations: ownInstallationsByAssetId.get(assetId) ?? [] };
+  }
+  if (!assetsById.has(parentId)) {
+    return { source: "inherited_unavailable", parent_id: parentId, reason: "parent_not_in_catalog" };
+  }
+  const parentInstallations = ownInstallationsByAssetId.get(parentId);
+  if (parentInstallations === undefined) {
+    return { source: "inherited_unavailable", parent_id: parentId, reason: "parent_row_missing" };
+  }
+  return { source: "inherited_from_parent", parent_id: parentId, installations: parentInstallations };
 }
 
 function toRepoView(asset: Asset): RepoLinkView | null {
