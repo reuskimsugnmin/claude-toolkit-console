@@ -3,12 +3,21 @@ import {
   assessRankingQuality,
   buildConsoleViewModel,
   toMcpStateView,
+  type AssetInstallationsView,
   type BuildViewModelInput,
+  type InstallationView,
 } from "../src/view/view-model.js";
 import { parseAsset, type Asset } from "../src/schema/asset.js";
 import { parseInstallation, type Installation } from "../src/schema/installation.js";
 import { parseOccupancy, type Occupancy } from "../src/schema/occupancy.js";
 import type { UsageMetric } from "../src/schema/usage.js";
+
+/** 3-arm에서 "own" arm임을 단언하고 좁힌 뒤 그 installations를 꺼낸다. */
+function ownInstallations(view: AssetInstallationsView): InstallationView[] {
+  expect(view.source, "own arm이 아니다").toBe("own");
+  if (view.source !== "own") throw new Error("unreachable");
+  return view.installations;
+}
 
 const NOW = new Date("2026-08-22T00:00:00.000Z");
 
@@ -97,7 +106,8 @@ describe("MCP 상태 — unknown을 unset/disabled로 뭉개지 않는다 (OQ-7 
         installations: [installation({ asset_id: "srv", mcp_enabled_state: null, mcp_state_source: "none" })],
       }),
     );
-    expect(vm.assets[0]?.installations[0]?.mcp_state).toBe("unknown");
+    const own = ownInstallations(vm.assets[0]!.installations);
+    expect(own[0]?.mcp_state).toBe("unknown");
   });
 });
 
@@ -228,14 +238,70 @@ describe("설치 목록 — 자산 하나의 여러 설치를 병합하지 않�
         ],
       }),
     );
-    expect(vm.assets[0]?.installations).toHaveLength(2);
-    expect(vm.assets[0]?.installations.map((i) => i.project_path_hash)).toEqual(["h1", "h2"]);
+    const own = ownInstallations(vm.assets[0]!.installations);
+    expect(own).toHaveLength(2);
+    expect(own.map((i) => i.project_path_hash)).toEqual(["h1", "h2"]);
   });
 
   it("설치 기록이 없는 자산도 목록에서 사라지지 않는다", () => {
     const vm = buildConsoleViewModel(baseInput({ assets: [asset({ id: "orphan", kind: "cli", name: "orphan" })] }));
     expect(vm.assets).toHaveLength(1);
-    expect(vm.assets[0]?.installations).toEqual([]);
+    expect(vm.assets[0]?.installations).toEqual({ source: "own", installations: [] });
+  });
+});
+
+describe("계층 — 설치 출처 3-arm 판별 유니온 (결정 4b, B1 Step 6)", () => {
+  it("최상위 자산(parent_id 없음)은 own arm이고 parent_id가 null이다", () => {
+    const vm = buildConsoleViewModel(
+      baseInput({ assets: [asset({ id: "p@mp", kind: "plugin", name: "p", marketplace: "mp" })] }),
+    );
+    expect(vm.assets[0]?.parent_id).toBeNull();
+    expect(vm.assets[0]?.installations).toEqual({ source: "own", installations: [] });
+  });
+
+  it("번들 자식은 부모의 설치 정보를 상속한다 (inherited_from_parent) — 빈 배열이 아니다", () => {
+    const vm = buildConsoleViewModel(
+      baseInput({
+        assets: [
+          asset({ id: "p@mp", kind: "plugin", name: "p", marketplace: "mp" }),
+          asset({ id: "p@mp:sub-agent", kind: "agent", name: "sub-agent", parent_asset_id: "p@mp" }),
+        ],
+        installations: [installation({ asset_id: "p@mp", enabled_at: "user", install_scope: "user" })],
+      }),
+    );
+    const child = vm.assets.find((a) => a.id === "p@mp:sub-agent");
+    expect(child?.parent_id).toBe("p@mp");
+    expect(child?.installations).toEqual({
+      source: "inherited_from_parent",
+      parent_id: "p@mp",
+      installations: [
+        {
+          install_scope: "user",
+          enabled_at: "user",
+          project_path_hash: null,
+          mcp_state: "not_applicable",
+          mcp_state_source: null,
+        },
+      ],
+    });
+  });
+
+  it("부재 주입: 부모 자산을 카탈로그에서 제거하면 자식은 inherited_unavailable이다 — 빈 배열([])이 아니다", () => {
+    // ⚠️ 자식만 넘기고 부모(p@mp)는 assets에서 뺀다 — "부모 행이 인덱스에 없다"를 그대로 재현한다.
+    const vm = buildConsoleViewModel(
+      baseInput({
+        assets: [asset({ id: "p@mp:sub-agent", kind: "agent", name: "sub-agent", parent_asset_id: "p@mp" })],
+      }),
+    );
+    const child = vm.assets[0];
+    expect(child?.parent_id).toBe("p@mp");
+    expect(child?.installations).toEqual({
+      source: "inherited_unavailable",
+      parent_id: "p@mp",
+      reason: "parent_not_in_catalog",
+    });
+    // "미설치"로 읽히는 빈 배열이 아니라는 것을 명시적으로 반증한다.
+    expect(child?.installations).not.toEqual({ source: "own", installations: [] });
   });
 });
 
