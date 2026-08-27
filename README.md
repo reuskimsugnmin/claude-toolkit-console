@@ -95,9 +95,17 @@ pnpm ctk measure --no-credentials-ok
 pnpm ctk gen --dry-run     # 0원 — 대상 자산 수와 원본 크기만
 pnpm ctk gen --no-llm      # 0원 — 규칙 기반 추출
 pnpm ctk gen --max-budget-usd 2 --timeout-sec 180   # 유료
+
+# 플러그인이 번들한 하위 툴(스킬·커맨드·에이전트)은 부모를 지정할 때만 대상이 됩니다
+pnpm ctk gen --plugin <플러그인id> --max-budget-usd 2 --timeout-sec 180
 ```
 
 자산마다 **`annotation.md`**(언제 쓰는가)와 **`usage.md`**(어떻게 부르는가)를 만듭니다.
+
+⚠️ **번들 하위 툴은 기본적으로 문서 생성 대상이 아닙니다.** `ctk scan`이 편입한 자산 수는
+플러그인 하나가 여러 하위 툴을 담기 때문에 크게 늘어나는데, 인자 없는 `ctk gen`이 그것을
+자동으로 백필하면 예상하지 못한 지출이 됩니다. `--plugin`으로 **지정한 부모의 자식만**
+대상이 되고, 실행 전 고지에 제외된 건수가 함께 나옵니다.
 
 유료 경로는 실행 전에 대상 수·호출 수·예상 비용을 표시하고 **승인을 기다립니다.**
 `--max-budget-usd`는 필수이며 각 호출의 하드캡으로 그대로 전달됩니다.
