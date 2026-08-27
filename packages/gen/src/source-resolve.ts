@@ -3,12 +3,14 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { bundledParentId, type Asset, type UnresolvedSourceReason } from "@ctk/core";
 import {
+  createBundledToolLocationCache,
   findBundledToolPath,
   findPluginInstallPath,
   findSkillDirsById,
   skillsRoots,
   type BundledChildKind,
   type BundledToolLocation,
+  type BundledToolLocationCache,
   type HomeContext,
 } from "@ctk/probe";
 import { DEFAULT_MAX_ASSET_SOURCE_BYTES, readAssetSourceFileSafely } from "./file-hygiene.js";
@@ -24,7 +26,7 @@ import { DEFAULT_MAX_ASSET_SOURCE_BYTES, readAssetSourceFileSafely } from "./fil
 function skillSymlinkContainmentRoots(home: HomeContext): string[] {
   return skillsRoots(home).map((r) => r.path);
 }
-import { type PromptEnvelopeSection } from "./prompt-envelope.js";
+import { type PromptEnvelopeSection, type SectionLabel } from "./prompt-envelope.js";
 
 /**
  * gen/src/source-resolve.ts — 자산의 서드파티 원문(SKILL.md·README·plugin.json)이 **이 머신
@@ -113,7 +115,8 @@ function pluginSource(home: HomeContext, asset: Asset): ResolvedAssetSource {
   if (existsSync(pluginJsonAbs)) {
     sections.push({ label: "plugin.json", content: readAssetSourceFileSafely(pluginJsonAbs, installPath) });
   }
-  for (const readmeName of ["README.md", "readme.md", "Readme.md"]) {
+  const readmeNames: readonly SectionLabel[] = ["README.md", "readme.md", "Readme.md"];
+  for (const readmeName of readmeNames) {
     const readmeAbs = path.join(installPath, readmeName);
     if (existsSync(readmeAbs)) {
       sections.push({ label: readmeName, content: readAssetSourceFileSafely(readmeAbs, installPath) });
@@ -146,36 +149,71 @@ function descriptionOnlySource(asset: Asset): ResolvedAssetSource {
  * `containmentRoot`(= 그 부모의 검증된 installPath)를 봉쇄 루트로 준다 — **전역
  * `<config>/plugins`가 아니다.** 플러그인 A의 번들 자식이 플러그인 B의 캐시를 읽지 못한다.
  *
- * 2건 이상 매칭되면(H-1과 같은 이름 충돌이 `collectBundled`의 dedup을 거치지 않은 채 이
- * 축에서도 나타날 수 있다) `ambiguous_source`로 — 어느 쪽이 진짜인지 고르지 않는다.
+ * 보안 심사 L-1 — 2건 이상 매칭되면(H-1과 같은 이름 충돌이 `collectBundled`의 dedup을 거치지
+ * 않은 채 이 축에서도 나타날 수 있다) **건수만으로 `ambiguous_source`를 내지 않는다.**
+ * `skillSource`(위)와 같은 계약이다: 읽기 축에서는 바이트가 같은 두 사본 사이에 모호성이
+ * 없다. 후보 전부를 `readAssetSourceFileSafely`(200KB 상한 포함 — M-2와 같은 상한)로 읽어
+ * sha256을 비교하고, **내용이 다를 때만** `ambiguous_source`로 판정한다.
+ *
+ * `cache`(M-3) — `findBundledToolPath`에 그대로 전달한다. 이 함수 자체는 상태를 갖지 않는다.
  */
-function bundledChildSource(home: HomeContext, asset: Asset, kind: BundledChildKind): ResolvedAssetSource {
+function bundledChildSource(
+  home: HomeContext,
+  asset: Asset,
+  kind: BundledChildKind,
+  cache: BundledToolLocationCache,
+): ResolvedAssetSource {
   const parentId = bundledParentId(asset);
   // kindConstraint(core/schema/asset.ts)가 agent·command는 parent_asset_id 필수, skill은
   // 선택으로 강제한다 — 이 분기는 skill이 이미 parent_asset_id가 있음을 확인한 뒤에만
   // 호출되고 agent·command는 스키마가 항상 보장하므로, null은 방어적 폴백일 뿐이다.
   if (parentId === null) return { resolved: false, reason: "source_missing" };
 
-  const locations: BundledToolLocation[] = findBundledToolPath(home, parentId, kind, asset.name);
+  const locations: BundledToolLocation[] = findBundledToolPath(home, parentId, kind, asset.name, cache);
   if (locations.length === 0) return { resolved: false, reason: "source_missing" };
-  if (locations.length > 1) return { resolved: false, reason: "ambiguous_source", locationCount: locations.length };
 
-  const loc = locations[0];
-  if (loc === undefined) return { resolved: false, reason: "source_missing" };
-  const fileAbs = kind === "skill" ? path.join(loc.absPath, "SKILL.md") : loc.absPath;
-  const label = kind === "skill" ? "SKILL.md" : path.basename(fileAbs);
-  const content = readAssetSourceFileSafely(fileAbs, loc.containmentRoot, DEFAULT_MAX_ASSET_SOURCE_BYTES, {
-    symlinkContainmentRoots: [loc.containmentRoot],
-  });
-  return { resolved: true, sections: [{ label, content }] };
+  // 보안 심사 H-1 — 라벨은 파일명(`path.basename`)에서 뽑지 않는다. 서드파티가 짓는 파일명은
+  // POSIX상 개행을 담을 수 있고, 그 라벨이 `prompt-envelope.ts`의 구획자 줄 안에 그대로
+  // 보간되므로 개행 하나로 END 줄이 조기 종료돼 데이터 펜스를 탈출한다. `kind`(ctk가 고정한
+  // 축)에서만 고정 리터럴을 뽑는다 — `SectionLabel` 폐집합 중 하나로 컴파일 시점에 강제된다.
+  const label: SectionLabel = kind === "skill" ? "SKILL.md" : kind === "agent" ? "agent.md" : "command.md";
+
+  const contents: string[] = [];
+  for (const loc of locations) {
+    const fileAbs = kind === "skill" ? path.join(loc.absPath, "SKILL.md") : loc.absPath;
+    contents.push(
+      readAssetSourceFileSafely(fileAbs, loc.containmentRoot, DEFAULT_MAX_ASSET_SOURCE_BYTES, {
+        symlinkContainmentRoots: [loc.containmentRoot],
+      }),
+    );
+  }
+  const first = contents[0];
+  if (first === undefined) return { resolved: false, reason: "source_missing" };
+  if (new Set(contents.map(sha256)).size > 1) {
+    return { resolved: false, reason: "ambiguous_source", locationCount: locations.length };
+  }
+  return { resolved: true, sections: [{ label, content: first }] };
 }
 
-export function resolveAssetSource(home: HomeContext, asset: Asset): ResolvedAssetSource {
+/**
+ * `cache`(M-3) — 번들 자식 판정(`bundledChildSource`)이 쓰는 부모 단위 스캔 캐시. 생략하면
+ * 호출마다 새 캐시가 만들어져 이전과 동일하게 동작한다(캐시 없음과 동형, 회귀 없음). 여러
+ * 자산에 걸쳐 절약하려면 호출자가 캐시 하나를 만들어 반복 호출에 넘겨야 한다
+ * (`plan.ts`의 `planGenTargets`가 이렇게 쓴다) — `classifyAssetDocState`처럼 자산 하나만
+ * 조회하는 호출부는 캐시를 넘기지 않아도 손해가 없다(어차피 1회 조회라 절약할 반복이 없다).
+ */
+export function resolveAssetSource(
+  home: HomeContext,
+  asset: Asset,
+  cache: BundledToolLocationCache = createBundledToolLocationCache(),
+): ResolvedAssetSource {
   switch (asset.kind) {
     case "skill":
       // 스킬은 독립·번들 양쪽에 산다(D5) — `parent_asset_id`로 갈린다. 독립 스킬 경로는
       // 바뀌지 않는다(`skillSource`가 그대로 `skillsRoots()`만 본다).
-      return asset.parent_asset_id !== undefined ? bundledChildSource(home, asset, "skill") : skillSource(home, asset);
+      return asset.parent_asset_id !== undefined
+        ? bundledChildSource(home, asset, "skill", cache)
+        : skillSource(home, asset);
     case "plugin":
       return pluginSource(home, asset);
     case "mcp":
@@ -186,6 +224,6 @@ export function resolveAssetSource(home: HomeContext, asset: Asset): ResolvedAss
     // 예전 취급(재심 S-3 — 크기 상한을 우회했다)은 여기서 끝난다.
     case "agent":
     case "command":
-      return bundledChildSource(home, asset, asset.kind);
+      return bundledChildSource(home, asset, asset.kind, cache);
   }
 }

@@ -775,4 +775,58 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
       expect(result.excludedBundled).toBe(0);
     });
   });
+
+  describe("보안 심사 M-3 — planGenTargets가 배치 하나에 캐시 하나를 공유해도 자산별 결과가 섞이지 않는다", () => {
+    /** parentId별로 별도 installPath 아래 suffix 하나짜리 번들 에이전트 실 파일을 만든다. */
+    function writeBundledAgentAt(parentId: string, suffix: string, body: string): void {
+      const installPath = path.join(home.ctkConfigDir, "plugins", "cache", "synth-marketplace", parentId, "1.0.0");
+      mkdirSync(path.join(installPath, "agents"), { recursive: true });
+      writeFileSync(path.join(installPath, "agents", `${suffix}.md`), `---\nname: ${suffix}\n---\n\n${body}\n`, "utf8");
+      writeInstalledPlugin(parentId, installPath);
+    }
+
+    it("같은 부모의 서로 다른 번들 에이전트 여러 개를 한 배치로 산출해도 각자 자기 원문을 정확히 받는다", () => {
+      init();
+      writeBundledAgentAt("p1", "child-a", "child-a 전용 본문");
+      writeBundledAgentAt("p1", "child-b", "child-b 전용 본문");
+      writeBundledAgentAt("p1", "child-c", "child-c 전용 본문");
+
+      const result = planGenTargets({
+        home,
+        bundledParents: ["p1"],
+        assets: [
+          bundledAgentAsset("p1:agent:child-a", "p1", "child-a"),
+          bundledAgentAsset("p1:agent:child-b", "p1", "child-b"),
+          bundledAgentAsset("p1:agent:child-c", "p1", "child-c"),
+        ],
+        index: { schema_version: 1, assets: [] },
+      });
+
+      expect(result.targets).toHaveLength(3);
+      const bySuffix = new Map(result.targets.map((t) => [t.asset.name, t.sections[0]?.content]));
+      // 캐시를 부모 단위로 공유해도 각 자식은 자기 자신의 파일 내용만 받는다 — 캐시가 부모의
+      // 스캔 결과(suffix별 목록)를 재사용할 뿐 자식 간 내용을 뒤섞지 않는다는 증거다.
+      expect(bySuffix.get("child-a")).toContain("child-a 전용 본문");
+      expect(bySuffix.get("child-b")).toContain("child-b 전용 본문");
+      expect(bySuffix.get("child-c")).toContain("child-c 전용 본문");
+    });
+
+    it("서로 다른 두 부모의 번들 에이전트를 한 배치로 산출해도 부모 경계가 캐시를 넘어 섞이지 않는다", () => {
+      init();
+      writeBundledAgentAt("p1", "same-suffix", "p1의 same-suffix 본문");
+      writeBundledAgentAt("p2", "same-suffix", "p2의 same-suffix 본문");
+
+      const result = planGenTargets({
+        home,
+        bundledParents: ["p1", "p2"],
+        assets: [bundledAgentAsset("p1:agent:same-suffix", "p1", "same-suffix"), bundledAgentAsset("p2:agent:same-suffix", "p2", "same-suffix")],
+        index: { schema_version: 1, assets: [] },
+      });
+
+      expect(result.targets).toHaveLength(2);
+      const byId = new Map(result.targets.map((t) => [t.asset.id, t.sections[0]?.content]));
+      expect(byId.get("p1:agent:same-suffix")).toContain("p1의 same-suffix 본문");
+      expect(byId.get("p2:agent:same-suffix")).toContain("p2의 same-suffix 본문");
+    });
+  });
 });

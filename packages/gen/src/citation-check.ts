@@ -10,10 +10,18 @@
  * 심는 인라인 마커다 — `citations` 배열(구조화 필드)은 프로그램적 조회용 재진술일 뿐, 이
  * 검사기가 실제로 훑는 것은 프로즈 텍스트 안의 인라인 태그다.
  */
+import type { SectionLabel } from "./prompt-envelope.js";
 
 export const CITATION_TAG_PATTERN = /\[\[cite:([^\]#]+)#L(\d+)-L(\d+)\]\]/;
 
-export function citationTag(sourceRef: string, lineStart: number, lineEnd: number): string {
+/**
+ * 보안 심사 H-1 — `sourceRef`를 `SectionLabel` 폐집합으로 좁힌다. `citationTag`의 결과 문자열은
+ * `usage.md`/`annotation.md` 프로즈 필드에 그대로 박혀 sync 저장소로 나가므로, `sourceRef`가
+ * 자유 텍스트(예: 파일명)이면 그 경로로도 인젝션 문자열이 원형 보존될 수 있다. 호출자
+ * (`rule-extract.ts`)는 이미 전부 `section.label`(SectionLabel) 아니면 리터럴 `"asset.description"`
+ * 만 넘기므로, 타입을 좁혀도 기존 호출부는 그대로 통과한다 — 주석 계약을 컴파일 축으로 올린다.
+ */
+export function citationTag(sourceRef: SectionLabel, lineStart: number, lineEnd: number): string {
   return `[[cite:${sourceRef}#L${lineStart}-L${lineEnd}]]`;
 }
 

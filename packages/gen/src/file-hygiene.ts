@@ -67,6 +67,19 @@ export class AssetSourceTooLargeError extends FileHygieneError {
 }
 
 /**
+ * 보안 심사 M-1 — FIFO는 `statSync`에서 size가 0으로 보고되므로 크기 상한 검사를 그냥
+ * 통과하고, 그 뒤 `readFileSync`가 영구 블록된다(EXIT=124로 실증). 심볼릭 링크 검사와
+ * 별개의 축이다 — FIFO는 링크가 아니다. 열기 전에 일반 파일인지 확인한다.
+ */
+export class AssetSourceNotAFileError extends FileHygieneError {
+  readonly failureClass = "asset_source_not_a_file" as const;
+  constructor(readonly targetPath: string) {
+    super("자산 원본 경로가 일반 파일이 아니다(FIFO·소켓·디바이스 등) — 열지 않는다");
+    this.name = "AssetSourceNotAFileError";
+  }
+}
+
+/**
  * `absPath`가 심볼릭 링크가 아닌지 확인한다. `lstatSync`(링크 자체의 stat, 대상을 따라가지
  * 않음)를 쓴다 — `statSync`를 쓰면 링크를 투명하게 따라가 검사 자체가 무의미해진다.
  */
@@ -97,6 +110,11 @@ export function assertRealpathWithinRoot(absPath: string, expectedRootAbs: strin
 
 export function assertWithinSizeLimit(absPath: string, maxBytes: number = DEFAULT_MAX_ASSET_SOURCE_BYTES): void {
   const stat = statSync(absPath);
+  // FIFO를 여기서 먼저 거부한다 — size 0으로 아래 상한 검사를 통과시켜 놓고 `readFileSync`가
+  // 영구 블록되게 두지 않는다(M-1).
+  if (!stat.isFile()) {
+    throw new AssetSourceNotAFileError(absPath);
+  }
   if (stat.size > maxBytes) {
     throw new AssetSourceTooLargeError(absPath, stat.size, maxBytes);
   }

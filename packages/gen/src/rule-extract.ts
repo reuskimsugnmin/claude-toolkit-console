@@ -120,7 +120,12 @@ export function ruleExtract(asset: Asset, sections: readonly PromptEnvelopeSecti
   }
 
   for (const section of sections) {
-    if (section.label === "SKILL.md") {
+    // 보안 심사 I-2 — 번들 agent·command 원문(라벨 "agent.md"·"command.md", H-1 처방으로 새로
+    // 생긴 고정 라벨)은 SKILL.md와 동일한 frontmatter+heading 구조를 갖는다
+    // (probe/test/sources-bundled-find.test.ts의 writeBundledFlatMd 픽스처와 동형). 이 분기가
+    // 없으면 두 라벨의 원문이 결정론적 추출에서 소비자가 0이 되어 조용히 asset.description
+    // 폴백으로 떨어진다 — 안전 원칙 5(신호를 만들면 읽는 자리를 함께 만든다).
+    if (section.label === "SKILL.md" || section.label === "agent.md" || section.label === "command.md") {
       const meta = extractSpawnMetadata(section.content, section.label);
       if (meta.description !== undefined) {
         roleText = meta.description.value;

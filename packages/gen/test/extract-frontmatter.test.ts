@@ -34,7 +34,7 @@ describe("gen/extract-frontmatter — spawn_metadata는 원본에서 문자열 �
 
   it("frontmatter가 없는 내용은 빈 결과를 반환한다", () => {
     expect(parseFrontmatterWithLines("그냥 본문일 뿐")).toEqual({});
-    expect(extractSpawnMetadata("그냥 본문일 뿐", "x")).toEqual({});
+    expect(extractSpawnMetadata("그냥 본문일 뿐", "SKILL.md")).toEqual({});
   });
 
   it("빈 값은 추출하지 않는다(있어도 무의미한 필드로 남기지 않는다)", () => {
