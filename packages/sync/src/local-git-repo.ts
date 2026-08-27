@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 /**
@@ -12,14 +12,50 @@ function runGit(cwd: string, args: string[]): { status: number | null; stdout: s
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 
-/** `<catalog>` 디렉터리를 만들고 `.git`이 없으면 `git init`만 수행한다(원격 구성 없음). */
+/**
+ * 락 파일(`<catalog>/.ctk.lock`, `sync/src/lock.ts`)을 **동기화 대상에서 뺀다.**
+ *
+ * ⚠️ 락은 **프로세스 상태이지 자산이 아니다** — 머신 종속/독립 어느 축도 아니고 순간 상태라
+ * 스냅샷에 실릴 이유가 없다. 그런데 `commitAll`이 `git add -A`를 쓰므로 한 번이라도 추적되면
+ * **매 실행마다 생성·삭제 diff가 남는다.** 실측 피해: `ctk` 명령을 돌릴 때마다 트리가 더러워져
+ * ⓐ 사람이 "내 미커밋 작업"으로 오해하고 ⓑ **B1 경로 이전기의 "더러운 트리면 거부" 가드가
+ * 오판한다**(그 가드는 되돌릴 수 없는 이동 전에 복구 지점을 요구한다).
+ *
+ * **`.gitignore`만으로는 부족하다** — 이미 추적된 파일에는 무시 규칙이 적용되지 않는다. 그래서
+ * 인덱스에서도 뺀다(`--cached`이므로 디스크의 파일은 건드리지 않는다 — 실행 중인 락을 깨지
+ * 않는다). 두 동작 모두 멱등이라 매 호출에 안전하다.
+ */
+function ensureLockIgnored(catalogRoot: string): void {
+  const gitignoreAbs = path.join(catalogRoot, ".gitignore");
+  const existing = existsSync(gitignoreAbs) ? readFileSync(gitignoreAbs, "utf8") : "";
+  if (!existing.split("\n").some((line) => line.trim() === ".ctk.lock")) {
+    const prefix = existing.length === 0 || existing.endsWith("\n") ? existing : `${existing}\n`;
+    writeFileSync(gitignoreAbs, `${prefix}.ctk.lock\n`, "utf8");
+  }
+  // 이미 추적 중일 때만 인덱스에서 뺀다 — 아니면 `git rm`이 실패 상태를 낸다.
+  const tracked = runGit(catalogRoot, ["ls-files", "--error-unmatch", ".ctk.lock"]);
+  if (tracked.status !== 0) return;
+  const removed = runGit(catalogRoot, ["rm", "--cached", "--quiet", ".ctk.lock"]);
+  if (removed.status !== 0) {
+    throw new Error(`.ctk.lock 추적 해제 실패(${catalogRoot}): ${removed.stderr}`);
+  }
+}
+
+/**
+ * `<catalog>` 디렉터리를 만들고 `.git`이 없으면 `git init`만 수행한다(원격 구성 없음).
+ *
+ * ⚠️ `.gitignore` 보장은 **`.git` 존재 여부와 무관하게 매번** 한다 — 조기 반환 안쪽에 두면
+ * **이미 만들어진 카탈로그는 영원히 고쳐지지 않는다**(이 결함이 실제로 그렇게 남아 있었다).
+ */
 export function ensureGitRepo(catalogRoot: string): void {
   mkdirSync(catalogRoot, { recursive: true });
-  if (existsSync(path.join(catalogRoot, ".git"))) return;
-  const result = runGit(catalogRoot, ["init"]);
-  if (result.status !== 0) {
-    throw new Error(`git init 실패(${catalogRoot}): ${result.stderr}`);
+  if (!existsSync(path.join(catalogRoot, ".git"))) {
+    const result = runGit(catalogRoot, ["init"]);
+    if (result.status !== 0) {
+      throw new Error(`git init 실패(${catalogRoot}): ${result.stderr}`);
+    }
   }
+  ensureLockIgnored(catalogRoot);
 }
 
 /**
