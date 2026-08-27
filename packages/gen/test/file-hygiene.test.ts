@@ -1,8 +1,10 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  AssetSourceNotAFileError,
   AssetSourceTooLargeError,
   assertNotSymlink,
   assertRealpathWithinRoot,
@@ -54,6 +56,19 @@ describe("gen/file-hygiene — iter 8 · H2", () => {
     expect(() => assertWithinSizeLimit(file, 10)).toThrow(AssetSourceTooLargeError);
     expect(() => assertWithinSizeLimit(file, 1000)).not.toThrow();
   });
+
+  it(
+    "FIFO는 크기 상한 검사에서 statSync 단계로 걸러진다 — size 0으로 상한을 통과해 readFileSync가 " +
+      "영구 블록되는 것을 막는다(보안 심사 M-1). statSync는 FIFO를 열지 않으므로 이 단언은 " +
+      "블로킹 위험 없이 같은 프로세스에서 태울 수 있다(readFileSync와 다른 축).",
+    () => {
+      dir = mkdtempSync(path.join(tmpdir(), "ctk-hygiene-fifo-"));
+      const fifoPath = path.join(dir, "SKILL.md");
+      execFileSync("mkfifo", [fifoPath]);
+      expect(() => assertWithinSizeLimit(fifoPath)).toThrow(AssetSourceNotAFileError);
+      expect(() => readAssetSourceFileSafely(fifoPath, dir)).toThrow(AssetSourceNotAFileError);
+    },
+  );
 
   it("readAssetSourceFileSafely는 심볼릭 링크 거부 → realpath 검사 → 크기 상한을 모두 거친 뒤에만 읽는다", () => {
     dir = mkdtempSync(path.join(tmpdir(), "ctk-hygiene-safe-"));

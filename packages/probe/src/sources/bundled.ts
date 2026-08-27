@@ -1,4 +1,4 @@
-import { type Dirent, existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { type Dirent, closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import {
   PathTraversalDetectedError,
@@ -60,6 +60,11 @@ export interface BundledParentReport {
   /** commands/agents의 중첩 디렉터리 아래 발견된 .md 건수 — 이름 규약이 미실측이라 자산으로
    * 편입하지 않고 개수만 센다("미측정은 통과가 아니다" — CLAUDE.md). */
   nestedUnmeasured: number;
+  /**
+   * 보안 심사 M-2 — frontmatter 스캔 상한(64KB)을 넘어 앞부분만 잘라 읽은 건수(3종 합산).
+   * 조용히 삼키지 않는다 — 대형 형제 파일이 있었다는 사실을 사용자가 볼 수 있어야 한다.
+   */
+  oversizeTruncated: number;
   /** 사람이 읽을 사유 로그. state가 "ok"가 아니면 그 사유가, "ok"여도 위 카운트가 0보다 크면
    * 각각의 상세가 담긴다. */
   reasons: string[];
@@ -238,6 +243,40 @@ interface DirScanResult {
   found: DiscoveredBundledTool[];
   symlinksSkipped: number;
   unsafeNamesSkipped: number;
+  /** 보안 심사 M-2 — frontmatter 스캔 상한(아래 `FRONTMATTER_SCAN_MAX_BYTES`)을 넘어 앞부분만
+   * 잘라 읽은 건수. 파일 자체를 배제하지 않는다(뒤에 frontmatter가 없다고 가정할 근거가
+   * 없다) — 다만 읽는 바이트 수를 상한으로 묶어 대형 형제 파일의 RSS 증폭을 막는다. */
+  oversizeTruncated: number;
+}
+
+/** 보안 심사 M-2 — frontmatter 파싱용 스캔 읽기의 상한. `DEFAULT_MAX_ASSET_SOURCE_BYTES`
+ * (200KB, gen이 최종 매칭된 파일 전체를 읽을 때 쓰는 상한)와는 **다른 축**이다 — 이 상한은
+ * "매칭 전, 후보 전원"에 적용되므로 훨씬 작게 잡는다. frontmatter는 파일 앞부분에만 있으므로
+ * 잘라 읽어도 정보 손실이 없다(닫는 `---`가 상한 밖에 있는 비정상 frontmatter만 예외이고,
+ * 그건 `parseSimpleFrontmatter`가 빈 결과로 자연히 처리한다). */
+const FRONTMATTER_SCAN_MAX_BYTES = 64 * 1024;
+
+/**
+ * 보안 심사 M-2 — `readFileSync`로 파일 전체를 통째 읽지 않고, 상한을 넘는 파일은 앞부분만
+ * `readSync`로 잘라 읽는다. 실증: 27바이트 매칭 대상을 찾으면서 형제 60MB 파일이 상한 없이
+ * 함께 읽혀 RSS +95MB였다 — 이 함수를 거치면 그 형제는 최대 64KB만 읽힌다.
+ *
+ * 매칭된 파일의 **전체** 내용은 이 함수가 아니라 `gen/file-hygiene.ts`의
+ * `readAssetSourceFileSafely`가 별도로 다시 읽는다(200KB 상한) — 이 64KB는 스캔 전용이고
+ * 최종 산출물에 쓰이지 않는다.
+ */
+function readHeadForFrontmatter(absPath: string, sizeBytes: number): { content: string; truncated: boolean } {
+  if (sizeBytes <= FRONTMATTER_SCAN_MAX_BYTES) {
+    return { content: readFileSync(absPath, "utf8"), truncated: false };
+  }
+  const fd = openSync(absPath, "r");
+  try {
+    const buf = Buffer.alloc(FRONTMATTER_SCAN_MAX_BYTES);
+    const bytesRead = readSync(fd, buf, 0, FRONTMATTER_SCAN_MAX_BYTES, 0);
+    return { content: buf.subarray(0, bytesRead).toString("utf8"), truncated: true };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
@@ -251,6 +290,7 @@ function scanBundledSkills(pluginDirAbs: string): DirScanResult {
   const found: DiscoveredBundledTool[] = [];
   let symlinksSkipped = 0;
   let unsafeNamesSkipped = 0;
+  let oversizeTruncated = 0;
 
   for (const dirent of readDirSafe(skillsDirAbs)) {
     if (dirent.isSymbolicLink()) {
@@ -271,12 +311,19 @@ function scanBundledSkills(pluginDirAbs: string): DirScanResult {
       symlinksSkipped++;
       continue;
     }
+    // 보안 심사 M-1 — `scanFlatMdKind`는 top-level `Dirent.isFile()`을 이미 보는데(아래) 이
+    // 스캐너는 SKILL.md가 하위 디렉터리에 있어 `lstatSync`로 따로 얻은 stat에 대해 `isFile()`을
+    // 본 적이 없었다 — 한 파일 안에서 두 스캐너의 축이 갈려 있었다. `SKILL.md`가 FIFO면
+    // `readFileSync`가 영구 블록된다(EXIT=124로 실증) — 열기 전에 일반 파일인지 확인한다.
+    if (!skillMdStat.isFile()) continue;
     let content: string;
+    let truncated: boolean;
     try {
-      content = readFileSync(skillMdAbs, "utf8");
+      ({ content, truncated } = readHeadForFrontmatter(skillMdAbs, skillMdStat.size));
     } catch {
       continue;
     }
+    if (truncated) oversizeTruncated++;
     const frontmatter = parseSimpleFrontmatter(content);
     const claimedName = frontmatter.name && frontmatter.name.length > 0 ? frontmatter.name : dirent.name;
     const suffix = safeSuffix(claimedName);
@@ -287,7 +334,7 @@ function scanBundledSkills(pluginDirAbs: string): DirScanResult {
     found.push({ suffix, absPath: skillDirAbs, description: frontmatter.description });
   }
 
-  return { found, symlinksSkipped, unsafeNamesSkipped };
+  return { found, symlinksSkipped, unsafeNamesSkipped, oversizeTruncated };
 }
 
 interface FlatMdScanResult extends DirScanResult {
@@ -309,6 +356,7 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
   let symlinksSkipped = 0;
   let unsafeNamesSkipped = 0;
   let nestedUnmeasured = 0;
+  let oversizeTruncated = 0;
 
   for (const dirent of readDirSafe(kindDirAbs)) {
     if (dirent.isSymbolicLink()) {
@@ -324,12 +372,23 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
     }
     if (!dirent.isFile() || !dirent.name.endsWith(".md")) continue;
     const fileAbs = path.join(kindDirAbs, dirent.name);
-    let content: string;
+    // 보안 심사 M-1과 같은 축 — top-level Dirent.isFile()이 이미 참이지만, 읽기 직전에 한 번 더
+    // lstat으로 확인한다(TOCTOU 창을 줄인다·크기도 이 호출로 함께 얻는다).
+    let stat;
     try {
-      content = readFileSync(fileAbs, "utf8");
+      stat = lstatSync(fileAbs);
     } catch {
       continue;
     }
+    if (!stat.isFile()) continue;
+    let content: string;
+    let truncated: boolean;
+    try {
+      ({ content, truncated } = readHeadForFrontmatter(fileAbs, stat.size));
+    } catch {
+      continue;
+    }
+    if (truncated) oversizeTruncated++;
     const frontmatter = parseSimpleFrontmatter(content);
     const baseName = dirent.name.slice(0, -".md".length);
     const claimedName = frontmatter.name && frontmatter.name.length > 0 ? frontmatter.name : baseName;
@@ -341,16 +400,16 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
     found.push({ suffix, absPath: fileAbs, description: frontmatter.description });
   }
 
-  return { found, symlinksSkipped, unsafeNamesSkipped, nestedUnmeasured };
+  return { found, symlinksSkipped, unsafeNamesSkipped, nestedUnmeasured, oversizeTruncated };
 }
 
 /** M-1 — kind 디렉터리 자체가 거부되면 리프를 아예 열지 않는다(readdirSync 자체를 안 부른다). */
 function emptyDirScanResult(): DirScanResult {
-  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0 };
+  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, oversizeTruncated: 0 };
 }
 
 function emptyFlatMdScanResult(): FlatMdScanResult {
-  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, nestedUnmeasured: 0 };
+  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, nestedUnmeasured: 0, oversizeTruncated: 0 };
 }
 
 interface DedupedKindResult {
@@ -399,6 +458,114 @@ function buildBundledAsset(home: HomeContext, parentId: string, kind: AssetKind,
   };
 }
 
+/** `findBundledToolPath`가 다루는 kind — 번들로만 존재하는 셋(plugin·mcp·cli는 대상이 아니다). */
+export type BundledChildKind = "skill" | "agent" | "command";
+
+function kindDirName(kind: BundledChildKind): "skills" | "commands" | "agents" {
+  switch (kind) {
+    case "skill":
+      return "skills";
+    case "agent":
+      return "agents";
+    case "command":
+      return "commands";
+  }
+}
+
+export interface BundledToolLocation {
+  /** 원문 파일의 실제 절대경로. 스킬은 **디렉터리**(SKILL.md의 부모) — `collectBundled`의
+   * `DiscoveredBundledTool.absPath`와 같은 관용구다. agent·command는 `.md` 파일 자체. */
+  absPath: string;
+  /** 이 부모의 검증된 installPath 자체 — 읽기 봉쇄 루트로 쓴다. 전역 `<config>/plugins`가
+   * 아니다(플러그인 A의 자식이 플러그인 B의 캐시를 읽지 못하게 경계를 좁힌다, M-1과 동형). */
+  containmentRoot: string;
+}
+
+/** 부모 하나의 검증·스캔 결과 — `BundledToolLocationCache`가 부모 id로 메모이즈하는 단위. */
+interface ParentScanCacheEntry {
+  validated: ValidatedInstallPath;
+  scans: Partial<Record<BundledChildKind, DirScanResult | FlatMdScanResult>>;
+}
+
+/**
+ * 보안 심사 M-3 — `findBundledToolPath`가 자산마다(=호출마다) `installed_plugins.json`을 다시
+ * 읽고 kind 디렉터리를 다시 순회·재읽기하던 것을 없앤다. 실측: 200자식 = `readFileSync` 40,000회
+ * ·160MB를 읽어 산출은 0.8MB뿐이었다(O(N²)). `listPluginInstallPaths`를 도입한 원래 취지(주석
+ * `plugins.ts:246-251`)가 바로 이 낭비를 없애는 것이었는데, `findBundledToolPath`가 그 절약을
+ * 되돌렸다.
+ *
+ * 호출자가 이 캐시를 **직접 만들어 여러 호출에 걸쳐 재사용해야** 절약 효과가 난다 — 캐시
+ * 인스턴스 하나가 "한 배치(예: `ctk gen` 1회 실행)" 단위다. 캐시를 매 호출마다 새로 만들면
+ * (`findBundledToolPath`의 기본 인자처럼) 캐시가 없는 것과 동작이 같다 — 그것이 기본값의
+ * 의도다: 캐시를 넘기지 않는 기존 호출부는 이전과 동일하게 매번 다시 읽는다(회귀 없음).
+ */
+export interface BundledToolLocationCache {
+  installPaths: Map<string, string> | null;
+  parents: Map<string, ParentScanCacheEntry>;
+}
+
+export function createBundledToolLocationCache(): BundledToolLocationCache {
+  return { installPaths: null, parents: new Map() };
+}
+
+/**
+ * `gen/src/source-resolve.ts`가 번들 자식(agent·command, 그리고 `parent_asset_id`가 있는
+ * skill)의 실제 원문 경로를 되찾을 때 쓴다(보안 재심 L-3).
+ *
+ * ⚠️ **새로 구현하지 않는다** — `collectBundled`가 이미 만든 방어를 그대로 재사용한다:
+ * `validateInstallPath`(절대성·존재·realpath 경계), `isKindDirRejected`(M-1, kind 디렉터리
+ * 자체의 경계), `scanBundledSkills`/`scanFlatMdKind`(H6 — 경로는 `dirent.name`으로만 짓고
+ * 자칭 name은 매칭에만 쓴다).
+ *
+ * `name`은 `Asset.name`(= 자칭 name, `buildBundledAsset`의 `tool.suffix`)과 비교한다 — 경로
+ * 세그먼트로는 쓰지 않는다(H6).
+ *
+ * 반환은 배열이다 — `findSkillDirsById`와 같은 관용구. 0건이면 못 찾은 것(호출자가
+ * `source_missing`으로), 1건이면 확정, **2건 이상이면 판정 불가**(호출자가 `ambiguous_source`로
+ * — 어느 쪽이 진짜인지 이 함수는 판정하지 않는다, H-1과 같은 태도). `collectBundled`의
+ * `dedupeSameKindNames`(승자를 고르지 않고 충돌을 전부 제외)는 여기서 쓰지 않는다 — 그러면
+ * 호출자가 건수를 볼 수 없게 된다.
+ *
+ * `cache`(M-3) — 부모 단위 검증·스캔 결과를 메모이즈한다. 생략하면 매 호출 전용 캐시가 새로
+ * 만들어져 이전과 동일하게 동작한다(캐시 없음과 동형) — 여러 호출에 걸쳐 절약하려면 호출자가
+ * 하나의 캐시를 만들어 반복 호출에 넘겨야 한다(`planGenTargets`가 이렇게 쓴다).
+ */
+export function findBundledToolPath(
+  home: HomeContext,
+  parentAssetId: string,
+  kind: BundledChildKind,
+  name: string,
+  cache: BundledToolLocationCache = createBundledToolLocationCache(),
+): BundledToolLocation[] {
+  if (cache.installPaths === null) {
+    cache.installPaths = listPluginInstallPaths(home);
+  }
+
+  let parentEntry = cache.parents.get(parentAssetId);
+  if (parentEntry === undefined) {
+    const validated = validateInstallPath(home, cache.installPaths.get(parentAssetId));
+    parentEntry = { validated, scans: {} };
+    cache.parents.set(parentAssetId, parentEntry);
+  }
+  if (!parentEntry.validated.ok) return [];
+  const containmentRoot = parentEntry.validated.absPath;
+
+  let scan = parentEntry.scans[kind];
+  if (scan === undefined) {
+    const kindDirAbs = path.join(containmentRoot, kindDirName(kind));
+    scan = isKindDirRejected(kindDirAbs, containmentRoot)
+      ? kind === "skill"
+        ? emptyDirScanResult()
+        : emptyFlatMdScanResult()
+      : kind === "skill"
+        ? scanBundledSkills(containmentRoot)
+        : scanFlatMdKind(kindDirAbs);
+    parentEntry.scans[kind] = scan;
+  }
+
+  return scan.found.filter((tool) => tool.suffix === name).map((tool) => ({ absPath: tool.absPath, containmentRoot }));
+}
+
 export function collectBundled(options: CollectBundledOptions): BundledSourceResult {
   const { home, pluginIds } = options;
   const installPaths = listPluginInstallPaths(home);
@@ -419,6 +586,7 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
         duplicateNamesSkipped: 0,
         kindDirSymlinksSkipped: 0,
         nestedUnmeasured: 0,
+        oversizeTruncated: 0,
         reasons: [validated.reason],
       });
       continue;
@@ -475,6 +643,12 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
       reasons.push(`agents/: 같은 kind 안에서 자칭 name이 충돌해 ${agentsDeduped.duplicateNamesSkipped}건 건너뜀(어느 쪽도 승자로 고르지 않는다)`);
     if (agentsScan.nestedUnmeasured > 0)
       reasons.push(`agents/: 중첩 디렉터리의 .md ${agentsScan.nestedUnmeasured}건 — 이름 규약 미실측, 편입하지 않음(unmeasured)`);
+    if (skillsScan.oversizeTruncated > 0)
+      reasons.push(`skills/: frontmatter 스캔 상한(${FRONTMATTER_SCAN_MAX_BYTES}바이트) 초과 ${skillsScan.oversizeTruncated}건 — 앞부분만 읽음`);
+    if (commandsScan.oversizeTruncated > 0)
+      reasons.push(`commands/: frontmatter 스캔 상한(${FRONTMATTER_SCAN_MAX_BYTES}바이트) 초과 ${commandsScan.oversizeTruncated}건 — 앞부분만 읽음`);
+    if (agentsScan.oversizeTruncated > 0)
+      reasons.push(`agents/: frontmatter 스캔 상한(${FRONTMATTER_SCAN_MAX_BYTES}바이트) 초과 ${agentsScan.oversizeTruncated}건 — 앞부분만 읽음`);
 
     perParent.push({
       parentId,
@@ -489,6 +663,7 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
       kindDirSymlinksSkipped:
         (skillsKindDirRejected ? 1 : 0) + (commandsKindDirRejected ? 1 : 0) + (agentsKindDirRejected ? 1 : 0),
       nestedUnmeasured: commandsScan.nestedUnmeasured + agentsScan.nestedUnmeasured,
+      oversizeTruncated: skillsScan.oversizeTruncated + commandsScan.oversizeTruncated + agentsScan.oversizeTruncated,
       reasons,
     });
   }

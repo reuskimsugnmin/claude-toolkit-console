@@ -17,11 +17,28 @@ import { randomBytes } from "node:crypto";
  * **1차 계층**이다.
  */
 
+/**
+ * 라벨 폐집합 — 보안 심사 H-1의 처방. 이전엔 "자유 텍스트를 라벨로 쓰지 않는다"가 **주석
+ * 계약**일 뿐이었고, `297915b`가 `path.basename(fileAbs)`(서드파티 파일명)를 라벨로 써서 그
+ * 계약을 처음 깼다 — POSIX 파일명은 개행을 허용하므로, 파일명에 개행을 심으면 `${delimiter}-END:
+ * ${label}` 구획자 줄이 조기 종료되고 나머지가 데이터 펜스 밖으로 빠져나간다. 이제 그 계약을
+ * **컴파일 축**으로 올린다 — 호출자는 이 여덟 리터럴 중 하나만 넘길 수 있고, 그중 어느 것도
+ * 개행을 담을 수 없다(전부 ctk 코드가 정하는 리터럴이지 파일시스템에서 온 문자열이 아니다).
+ */
+export type SectionLabel =
+  | "SKILL.md"
+  | "plugin.json"
+  | "README.md"
+  | "readme.md"
+  | "Readme.md"
+  | "asset.description"
+  | "agent.md"
+  | "command.md";
+
 export interface PromptEnvelopeSection {
-  /** 사람이 읽는 라벨(파일 종류) — 예: "SKILL.md" · "README.md" · "plugin.json". 자유 텍스트를
-   * 라벨로 쓰지 않는다(호출자는 고정된 파일 종류 이름만 넘겨야 한다 — 이 값 자체는 신뢰 경계
-   * 밖이 아니라 ctk 코드가 정하는 값이다). */
-  label: string;
+  /** 사람이 읽는 라벨(파일 종류) — `SectionLabel` 폐집합만 허용한다(호출자는 고정된 파일 종류
+   * 이름만 넘길 수 있다 — 이 값 자체는 신뢰 경계 밖이 아니라 ctk 코드가 정하는 값이다). */
+  label: SectionLabel;
   content: string;
 }
 

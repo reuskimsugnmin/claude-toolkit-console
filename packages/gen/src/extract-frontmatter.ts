@@ -8,12 +8,14 @@
  * P5(인용 강제)와 상성이 가장 좋다(citation-check.ts의 인용 태그 대신 `extracted_from`
  * 경로를 갖는다 — 생성물이 아니므로).
  */
+import type { SectionLabel } from "./prompt-envelope.js";
 
 export interface ExtractedField {
   value: string;
   /** 인용 태그(`citation-check.ts`)가 아니라 이 형태로 추적한다 — 생성물이 아니라 원문
-   * 그대로의 추출이기 때문이다(AC-3.6 예외). */
-  extractedFrom: { sourceRef: string; lineStart: number; lineEnd: number };
+   * 그대로의 추출이기 때문이다(AC-3.6 예외). `sourceRef`는 항상 호출자의 `section.label`
+   * (SectionLabel)이므로 여기서도 그 폐집합으로 좁힌다(보안 심사 H-1). */
+  extractedFrom: { sourceRef: SectionLabel; lineStart: number; lineEnd: number };
 }
 
 /** SKILL.md/plugin.json frontmatter에서 spawn_metadata로 쓸 표준 필드 이름. */
@@ -45,7 +47,7 @@ export function parseFrontmatterWithLines(content: string): Record<string, { val
  * 라인 인용과 함께 반환한다. `sourceRef`는 이 frontmatter가 담긴 파일의 표시용 라벨(예:
  * "SKILL.md") — 절대경로를 담지 않는다(AC-1.7).
  */
-export function extractSpawnMetadata(content: string, sourceRef: string): Partial<Record<SpawnMetadataKey, ExtractedField>> {
+export function extractSpawnMetadata(content: string, sourceRef: SectionLabel): Partial<Record<SpawnMetadataKey, ExtractedField>> {
   const parsed = parseFrontmatterWithLines(content);
   const result: Partial<Record<SpawnMetadataKey, ExtractedField>> = {};
   for (const key of SPAWN_METADATA_KEYS) {

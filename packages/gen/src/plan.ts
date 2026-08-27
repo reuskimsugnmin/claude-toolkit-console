@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Asset, AssetDocState } from "@ctk/core";
-import type { HomeContext } from "@ctk/probe";
+import { createBundledToolLocationCache, type BundledToolLocationCache, type HomeContext } from "@ctk/probe";
 import type { CatalogIndex, CatalogIndexEntry } from "@ctk/sync";
 import { FileHygieneError } from "./file-hygiene.js";
 import {
@@ -126,6 +126,13 @@ export function planGenTargets(options: PlanGenTargetsOptions): GenPlanResult {
   let upToDateCount = 0;
   let excludedBundled = 0;
 
+  // 보안 심사 M-3 — 이 루프가 자산마다 `judgeAsset`을 부르고 그 각각이 번들 자식이면
+  // `findBundledToolPath`를 탄다. 캐시 없이는 자산마다 `installed_plugins.json`을 다시 읽고
+  // kind 디렉터리를 다시 순회·재읽기한다(실측: 200자식 = readFileSync 40,000회·160MB로
+  // 0.8MB 산출, O(N²)). 이 배치(한 번의 `planGenTargets` 호출) 전체가 캐시 하나를 공유해
+  // 부모 단위 결과를 한 번만 만들고 재사용한다.
+  const bundledCache = createBundledToolLocationCache();
+
   for (const asset of assets) {
     if (maxAssets !== undefined && targets.length >= maxAssets) break;
 
@@ -139,7 +146,7 @@ export function planGenTargets(options: PlanGenTargetsOptions): GenPlanResult {
     // ⚠️ 판정은 `judgeAsset` **한 곳**에서만 한다. 단건 조회(`classifyAssetDocState`)와 이
     // 일괄 산출이 각자 판정하면 화면이 말하는 사유와 `gen`이 실제로 하는 일이 갈린다 —
     // 그 드리프트는 조용하고, 두 경로가 같은 함수를 타야 구조적으로 막힌다.
-    const verdict = judgeAsset(home, asset, indexById.get(asset.id), retryPolicyBlocked);
+    const verdict = judgeAsset(home, asset, indexById.get(asset.id), retryPolicyBlocked, bundledCache);
     switch (verdict.kind) {
       case "blocked":
         skipped.push({ assetId: asset.id, failureClass: verdict.failureClass, reason: verdict.reason });
@@ -189,10 +196,11 @@ function judgeAsset(
   asset: Asset,
   indexEntry: CatalogIndexEntry | undefined,
   retryPolicyBlocked?: boolean,
+  bundledCache: BundledToolLocationCache = createBundledToolLocationCache(),
 ): AssetVerdict {
   let resolved: ResolvedAssetSource;
   try {
-    resolved = resolveAssetSource(home, asset);
+    resolved = resolveAssetSource(home, asset, bundledCache);
   } catch (err) {
     if (!(err instanceof FileHygieneError)) throw err;
     // ⚠️ 경로를 싣지 않는다. 이 값은 `gen_estimate`의 **200 성공 본문**과 자산 상세 조회로
