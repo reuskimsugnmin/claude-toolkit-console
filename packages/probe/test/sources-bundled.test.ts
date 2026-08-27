@@ -90,12 +90,12 @@ describe("probe/sources/bundled — 플러그인 번들 스킬·커맨드·에�
     expect(report?.nestedUnmeasured).toBe(2);
 
     expect(result.assets.filter((a) => a.kind === "skill").map((a) => a.id).sort()).toEqual([
-      "demo-plugin@synth-marketplace:alpha-skill",
-      "demo-plugin@synth-marketplace:beta-skill",
+      "demo-plugin@synth-marketplace:skill:alpha-skill",
+      "demo-plugin@synth-marketplace:skill:beta-skill",
     ]);
     expect(result.assets.filter((a) => a.kind === "command")).toHaveLength(2);
     expect(result.assets.filter((a) => a.kind === "agent").map((a) => a.id)).toEqual([
-      "demo-plugin@synth-marketplace:helper",
+      "demo-plugin@synth-marketplace:agent:helper",
     ]);
     // 중첩 커맨드는 자산으로 편입되지 않는다.
     expect(result.assets.some((a) => a.id.includes("nested"))).toBe(false);
@@ -150,8 +150,8 @@ describe("probe/sources/bundled — 플러그인 번들 스킬·커맨드·에�
     });
     const skillIds = result.assets.filter((a) => a.kind === "skill").map((a) => a.id).sort();
     expect(skillIds).toEqual([
-      "plugin-a@synth-marketplace:shared-name",
-      "plugin-b@synth-marketplace:shared-name",
+      "plugin-a@synth-marketplace:skill:shared-name",
+      "plugin-b@synth-marketplace:skill:shared-name",
     ]);
   });
 
@@ -175,7 +175,7 @@ describe("probe/sources/bundled — 플러그인 번들 스킬·커맨드·에�
 
     const result = collectBundled({ home: fixture.home, pluginIds: ["demo-plugin@synth-marketplace"] });
     expect(result.perParent[0]?.state).toBe("ok");
-    expect(result.assets.map((a) => a.id)).toEqual(["demo-plugin@synth-marketplace:alpha-skill"]);
+    expect(result.assets.map((a) => a.id)).toEqual(["demo-plugin@synth-marketplace:skill:alpha-skill"]);
   });
 
   it("경로 순회 ⓐ — installPath가 리터럴 '../../etc'(순회 문자열)면 거부되고 사유가 남는다", () => {
@@ -243,7 +243,7 @@ describe("probe/sources/bundled — 플러그인 번들 스킬·커맨드·에�
     expect(report?.state).toBe("ok"); // 부모 전체가 거부되지 않는다 — 항목 하나만 건너뛴다.
     expect(report?.symlinksSkipped).toBe(1);
     expect(report?.skills).toBe(1); // linked-skill은 세지 않는다.
-    expect(result.assets.map((a) => a.id)).toEqual(["demo-plugin@synth-marketplace:real-skill"]);
+    expect(result.assets.map((a) => a.id)).toEqual(["demo-plugin@synth-marketplace:skill:real-skill"]);
     expect(result.assets.some((a) => a.description === undefined && a.id.includes("leaked"))).toBe(false);
     rmSync(outsideDir, { recursive: true, force: true });
   });
@@ -262,7 +262,7 @@ describe("probe/sources/bundled — 플러그인 번들 스킬·커맨드·에�
     const report = result.perParent[0];
     expect(report?.symlinksSkipped).toBe(1);
     expect(report?.commands).toBe(1);
-    expect(result.assets.map((a) => a.id)).toEqual(["demo-plugin@synth-marketplace:real"]);
+    expect(result.assets.map((a) => a.id)).toEqual(["demo-plugin@synth-marketplace:command:real"]);
     rmSync(path.dirname(outsideFile), { recursive: true, force: true });
   });
 
@@ -277,7 +277,7 @@ describe("probe/sources/bundled — 플러그인 번들 스킬·커맨드·에�
     const report = result.perParent[0];
     expect(report?.unsafeNamesSkipped).toBe(1);
     expect(report?.skills).toBe(1);
-    expect(result.assets.map((a) => a.id)).toEqual(["demo-plugin@synth-marketplace:benign-skill"]);
+    expect(result.assets.map((a) => a.id)).toEqual(["demo-plugin@synth-marketplace:skill:benign-skill"]);
     // 안전하지 않은 이름이 id에 그대로 남지 않는다(경로 순회 문자열이 카탈로그에 실리지 않는다).
     expect(result.assets.some((a) => a.id.includes(".."))).toBe(false);
   });
@@ -292,7 +292,7 @@ describe("probe/sources/bundled — 플러그인 번들 스킬·커맨드·에�
     const result = collectBundled({ home: fixture.home, pluginIds: ["demo-plugin@synth-marketplace"] });
     // 실제 파일을 dirName으로 읽어냈으므로(경로가 맞았으므로) description이 채워진다 = 읽기에 성공했다는 뜻.
     expect(result.assets).toHaveLength(1);
-    expect(result.assets[0]?.id).toBe("demo-plugin@synth-marketplace:claimed-name");
+    expect(result.assets[0]?.id).toBe("demo-plugin@synth-marketplace:skill:claimed-name");
     expect(result.assets[0]?.id.includes("actual-dir-name")).toBe(false);
     expect(result.assets[0]?.description).toBe("합성 스킬");
   });
@@ -323,5 +323,101 @@ describe("probe/sources/bundled — 플러그인 번들 스킬·커맨드·에�
     const asset = result.assets[0];
     expect(asset?.source_ref).not.toContain(fixture.home.ctkHome);
     expect(asset?.source_ref?.startsWith("~/")).toBe(true);
+  });
+
+  // ── 보안 심사 H-1(머지 차단) — id 축에 kind를 넣어 "같은 부모 안 kind가 다른 동명 충돌"을
+  // 구조적으로 없앤다. 실측(architect): 이 머신에서 부모 66개 중 8개·64건(command+skill 48,
+  // agent+skill 16) — 두 축을 각각 회귀 테스트로 못박는다.
+
+  it("H-1 ⓐ — 같은 부모 안에서 스킬과 커맨드가 같은 이름을 자칭해도 id가 서로 다르다(command+skill 축, 실측 48건 축)", () => {
+    fixture = buildHome();
+    const pluginDir = makePluginDir(fixture.home, "demo-plugin");
+    writeInstalledPlugins(fixture.home, { "demo-plugin@synth-marketplace": pluginDir });
+    writeSkill(pluginDir, "ask", "ask");
+    writeFlatMd(pluginDir, "commands", "ask.md", "ask");
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["demo-plugin@synth-marketplace"] });
+    const report = result.perParent[0];
+    expect(report?.state).toBe("ok"); // 죽지 않는다 — mergeAssets가 예전이라면 여기서 throw했다.
+    expect(report?.duplicateNamesSkipped).toBe(0); // kind가 다르므로 "같은 kind 충돌"이 아니다.
+    const ids = result.assets.map((a) => a.id).sort();
+    expect(ids).toEqual(["demo-plugin@synth-marketplace:command:ask", "demo-plugin@synth-marketplace:skill:ask"]);
+    expect(new Set(ids).size).toBe(ids.length); // 서로 다른 id — 하나도 사라지지 않는다.
+  });
+
+  it("H-1 ⓑ — 같은 부모 안에서 스킬과 에이전트가 같은 이름을 자칭해도 id가 서로 다르다(agent+skill 축, 실측 16건 축)", () => {
+    fixture = buildHome();
+    const pluginDir = makePluginDir(fixture.home, "demo-plugin");
+    writeInstalledPlugins(fixture.home, { "demo-plugin@synth-marketplace": pluginDir });
+    writeSkill(pluginDir, "x", "x");
+    writeFlatMd(pluginDir, "agents", "x.md", "x");
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["demo-plugin@synth-marketplace"] });
+    expect(result.perParent[0]?.state).toBe("ok");
+    const ids = result.assets.map((a) => a.id).sort();
+    expect(ids).toEqual(["demo-plugin@synth-marketplace:agent:x", "demo-plugin@synth-marketplace:skill:x"]);
+  });
+
+  it("H-1 ⓒ — 같은 kind 안에서 자칭 name이 충돌하면 그 자식들만 건너뛰고 부모는 죽지 않는다(어느 쪽도 승자로 고르지 않는다)", () => {
+    fixture = buildHome();
+    const pluginDir = makePluginDir(fixture.home, "demo-plugin");
+    writeInstalledPlugins(fixture.home, { "demo-plugin@synth-marketplace": pluginDir });
+    writeSkill(pluginDir, "dir-one", "dup-name");
+    writeSkill(pluginDir, "dir-two", "dup-name");
+    writeSkill(pluginDir, "dir-three", "safe-name"); // 반대 축 — 충돌 없는 형제는 그대로 편입된다.
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["demo-plugin@synth-marketplace"] });
+    const report = result.perParent[0];
+    expect(report?.state).toBe("ok"); // 부모도 스캔도 죽지 않는다(안전 원칙 6·7).
+    expect(report?.duplicateNamesSkipped).toBe(2); // 충돌한 둘 다 건너뛴다 — 승자를 고르지 않는다.
+    expect(report?.skills).toBe(1); // safe-name만 살아남는다.
+    expect(result.assets.map((a) => a.id)).toEqual(["demo-plugin@synth-marketplace:skill:safe-name"]);
+    expect(result.assets.some((a) => a.id.includes("dup-name"))).toBe(false);
+    expect(report?.reasons.some((r) => r.includes("충돌"))).toBe(true);
+  });
+
+  // ── 보안 심사 M-1(머지 전 필수) — kind 디렉터리(skills/commands/agents) 자체가 심볼릭 링크이면
+  // 리프 방어(scanBundledSkills·scanFlatMdKind)를 우회해 경계 밖 트리를 그대로 열거·등재한다.
+
+  it("M-1 — skills 디렉터리 자체가 경계 밖 심볼릭 링크면 그 kind 전체를 건너뛰고(내용을 열거하지 않고) 부모는 죽지 않는다", () => {
+    fixture = buildHome();
+    const outsideDir = mkdtempSync(path.join(tmpdir(), "ctk-outside-kinddir-"));
+    mkdirSync(path.join(outsideDir, "leaked-skill"), { recursive: true });
+    writeFileSync(path.join(outsideDir, "leaked-skill", "SKILL.md"), "---\nname: leaked\n---\n\n외부 파일", "utf8");
+    const pluginDir = makePluginDir(fixture.home, "demo-plugin");
+    writeInstalledPlugins(fixture.home, { "demo-plugin@synth-marketplace": pluginDir });
+    // 리프가 아니라 kind 디렉터리 자체를 경계 밖 심볼릭 링크로 만든다.
+    symlinkSync(outsideDir, path.join(pluginDir, "skills"));
+    writeFlatMd(pluginDir, "commands", "real.md", null); // 반대 축 — 다른 kind는 정상 편입된다.
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["demo-plugin@synth-marketplace"] });
+    const report = result.perParent[0];
+    expect(report?.state).toBe("ok"); // 부모 전체가 거부되지 않는다.
+    expect(report?.kindDirSymlinksSkipped).toBe(1);
+    expect(report?.skills).toBe(0); // "없음"이 아니라 "거부" — symlinksSkipped와 섞지 않고 reasons가 구분한다.
+    expect(report?.symlinksSkipped).toBe(0); // 리프 카운트에는 섞이지 않는다.
+    expect(report?.reasons.some((r) => r.startsWith("skills/") && r.includes("심볼릭 링크"))).toBe(true);
+    expect(result.assets.some((a) => a.kind === "skill")).toBe(false);
+    expect(result.assets.some((a) => a.id.includes("leaked"))).toBe(false); // 외부 트리가 새지 않는다.
+    expect(result.assets.some((a) => a.kind === "command" && a.id.includes("real"))).toBe(true); // 반대 축.
+    rmSync(outsideDir, { recursive: true, force: true });
+  });
+
+  // ── 보안 심사 M-2(머지 전 필수) — 거부 사유에 원문 절대경로가 남으면 scan.ts의 warnings를
+  // 거쳐 브라우저 응답까지 나간다(gen/file-hygiene.ts:40-45와 동형 규칙).
+
+  it("M-2 — installPath 거부 사유에 원문 절대경로가 남지 않는다(비식별 요약으로 대체)", () => {
+    fixture = buildHome();
+    const outsideDir = mkdtempSync(path.join(tmpdir(), "ctk-outside-reason-"));
+    writeInstalledPlugins(fixture.home, { "evil-plugin@synth-marketplace": outsideDir });
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["evil-plugin@synth-marketplace"] });
+    const report = result.perParent[0];
+    expect(report?.state).toBe("install_path_rejected");
+    const reasonText = report?.reasons.join(" ") ?? "";
+    expect(reasonText).not.toContain(outsideDir); // 원문 경로 자체가 없다.
+    expect(reasonText).not.toContain(fixture.home.ctkHome);
+    expect(reasonText).toMatch(/밖을 가리킨다/); // 사유 자체(무엇이 문제인지)는 그대로 남는다.
+    rmSync(outsideDir, { recursive: true, force: true });
   });
 });

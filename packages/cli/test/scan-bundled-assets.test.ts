@@ -102,8 +102,8 @@ describe("cli — ctk scan은 번들 하위 툴을 부모 참조 Asset으로 편
     expect(summary.warnings).toEqual([]);
 
     const index = readCatalogIndex(summary.catalogPath);
-    const skillEntry = index.assets.find((a) => a.id === `${PARENT_ID}:bundled-skill`);
-    const commandEntry = index.assets.find((a) => a.id === `${PARENT_ID}:bundled-command`);
+    const skillEntry = index.assets.find((a) => a.id === `${PARENT_ID}:skill:bundled-skill`);
+    const commandEntry = index.assets.find((a) => a.id === `${PARENT_ID}:command:bundled-command`);
     expect(skillEntry?.parent_asset_id).toBe(PARENT_ID);
     expect(commandEntry?.parent_asset_id).toBe(PARENT_ID);
   });
@@ -125,7 +125,7 @@ describe("cli — ctk scan은 번들 하위 툴을 부모 참조 Asset으로 편
 
     const snapshotLines = readFileSync(summary.snapshotPath, "utf8").trim().split("\n").filter((l) => l.length > 0);
     const records = snapshotLines.map((line) => JSON.parse(line) as Record<string, unknown>);
-    const childIds = [`${PARENT_ID}:bundled-skill`, `${PARENT_ID}:bundled-command`];
+    const childIds = [`${PARENT_ID}:skill:bundled-skill`, `${PARENT_ID}:command:bundled-command`];
     const installationsForChildren = records.filter(
       (r) => r._scope === "machine_dependent" && "asset_id" in r && childIds.includes(r.asset_id as string),
     );
@@ -134,5 +134,111 @@ describe("cli — ctk scan은 번들 하위 툴을 부모 참조 Asset으로 편
     // 반대 축 — 부모 플러그인 자체는 여전히 Installation을 갖는다(자식만 안 갖는다는 것을 대조한다).
     const parentInstallation = records.find((r) => r._scope === "machine_dependent" && r.asset_id === PARENT_ID);
     expect(parentInstallation).toBeDefined();
+  });
+
+  it("보안 심사 H-1 — 같은 부모 안에서 스킬과 커맨드가 같은 이름을 자칭해도 ctk scan이 죽지 않는다(id에 kind가 들어간다)", async () => {
+    // beforeEach가 이미 skills/bundled-skill·commands/bundled-command.md를 만들어 둔다 — 여기에
+    // 같은 이름("ask")을 자칭하는 스킬·커맨드를 더한다(H-1 실측 축, command+skill).
+    mkdirSync(path.join(pluginInstallDir, "skills", "ask"), { recursive: true });
+    writeFileSync(
+      path.join(pluginInstallDir, "skills", "ask", "SKILL.md"),
+      "---\nname: ask\ndescription: 합성 ask 스킬\n---\n\n본문\n",
+      "utf8",
+    );
+    writeFileSync(
+      path.join(pluginInstallDir, "commands", "ask.md"),
+      "---\nname: ask\ndescription: 합성 ask 커맨드\n---\n\n본문\n",
+      "utf8",
+    );
+
+    await runInit({});
+    const pluginListStdout = JSON.stringify([
+      {
+        id: PARENT_ID,
+        version: "1.0.0",
+        scope: "user",
+        enabled: true,
+        installPath: pluginInstallDir,
+        installedAt: "2026-08-01T00:00:00.000Z",
+        lastUpdated: "2026-08-01T00:00:00.000Z",
+      },
+    ]);
+
+    // 실행 하나 — 이전 id 형태(`${parentId}:${suffix}`)였다면 여기서 DuplicateAssetIdError로
+    // ctk scan 전체가 죽었다(mergeAssets가 중복 id를 throw하도록 고쳐졌기 때문, Step 3).
+    const summary = await runScan({ spawnFn: fakeSpawn(pluginListStdout) });
+
+    const index = readCatalogIndex(summary.catalogPath);
+    const skillAskId = `${PARENT_ID}:skill:ask`;
+    const commandAskId = `${PARENT_ID}:command:ask`;
+    expect(skillAskId).not.toBe(commandAskId);
+    expect(index.assets.some((a) => a.id === skillAskId)).toBe(true);
+    expect(index.assets.some((a) => a.id === commandAskId)).toBe(true);
+  });
+
+  it("보안 심사 M-2 — 번들 편입 거부 사유가 warnings에 실려도 원문 절대경로는 나가지 않는다", async () => {
+    const outsideDir = mkdtempSync(path.join(tmpdir(), "ctk-cli-bundled-outside-"));
+    const evilId = "evil-plugin@demo-marketplace";
+    // installed_plugins.json에 <config>/plugins 경계 밖을 가리키는 두 번째 플러그인을 추가한다.
+    writeFileSync(
+      path.join(ctkHome, ".claude", "plugins", "installed_plugins.json"),
+      JSON.stringify({
+        version: 2,
+        plugins: {
+          [PARENT_ID]: [
+            {
+              scope: "user",
+              installPath: pluginInstallDir,
+              version: "1.0.0",
+              installedAt: "2026-08-01T00:00:00.000Z",
+              lastUpdated: "2026-08-01T00:00:00.000Z",
+            },
+          ],
+          [evilId]: [
+            {
+              scope: "user",
+              installPath: outsideDir,
+              version: "1.0.0",
+              installedAt: "2026-08-01T00:00:00.000Z",
+              lastUpdated: "2026-08-01T00:00:00.000Z",
+            },
+          ],
+        },
+      }),
+    );
+    writeFileSync(
+      path.join(ctkHome, ".claude", "settings.json"),
+      JSON.stringify({ enabledPlugins: { [PARENT_ID]: true, [evilId]: true } }),
+    );
+
+    await runInit({});
+    const pluginListStdout = JSON.stringify([
+      {
+        id: PARENT_ID,
+        version: "1.0.0",
+        scope: "user",
+        enabled: true,
+        installPath: pluginInstallDir,
+        installedAt: "2026-08-01T00:00:00.000Z",
+        lastUpdated: "2026-08-01T00:00:00.000Z",
+      },
+      {
+        id: evilId,
+        version: "1.0.0",
+        scope: "user",
+        enabled: true,
+        installPath: outsideDir,
+        installedAt: "2026-08-01T00:00:00.000Z",
+        lastUpdated: "2026-08-01T00:00:00.000Z",
+      },
+    ]);
+
+    const summary = await runScan({ spawnFn: fakeSpawn(pluginListStdout) });
+    const warningsText = summary.warnings.join(" ");
+
+    expect(warningsText).toContain(evilId); // 사유 자체(어느 부모가 거부됐는지)는 그대로 남는다.
+    expect(warningsText).not.toContain(outsideDir); // 원문 절대경로는 나가지 않는다.
+    expect(warningsText).not.toContain(ctkHome);
+    rmSync(outsideDir, { recursive: true, force: true });
   });
 });

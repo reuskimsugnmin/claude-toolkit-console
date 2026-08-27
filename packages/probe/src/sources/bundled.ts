@@ -39,10 +39,24 @@ export interface BundledParentReport {
   skills: number | null;
   commands: number | null;
   agents: number | null;
-  /** 건너뛴 심볼릭 링크 건수(3종 합산) — 따라가지 않는다(보안 심사 항목 4). */
+  /** 건너뛴 심볼릭 링크 건수(3종 리프 합산) — 따라가지 않는다(보안 심사 항목 4). kind 디렉터리
+   * 자체의 심볼릭 링크는 여기 섞지 않는다 — `kindDirSymlinksSkipped`를 본다. */
   symlinksSkipped: number;
   /** 자칭 name이 안전한 카탈로그 세그먼트가 아니어서 건너뛴 건수(경로 순회 방어). */
   unsafeNamesSkipped: number;
+  /**
+   * 보안 심사 H-1 — 같은 kind 안에서 자칭 name이 충돌해(예: 두 스킬이 frontmatter `name`을
+   * 동일하게 자칭) 건너뛴 건수(3종 합산). **어느 쪽도 승자로 고르지 않는다** — 충돌한 이름은
+   * 전부 제외한다(안전 원칙 6, CLAUDE.md: "충돌을 없애는 게 옳고 고르는 건 틀렸다"). 상세는
+   * `reasons`.
+   */
+  duplicateNamesSkipped: number;
+  /**
+   * 보안 심사 M-1 — `skills`/`commands`/`agents` 디렉터리 **자체**가 심볼릭 링크이거나 realpath가
+   * installPath 경계 밖이라 그 kind 전체를 건너뛴 횟수(0~3). `symlinksSkipped`(리프 단위)와
+   * 섞지 않는다 — 섞으면 "없음"(진짜 0건)과 "거부"(열지 못해서 0건)가 뭉개진다.
+   */
+  kindDirSymlinksSkipped: number;
   /** commands/agents의 중첩 디렉터리 아래 발견된 .md 건수 — 이름 규약이 미실측이라 자산으로
    * 편입하지 않고 개수만 센다("미측정은 통과가 아니다" — CLAUDE.md). */
   nestedUnmeasured: number;
@@ -73,6 +87,36 @@ function pluginsBoundaryRootAbs(home: HomeContext): string {
 type ValidatedInstallPath = { ok: true; absPath: string } | { ok: false; state: BundledParentState; reason: string };
 
 /**
+ * 보안 심사 M-2 — 거부 사유 메시지에 원문 절대경로를 넣지 않는다. `installPath`는 `scan.ts`의
+ * `warnings`를 거쳐 `web-actions.ts`의 응답 본문에 그대로 실려 브라우저까지 나간다(그
+ * 응답 필드 화이트리스트는 `warnings`라는 필드 자체는 통과시키므로, 문자열 안에 박힌 원문
+ * 경로는 걸러지지 않는다). `gen/file-hygiene.ts:40-45`가 이미 못박은 규칙과 동형이다 —
+ * "원문 절대경로는 메시지에 넣지 않는다. 로컬 디버깅용으로 필드에만 둔다." 여기는 사람이 읽는
+ * 사유 문자열 하나뿐이라 별도 필드를 둘 자리가 없으므로, `normalizePath`가 이미 `source_ref`에
+ * 쓰는 것과 같은 비식별 요약(`home_relative` 우선, 없으면 `path_hash`)으로 대체한다. 상대경로
+ * 입력(순회 문자열 등)은 `home_relative`가 나오지 않지만 `path_hash`는 항상 나온다 — 어느
+ * 경우든 원문 문자열 자체는 메시지에 남지 않는다.
+ */
+function describePathForReason(home: HomeContext, rawPath: string): string {
+  const normalized = normalizePath(rawPath, home.ctkHome);
+  return normalized.home_relative ?? `path_hash:${normalized.path_hash}`;
+}
+
+/**
+ * 이미 `realpath`로 해소된 두 경로를 비교하는 순수 함수 — 예외를 던지지 않는다(경로 해소
+ * 실패는 호출자가 각자의 축("없음" vs "거부")으로 분류한다). `validateInstallPath`(installPath
+ * 경계)와 `isKindDirRejected`(M-1, kind 디렉터리 경계)가 함께 쓰는 단일 관문이다.
+ *
+ * ⚠️ `gen/src/file-hygiene.ts`의 `assertRealpathWithinRoot`와 판정 형태가 같지만 **직접
+ * import할 수 없다** — probe는 core만 import할 수 있고(eslint 계층 경계) `gen → probe` 방향만
+ * 허용된다(`probe → gen`은 순환이 된다). 재구현이 아니라 이 파일에 이미 있던 동형 판정을
+ * 함수로 뽑아 두 호출부가 공유하도록 좁힌 것 — 단일 관문 원칙을 이 파일 안에서 지킨다.
+ */
+function isRealPathWithinRealRoot(realTarget: string, realRoot: string): boolean {
+  return realTarget === realRoot || realTarget.startsWith(realRoot + path.sep);
+}
+
+/**
  * `installed_plugins.json`의 `installPath`는 `z.string()` + `.passthrough()`로만 검증돼 있다
  * (`core/harness/installed-plugins.schema.ts:21,30`) — 절대경로인지도 `..`를 담는지도 스키마
  * 단계에서 보지 않는다. 여기가 그 값을 `readdirSync`의 순회 루트로 승격시키기 **직전**이므로,
@@ -84,11 +128,19 @@ function validateInstallPath(home: HomeContext, installPath: string | undefined)
     return { ok: false, state: "install_path_missing", reason: "installed_plugins.json에 installPath 항목이 없다" };
   }
   if (!path.isAbsolute(installPath)) {
-    return { ok: false, state: "install_path_rejected", reason: `installPath가 절대경로가 아니다: ${installPath}` };
+    return {
+      ok: false,
+      state: "install_path_rejected",
+      reason: `installPath가 절대경로가 아니다: ${describePathForReason(home, installPath)}`,
+    };
   }
   if (!existsSync(installPath)) {
     // 오늘 실재율 100%(architect 실측)이므로 부재는 드리프트 신호다 — "없음"이 아니라 "실패".
-    return { ok: false, state: "install_path_missing", reason: `installPath가 디스크에 없다: ${installPath}` };
+    return {
+      ok: false,
+      state: "install_path_missing",
+      reason: `installPath가 디스크에 없다: ${describePathForReason(home, installPath)}`,
+    };
   }
   const boundaryRootAbs = pluginsBoundaryRootAbs(home);
   let realInstallPath: string;
@@ -97,13 +149,17 @@ function validateInstallPath(home: HomeContext, installPath: string | undefined)
     realInstallPath = realpathSync(installPath);
     realBoundaryRoot = realpathSync(boundaryRootAbs);
   } catch {
-    return { ok: false, state: "install_path_missing", reason: `installPath realpath 해석 실패: ${installPath}` };
+    return {
+      ok: false,
+      state: "install_path_missing",
+      reason: `installPath realpath 해석 실패: ${describePathForReason(home, installPath)}`,
+    };
   }
-  if (realInstallPath !== realBoundaryRoot && !realInstallPath.startsWith(realBoundaryRoot + path.sep)) {
+  if (!isRealPathWithinRealRoot(realInstallPath, realBoundaryRoot)) {
     return {
       ok: false,
       state: "install_path_rejected",
-      reason: `installPath가 <config>/plugins 밖을 가리킨다(realpath 기준): ${installPath}`,
+      reason: `installPath가 <config>/plugins 밖을 가리킨다(realpath 기준): ${describePathForReason(home, installPath)}`,
     };
   }
   // ⚠️ 이후 순회·`source_ref` 정규화는 realpath가 아니라 **원문 `installPath`**를 쓴다(검증에만
@@ -113,6 +169,37 @@ function validateInstallPath(home: HomeContext, installPath: string | undefined)
   // 발견). 보안 검증과 이후 값의 기준을 분리한다 — `gen/file-hygiene.ts`의 `readAssetSourceFileSafely`도
   // 같은 원칙(검증은 realpath로, 실제 읽기는 원래 경로로)을 따른다.
   return { ok: true, absPath: installPath };
+}
+
+/**
+ * 보안 심사 M-1 — kind 디렉터리(`skills`/`commands`/`agents`) **자체**가 심볼릭 링크이거나
+ * realpath가 부모 installPath 경계 밖이면 그 kind 전체를 건너뛴다. 리프(SKILL.md·개별 .md)는
+ * 각자 lstat으로 이미 방어돼 있지만(`scanBundledSkills`·`scanFlatMdKind`), kind 디렉터리
+ * **자체**가 링크면 `readdirSync`가 그 링크를 투명하게 따라가 경계 밖 트리를 그대로
+ * 열거·등재하고 `source_ref`가 경계 안처럼 정규화되어 유출이 감사에서 가려진다.
+ *
+ * 경계는 `<config>/plugins` 전체가 아니라 **이 부모의 검증된 installPath 자체**로 좁힌다 —
+ * 그래야 kind 디렉터리 링크가 같은 `<config>/plugins` 경계 안의 **다른 플러그인** 캐시 디렉터리를
+ * 가리키는 경우도 잡는다(넓은 경계만 쓰면 그 경우를 통과시킨다).
+ */
+function isKindDirRejected(kindDirAbs: string, installPathAbs: string): boolean {
+  let stat;
+  try {
+    stat = lstatSync(kindDirAbs);
+  } catch {
+    return false; // 디렉터리 자체가 없다 — "없음"(readDirSafe가 뒤에서 처리), 거부 대상이 아니다.
+  }
+  if (stat.isSymbolicLink()) return true;
+  let realTarget: string;
+  let realRoot: string;
+  try {
+    realTarget = realpathSync(kindDirAbs);
+    realRoot = realpathSync(installPathAbs);
+  } catch {
+    return false; // realpath 해석 실패는 여기서 "거부"로 승격하지 않는다(과잉 차단 방지) —
+    // installPath 자체는 이미 validateInstallPath가 검증했으므로 이 실패는 사실상 도달하지 않는다.
+  }
+  return !isRealPathWithinRealRoot(realTarget, realRoot);
 }
 
 /** 자칭 name(frontmatter)이 안전한 카탈로그 세그먼트인지 **스캔 시점에** 강제한다(쓰기 시점이
@@ -251,12 +338,53 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
   return { found, symlinksSkipped, unsafeNamesSkipped, nestedUnmeasured };
 }
 
+/** M-1 — kind 디렉터리 자체가 거부되면 리프를 아예 열지 않는다(readdirSync 자체를 안 부른다). */
+function emptyDirScanResult(): DirScanResult {
+  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0 };
+}
+
+function emptyFlatMdScanResult(): FlatMdScanResult {
+  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, nestedUnmeasured: 0 };
+}
+
+interface DedupedKindResult {
+  kept: DiscoveredBundledTool[];
+  duplicateNamesSkipped: number;
+}
+
+/**
+ * 보안 심사 H-1 — 같은 kind 안에서 자칭 name(=suffix, 이미 `safeSuffix`를 통과한 값)이 충돌하면
+ * **하나를 골라 승자로 삼지 않는다**(안전 원칙 6, CLAUDE.md: "충돌을 없애는 게 옳고 고르는 건
+ * 틀렸다"). first-wins로 고르면 디렉터리 열거 순서(파일시스템 구현에 달렸다) 하나로 어느 쪽이
+ * "진짜"인지가 결정되고, 공격자는 그 순서를 노려 다른 자식의 정체성을 가로챌 수 있다 — 이 함수는
+ * 애초에 어느 쪽이 진짜인지 판정할 근거가 없다. 충돌한 이름은 **전부** 제외하고 개수만 센다
+ * (부모도 스캔도 죽이지 않는다 — 안전 원칙 6·7).
+ */
+function dedupeSameKindNames(found: readonly DiscoveredBundledTool[]): DedupedKindResult {
+  const counts = new Map<string, number>();
+  for (const tool of found) counts.set(tool.suffix, (counts.get(tool.suffix) ?? 0) + 1);
+  const kept = found.filter((tool) => counts.get(tool.suffix) === 1);
+  return { kept, duplicateNamesSkipped: found.length - kept.length };
+}
+
+/**
+ * 보안 심사 H-1 — id 축에 `kind`를 넣는다. 이전에는 `${parentId}:${suffix}`뿐이었는데, 한 부모가
+ * 같은 이름을 다른 kind로 번들하면(예: `skills/ask/SKILL.md`(name: ask) + `commands/ask.md`)
+ * kind가 다른 두 자산이 같은 id를 가졌다(실측: 이 머신에서 부모 66개 중 8개·64건). id에
+ * `kind`를 넣으면 그 축의 충돌은 구조적으로 사라진다 — 중복 제거(dedup)가 아니라 축을 넓힌
+ * 것이다(같은 kind 안의 진짜 이름 충돌은 여전히 `dedupeSameKindNames`가 별도로 막는다).
+ *
+ * ⚠️ `Asset.name`은 `kind`를 넣지 않은 평범한 이름(`tool.suffix`)을 그대로 유지한다 — 카탈로그
+ * 경로(`catalog/assets/<kind>/<name>__<id해시8>`)의 세그먼트가 되므로 `:`가 들어가면 Windows에서
+ * 불법이다. `id`의 접미사(`${kind}:${tool.suffix}`)는 `assertCatalogSegment`가 `:`를 막지 않으므로
+ * 그대로 통과한다(`asset.ts`의 부모 참조 불변식은 수정하지 않는다 — 이 형태를 이미 받는다).
+ */
 function buildBundledAsset(home: HomeContext, parentId: string, kind: AssetKind, tool: DiscoveredBundledTool): Asset {
   const normalized = normalizePath(tool.absPath, home.ctkHome);
   return {
     schema_version: 1,
     _scope: "machine_independent",
-    id: `${parentId}:${tool.suffix}`,
+    id: `${parentId}:${kind}:${tool.suffix}`,
     kind,
     name: tool.suffix,
     parent_asset_id: parentId,
@@ -282,45 +410,78 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
         agents: null,
         symlinksSkipped: 0,
         unsafeNamesSkipped: 0,
+        duplicateNamesSkipped: 0,
+        kindDirSymlinksSkipped: 0,
         nestedUnmeasured: 0,
         reasons: [validated.reason],
       });
       continue;
     }
 
+    // 보안 심사 M-1 — 리프를 열기 전에 kind 디렉터리 자체의 경계를 먼저 확인한다. 거부되면
+    // 그 kind는 아예 readdirSync하지 않는다(빈 결과로 대체) — 경계 밖 트리를 열거·등재하지 않는다.
+    const skillsDirAbs = path.join(validated.absPath, "skills");
+    const commandsDirAbs = path.join(validated.absPath, "commands");
+    const agentsDirAbs = path.join(validated.absPath, "agents");
+    const skillsKindDirRejected = isKindDirRejected(skillsDirAbs, validated.absPath);
+    const commandsKindDirRejected = isKindDirRejected(commandsDirAbs, validated.absPath);
+    const agentsKindDirRejected = isKindDirRejected(agentsDirAbs, validated.absPath);
+
     // AC-8 — 부모가 비활성이어도 그대로 수집한다(D6). 활성 여부는 여기서 아예 조회하지 않는다 —
     // 정체성(이 함수의 관심사)과 활성(부모의 Installation이 이미 말한다)을 섞지 않는다.
-    const skillsScan = scanBundledSkills(validated.absPath);
-    const commandsScan = scanFlatMdKind(path.join(validated.absPath, "commands"));
-    const agentsScan = scanFlatMdKind(path.join(validated.absPath, "agents"));
+    const skillsScan = skillsKindDirRejected ? emptyDirScanResult() : scanBundledSkills(validated.absPath);
+    const commandsScan = commandsKindDirRejected ? emptyFlatMdScanResult() : scanFlatMdKind(commandsDirAbs);
+    const agentsScan = agentsKindDirRejected ? emptyFlatMdScanResult() : scanFlatMdKind(agentsDirAbs);
 
-    for (const tool of skillsScan.found) assets.push(buildBundledAsset(home, parentId, "skill", tool));
-    for (const tool of commandsScan.found) assets.push(buildBundledAsset(home, parentId, "command", tool));
-    for (const tool of agentsScan.found) assets.push(buildBundledAsset(home, parentId, "agent", tool));
+    // 보안 심사 H-1 — 같은 kind 안의 자칭 name 충돌을 자산화 직전에 제거한다(승자를 고르지 않고
+    // 전부 제외). kind가 다른 동명 충돌은 `buildBundledAsset`의 id 축 확장만으로 이미 해소된다.
+    const skillsDeduped = dedupeSameKindNames(skillsScan.found);
+    const commandsDeduped = dedupeSameKindNames(commandsScan.found);
+    const agentsDeduped = dedupeSameKindNames(agentsScan.found);
+
+    for (const tool of skillsDeduped.kept) assets.push(buildBundledAsset(home, parentId, "skill", tool));
+    for (const tool of commandsDeduped.kept) assets.push(buildBundledAsset(home, parentId, "command", tool));
+    for (const tool of agentsDeduped.kept) assets.push(buildBundledAsset(home, parentId, "agent", tool));
 
     const reasons: string[] = [];
+    if (skillsKindDirRejected)
+      reasons.push("skills/: kind 디렉터리 자체가 심볼릭 링크이거나 realpath가 경계 밖이라 전체를 건너뜀");
     if (skillsScan.symlinksSkipped > 0) reasons.push(`skills/: 심볼릭 링크 ${skillsScan.symlinksSkipped}건 건너뜀`);
     if (skillsScan.unsafeNamesSkipped > 0)
       reasons.push(`skills/: 안전하지 않은 자칭 name ${skillsScan.unsafeNamesSkipped}건 건너뜀`);
+    if (skillsDeduped.duplicateNamesSkipped > 0)
+      reasons.push(`skills/: 같은 kind 안에서 자칭 name이 충돌해 ${skillsDeduped.duplicateNamesSkipped}건 건너뜀(어느 쪽도 승자로 고르지 않는다)`);
+    if (commandsKindDirRejected)
+      reasons.push("commands/: kind 디렉터리 자체가 심볼릭 링크이거나 realpath가 경계 밖이라 전체를 건너뜀");
     if (commandsScan.symlinksSkipped > 0) reasons.push(`commands/: 심볼릭 링크 ${commandsScan.symlinksSkipped}건 건너뜀`);
     if (commandsScan.unsafeNamesSkipped > 0)
       reasons.push(`commands/: 안전하지 않은 자칭 name ${commandsScan.unsafeNamesSkipped}건 건너뜀`);
+    if (commandsDeduped.duplicateNamesSkipped > 0)
+      reasons.push(`commands/: 같은 kind 안에서 자칭 name이 충돌해 ${commandsDeduped.duplicateNamesSkipped}건 건너뜀(어느 쪽도 승자로 고르지 않는다)`);
     if (commandsScan.nestedUnmeasured > 0)
       reasons.push(`commands/: 중첩 디렉터리의 .md ${commandsScan.nestedUnmeasured}건 — 이름 규약 미실측, 편입하지 않음(unmeasured)`);
+    if (agentsKindDirRejected)
+      reasons.push("agents/: kind 디렉터리 자체가 심볼릭 링크이거나 realpath가 경계 밖이라 전체를 건너뜀");
     if (agentsScan.symlinksSkipped > 0) reasons.push(`agents/: 심볼릭 링크 ${agentsScan.symlinksSkipped}건 건너뜀`);
     if (agentsScan.unsafeNamesSkipped > 0)
       reasons.push(`agents/: 안전하지 않은 자칭 name ${agentsScan.unsafeNamesSkipped}건 건너뜀`);
+    if (agentsDeduped.duplicateNamesSkipped > 0)
+      reasons.push(`agents/: 같은 kind 안에서 자칭 name이 충돌해 ${agentsDeduped.duplicateNamesSkipped}건 건너뜀(어느 쪽도 승자로 고르지 않는다)`);
     if (agentsScan.nestedUnmeasured > 0)
       reasons.push(`agents/: 중첩 디렉터리의 .md ${agentsScan.nestedUnmeasured}건 — 이름 규약 미실측, 편입하지 않음(unmeasured)`);
 
     perParent.push({
       parentId,
       state: "ok",
-      skills: skillsScan.found.length,
-      commands: commandsScan.found.length,
-      agents: agentsScan.found.length,
+      skills: skillsDeduped.kept.length,
+      commands: commandsDeduped.kept.length,
+      agents: agentsDeduped.kept.length,
       symlinksSkipped: skillsScan.symlinksSkipped + commandsScan.symlinksSkipped + agentsScan.symlinksSkipped,
       unsafeNamesSkipped: skillsScan.unsafeNamesSkipped + commandsScan.unsafeNamesSkipped + agentsScan.unsafeNamesSkipped,
+      duplicateNamesSkipped:
+        skillsDeduped.duplicateNamesSkipped + commandsDeduped.duplicateNamesSkipped + agentsDeduped.duplicateNamesSkipped,
+      kindDirSymlinksSkipped:
+        (skillsKindDirRejected ? 1 : 0) + (commandsKindDirRejected ? 1 : 0) + (agentsKindDirRejected ? 1 : 0),
       nestedUnmeasured: commandsScan.nestedUnmeasured + agentsScan.nestedUnmeasured,
       reasons,
     });
