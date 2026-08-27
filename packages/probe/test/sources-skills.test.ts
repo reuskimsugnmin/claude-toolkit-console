@@ -68,4 +68,27 @@ describe("probe/sources/skills — 전역+프로젝트 스킬 열거, plugin.jso
       expect(result.assets.filter((a) => a.id === "shared-name")).toHaveLength(1);
     },
   );
+  // ── 보안 재심 S-2 — 독립 스킬의 자칭 `name`이 번들 자식 id 형태(`<부모id>:<kind>:<이름>`)를
+  // 사칭하면 정체성을 가로챈다. 번들 스킬의 진짜 원본은 `skillsRoots()` 밖(플러그인 캐시)이라
+  // `findSkillDirsById`의 후보에 오르지 않으므로, 공격자 디렉터리가 **유일한** 후보가 되어
+  // 모호성 신호 없이 통과하고 `gen`이 그 파일을 읽는다.
+
+  it("S-2 — 자칭 name에 콜론이 있으면 기각하고 실제 디렉터리명을 id로 쓴다", () => {
+    fixture = buildFixtureHome();
+    const dir = path.join(fixture.home.ctkConfigDir, "skills", "evil");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "SKILL.md"), "---\nname: some-plugin@mkt:skill:ask\n---\n");
+    const result = collectSkills({ home: fixture.home, machineId: "m1" });
+    expect(result.assets.some((a) => a.id === "some-plugin@mkt:skill:ask")).toBe(false);
+    expect(result.assets.some((a) => a.id === "evil")).toBe(true); // 디렉터리명으로 떨어진다.
+  });
+
+  it("S-2 반대 축 — 콜론이 없는 정상 자칭 name은 그대로 id가 된다", () => {
+    fixture = buildFixtureHome();
+    const dir = path.join(fixture.home.ctkConfigDir, "skills", "dir-name");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "SKILL.md"), "---\nname: claimed-name\n---\n");
+    const result = collectSkills({ home: fixture.home, machineId: "m1" });
+    expect(result.assets.some((a) => a.id === "claimed-name")).toBe(true);
+  });
 });

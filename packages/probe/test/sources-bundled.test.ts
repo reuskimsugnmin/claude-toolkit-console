@@ -420,4 +420,39 @@ describe("probe/sources/bundled — 플러그인 번들 스킬·커맨드·에�
     expect(reasonText).toMatch(/밖을 가리킨다/); // 사유 자체(무엇이 문제인지)는 그대로 남는다.
     rmSync(outsideDir, { recursive: true, force: true });
   });
+  // ── 보안 재심 S-1 — `:`는 id 구분자다. 접미사에 허용하면 id 인코딩이 prefix-free가 아니게
+  // 되어 서로 다른 (부모, kind, 이름) 조합이 같은 문자열로 접힌다. `assertCatalogSegment`는
+  // 경로 축만 보므로 이 축을 막아주지 않는다.
+
+  it("S-1 — 자칭 name에 콜론이 있으면 그 하위 툴만 건너뛴다(id 구분자 축)", () => {
+    fixture = buildHome();
+    const pluginDir = makePluginDir(fixture.home, "demo-plugin");
+    writeInstalledPlugins(fixture.home, { "demo-plugin@synth-marketplace": pluginDir });
+
+    writeSkill(pluginDir, "evil-skill", "command:x"); // 부모 id에 `:`가 있으면 접히는 형태.
+    writeSkill(pluginDir, "good-skill", null); // 반대 축 — 정상은 그대로 편입된다.
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["demo-plugin@synth-marketplace"] });
+    expect(result.assets.map((a) => a.id)).toEqual(["demo-plugin@synth-marketplace:skill:good-skill"]);
+    expect(result.perParent[0]?.unsafeNamesSkipped).toBe(1);
+    expect(result.perParent[0]?.state).toBe("ok"); // 부모도 스캔도 죽이지 않는다.
+  });
+
+  it("S-1 — 서로 다른 (부모, kind, 이름) 조합이 같은 id로 접히지 않는다", () => {
+    fixture = buildHome();
+    // 부모 id 자체에 `:`가 있는 경우 — 하네스가 이것을 금지한다는 실측이 없으므로 방어한다.
+    const outer = makePluginDir(fixture.home, "outer");
+    const inner = makePluginDir(fixture.home, "inner");
+    writeInstalledPlugins(fixture.home, {
+      "p@mkt": outer,
+      "p@mkt:skill": inner,
+    });
+    writeSkill(outer, "s", "command:x"); // p@mkt + skill + "command:x" → 접히면 p@mkt:skill:command:x
+    writeFlatMd(inner, "commands", "x.md", null); // p@mkt:skill + command + x → 같은 문자열
+
+    const result = collectBundled({ home: fixture.home, pluginIds: ["p@mkt", "p@mkt:skill"] });
+    const ids = result.assets.map((a) => a.id);
+    expect(new Set(ids).size).toBe(ids.length); // 중복 id가 없다 — mergeAssets가 죽지 않는다.
+    expect(ids).toContain("p@mkt:skill:command:x"); // 정상 쪽은 남는다(반대 축).
+  });
 });

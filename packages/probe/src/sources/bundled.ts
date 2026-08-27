@@ -205,6 +205,12 @@ function isKindDirRejected(kindDirAbs: string, installPathAbs: string): boolean 
 /** 자칭 name(frontmatter)이 안전한 카탈로그 세그먼트인지 **스캔 시점에** 강제한다(쓰기 시점이
  * 아니라) — 통과하지 못하면 그 하위 툴 하나만 건너뛰고 부모 전체를 죽이지 않는다. */
 function safeSuffix(candidate: string): string | null {
+  // ⚠️ `:`는 **id 구분자**다(`<부모id>:<kind>:<suffix>`) — 경로 안전과는 다른 축이라
+  // `assertCatalogSegment`가 막아주지 않는다. 접미사에 `:`가 들어가면 id 인코딩이 prefix-free가
+  // 아니게 되어, 부모 id에 `:`가 있는 경우 서로 다른 (부모,kind,이름) 조합이 **같은 문자열로
+  // 접힌다**(재심 S-1). 오늘 이 머신의 플러그인 id에는 `:`가 없지만 **하네스가 그것을 금지한다는
+  // 실측이 없다** — 미측정 전제에 id 유일성을 매달지 않는다.
+  if (candidate.includes(":")) return null;
   try {
     assertCatalogSegment("번들 하위 툴의 자칭 name", candidate);
     return candidate;
