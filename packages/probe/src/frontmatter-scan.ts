@@ -125,7 +125,7 @@ export function scanFrontmatter(absPath: string): FrontmatterScan {
   if (!read.truncated) {
     return { ok: true, frontmatter: parseSimpleFrontmatter(read.content), unmeasured: null };
   }
-  if (!hasCompleteFrontmatterBlock(read.content)) {
+  if (!hasCompleteFrontmatterBlock(read.content, read.truncated)) {
     // 판정 불가 — 빈 객체를 준다. 호출자는 자칭 값을 쓸 수 없고(fail-closed) `unmeasured`로
     // 그 사실을 셀 수 있다.
     return { ok: true, frontmatter: {}, unmeasured: "unterminated_within_scan_limit" };
@@ -136,9 +136,23 @@ export function scanFrontmatter(absPath: string): FrontmatterScan {
 /**
  * 읽은 범위 안에서 frontmatter 블록이 **닫혔는지** 본다. `parseSimpleFrontmatter`의 소비 규칙과
  * 같은 판정을 써야 한다 — 여기서 다르게 적으면 두 곳이 갈린다(첫 줄 `---`, 이후 `---`를 만나면 종료).
+ *
+ * ⚠️ **`truncated`면 마지막 원소는 줄이 아니라 조각이다**(보안 재심 M-1, 2026-08-28 · PoC로 실증).
+ * `readForFrontmatterScan`은 정확히 상한 바이트까지 읽으므로 절단면이 줄 한가운데에 떨어진다.
+ * 공격자가 `---TRAP` 같은 줄의 앞 3바이트에 절단면이 오도록 패딩하면 그 조각의 `trim()`이
+ * 정확히 `"---"`가 되어 **"닫혔다"로 오인**하고, 상한 안쪽의 자칭 name이 그대로 쓰인다 —
+ * L-A가 없애려던 바로 그 동작이다(실증: 절단면 앞 65533바이트에서 스캔은 `seen-first`,
+ * 전체 파일 파싱은 `hidden-past-the-limit`).
+ *
+ * **두 함수의 규칙이 갈린 것이 아니라 입력이 달랐다** — 규칙(split·trim·시작 인덱스·종료 조건)은
+ * `parseSimpleFrontmatter`와 정확히 같았고, 둘이 사이좋게 같은 허구를 본 것이다. 그래서
+ * **개행으로 끝난 것이 확인된 줄만** 종료 후보로 삼는다.
  */
-function hasCompleteFrontmatterBlock(content: string): boolean {
-  const lines = content.split(/\r?\n/);
+function hasCompleteFrontmatterBlock(content: string, truncated: boolean): boolean {
+  const all = content.split(/\r?\n/);
+  // 잘렸으면 마지막 원소를 버린다. 절단면이 마침 개행이었으면 그 원소는 빈 문자열이라 버려도
+  // 무해하고, 아니면 조각이라 반드시 버려야 한다 — 어느 쪽이든 안전한 방향이다.
+  const lines = truncated ? all.slice(0, -1) : all;
   if (lines[0]?.trim() !== "---") return true; // frontmatter가 애초에 없다 — 판정은 `{}`로 확정이다.
   for (let i = 1; i < lines.length; i++) {
     if (lines[i]?.trim() === "---") return true;
