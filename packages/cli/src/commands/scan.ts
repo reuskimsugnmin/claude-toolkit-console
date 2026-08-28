@@ -229,6 +229,23 @@ export async function runScan(options: RunScanOptions = {}): Promise<ScanSummary
       );
     }
 
+    // 보안 재심 L-3 — **막는 것과 보이는 것은 다른 축이다.** M-1 방어가 FIFO를 막고 있었지만
+    // 그 사실은 어디에도 드러나지 않아 "SKILL.md 없음"(정상)과 같은 화면이었다.
+    if (collected.skills.notRegularFileSkipped > 0) {
+      warnings.push(
+        `스킬 ${collected.skills.notRegularFileSkipped}건은 SKILL.md가 일반 파일이 아니어서(FIFO·소켓·디바이스) 열지 않았다 — ` +
+          `열었다면 읽기가 영구 블록됐다. 해당 경로에 실제 파일이 있는지 확인한다.`,
+      );
+    }
+    // 보안 재심 L-4 — id 참칭 시도를 조용히 버리지 않는다. 예전에는 그 스킬이 스캔 **전체**를
+    // `DuplicateAssetIdError`로 죽였다(빠져나갈 길 없는 fail-closed).
+    if (collected.skills.unsafeIdSkipped > 0) {
+      warnings.push(
+        `스킬 ${collected.skills.unsafeIdSkipped}건은 자산 id 후보에 \`:\`가 있어 건너뛰었다 — ` +
+          `\`:\`는 번들 하위 툴 id의 구분자라 정체가 겹친다. 디렉터리 이름이나 frontmatter name에서 \`:\`를 없앤다.`,
+      );
+    }
+
     // B1 Step 5 — 번들 편입 실패·거부·미측정 사실을 조용히 버리지 않는다(안전 원칙 5).
     // state가 "ok"가 아니면 그 부모의 하위 툴은 0건이 아니라 "읽지 못했다"(perParent가 null로
     // 이미 구분한다) — 여기서는 사용자가 볼 수 있는 문장으로만 옮긴다.

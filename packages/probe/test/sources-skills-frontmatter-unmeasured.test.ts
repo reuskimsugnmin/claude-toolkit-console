@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -99,5 +100,45 @@ describe("probe/sources/skills — frontmatter 판정 불가는 fail-closed로 �
     // 수집 경로가 정한 id로 조회하면 찾히고, 자칭 name으로는 찾히지 않는다.
     expect(findSkillDirsById(fixture.home, "real-dir-name")).toHaveLength(1);
     expect(findSkillDirsById(fixture.home, "seen-first"), "조회 경로만 자칭 name을 믿고 있다").toHaveLength(0);
+  });
+});
+
+/**
+ * 보안 재심 L-3·L-4(2026-08-28) — **막는 것과 보이는 것은 다른 축이다.**
+ */
+describe("probe/sources/skills — 막았다는 사실을 보고한다(L-3·L-4)", () => {
+  let fx: { home: HomeContext; cleanup: () => void };
+  afterEach(() => fx?.cleanup());
+
+  it("L-3 — SKILL.md가 FIFO면 열지 않고, 그 사실을 건수로 올린다(예전엔 '없음'과 같은 취급)", () => {
+    fx = buildHome();
+    const dir = path.join(fx.home.ctkConfigDir, "skills", "fifo-skill");
+    mkdirSync(dir, { recursive: true });
+    const fifo = path.join(dir, "SKILL.md");
+    // 실제 FIFO를 만든다 — `readFileSync`가 여기서 영구 블록되는 것이 M-1의 실증이었다.
+    execFileSync("mkfifo", [fifo]);
+
+    const result = collectSkills({ home: fx.home, machineId: "m1" });
+    expect(result.assets, "FIFO를 자산으로 편입했다").toEqual([]);
+    expect(result.notRegularFileSkipped, "막기만 하고 보고하지 않는다 — L-3 결함이 살아 있다").toBe(1);
+  });
+
+  it("L-4 — 디렉터리 이름에 `:`가 있으면 그 스킬만 건너뛴다(scan 전체를 죽이지 않는다)", () => {
+    fx = buildHome();
+    // 번들 자식 id(`<부모id>:<kind>:<suffix>`)를 참칭하는 디렉터리.
+    writeSkill(fx.home, "omc:skill:ask", "---\nname:\n---\n\n본문\n");
+    writeSkill(fx.home, "normal", "---\nname: normal-skill\n---\n\n본문\n");
+
+    const result = collectSkills({ home: fx.home, machineId: "m1" });
+    expect(result.assets.map((a) => a.id), "`:` 참칭 id가 그대로 편입됐다").toEqual(["normal-skill"]);
+    expect(result.unsafeIdSkipped).toBe(1);
+  });
+
+  it("L-4 대조군 — `:`가 없는 정상 디렉터리는 그대로 편입된다(과잉 차단 아님)", () => {
+    fx = buildHome();
+    writeSkill(fx.home, "plain-dir", "---\nname:\n---\n\n본문\n");
+    const result = collectSkills({ home: fx.home, machineId: "m1" });
+    expect(result.assets.map((a) => a.id)).toEqual(["plain-dir"]);
+    expect(result.unsafeIdSkipped).toBe(0);
   });
 });

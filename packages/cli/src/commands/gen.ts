@@ -148,6 +148,17 @@ export function describeActualCost(cost: RunGenSummary["cost"]): string {
 }
 
 /**
+ * 위생 거부를 `failure_class`별로 센다(보안 재심 L-2). **한 곳에서만 만든다** — 호출부에서
+ * 인라인으로 조립하면 새 분류가 늘 때 조용히 빠진다(CLAUDE.md: 집계식은 한 곳에만 둔다).
+ * 건수가 0이면 빈 객체이고, 그것은 "거부 없음"이라는 사실 그대로다.
+ */
+export function countHygieneSkips(skipped: readonly { failureClass: FailureClass }[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const s of skipped) counts[s.failureClass] = (counts[s.failureClass] ?? 0) + 1;
+  return counts;
+}
+
+/**
  * 중단시킨 실패의 분류를 꺼낸다. **모르면 `null`이고 아무 이름이나 붙이지 않는다** —
  * `exit_code`가 1로 남으므로 "성공"으로 읽히지는 않는다(안전 원칙 7).
  */
@@ -359,6 +370,13 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
           stale: summary.results.filter((r) => r.outcome === "stale").length,
         },
         no_llm: options.noLlm === true,
+        // 보안 재심 L-2 — **위생 거부를 지속 기록에 남긴다.** 예전에는 `plan.skipped`가 stdout에만
+        // 나가고 run-log에는 흔적이 0이었다. `failure_class`에 넣을 수는 없다 — 그 필드는 "무엇이
+        // 실행을 **중단시켰는가**"이고 위생 거부는 자산 1건만 빼는 것이라 뭉개면 두 축이 섞인다.
+        // 특히 `install_path_rejected`는 `installed_plugins.json`(AC-2.7-c의 "최우선 경보" 파일)
+        // 오염 신호인데 사후 감사 경로가 없었다. `session_owned_excluded`·`url_scrub`과 같은
+        // 선례를 따른다 — "조용히 지움"을 정상 경로에서도 막는다.
+        hygiene_skips: countHygieneSkips(plan.skipped),
         // 통과한 실행에서도 감사 집계를 남긴다(보안 재심 M3) — "조용히 지움"을 정상 경로에서도 막는다.
         session_owned_excluded: summary.sealAudit.sessionOwnedExcluded,
         concurrency_overrides: summary.sealAudit.concurrencyOverrides,

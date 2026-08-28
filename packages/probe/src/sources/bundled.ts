@@ -80,6 +80,12 @@ export interface BundledParentReport {
    * 대상도 바뀌었다: **판정이 뒤집힐 수 있었던 건수만** 센다.
    */
   frontmatterUnmeasured: number;
+  /**
+   * 보안 재심 L-3 — 원문이 일반 파일이 아니어서(FIFO·소켓·디바이스) 열지 않은 건수(3종 합산).
+   * **막는 것과 보이는 것은 다른 축이다** — M-1 방어가 이 공격을 막고 있었지만 아무도 그
+   * 사실을 알 수 없었다.
+   */
+  notRegularFileSkipped: number;
   /** 사람이 읽을 사유 로그. state가 "ok"가 아니면 그 사유가, "ok"여도 위 카운트가 0보다 크면
    * 각각의 상세가 담긴다. */
   reasons: string[];
@@ -184,6 +190,8 @@ interface DirScanResult {
    * 뒤집힐 수 있었던 건수**이고, 그것만 세면 과잉 보고도 사라진다.
    */
   frontmatterUnmeasured: number;
+  /** 보안 재심 L-3 — 원문이 일반 파일이 아니어서(FIFO·소켓·디바이스) 열지 않은 건수. */
+  notRegularFileSkipped: number;
 }
 
 /**
@@ -209,6 +217,7 @@ function scanBundledSkills(pluginDirAbs: string): DirScanResult {
   let symlinksSkipped = 0;
   let unsafeNamesSkipped = 0;
   let frontmatterUnmeasured = 0;
+  let notRegularFileSkipped = 0;
 
   for (const dirent of readDirSafe(skillsDirAbs)) {
     if (dirent.isSymbolicLink()) {
@@ -235,7 +244,11 @@ function scanBundledSkills(pluginDirAbs: string): DirScanResult {
     // `readFileSync`가 영구 블록된다(EXIT=124로 실증) — 열기 전에 일반 파일인지 확인한다.
     if (!skillMdStat.isFile()) continue;
     const scan = scanFrontmatter(skillMdAbs);
-    if (!scan.ok) continue;
+    if (!scan.ok) {
+      // "일반 파일 아님"은 공격 신호이고 "읽기 실패"는 경합·권한이다 — 전자만 센다(L-3).
+      if (scan.reason === "not_a_regular_file") notRegularFileSkipped++;
+      continue;
+    }
     // ⚠️ 판정 불가면 `frontmatter`가 **빈 객체**로 온다(fail-closed) — 아래 `claimedName`이
     // 자연히 `dirent.name`(OS 값)으로 떨어진다. 자칭 값을 쓸 방법이 없다.
     if (scan.unmeasured !== null) frontmatterUnmeasured++;
@@ -249,7 +262,7 @@ function scanBundledSkills(pluginDirAbs: string): DirScanResult {
     found.push({ suffix, absPath: skillDirAbs, description: frontmatter.description });
   }
 
-  return { found, symlinksSkipped, unsafeNamesSkipped, frontmatterUnmeasured };
+  return { found, symlinksSkipped, unsafeNamesSkipped, frontmatterUnmeasured, notRegularFileSkipped };
 }
 
 interface FlatMdScanResult extends DirScanResult {
@@ -272,6 +285,7 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
   let unsafeNamesSkipped = 0;
   let nestedUnmeasured = 0;
   let frontmatterUnmeasured = 0;
+  let notRegularFileSkipped = 0;
 
   for (const dirent of readDirSafe(kindDirAbs)) {
     if (dirent.isSymbolicLink()) {
@@ -297,7 +311,10 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
     }
     if (!stat.isFile()) continue;
     const scan = scanFrontmatter(fileAbs);
-    if (!scan.ok) continue;
+    if (!scan.ok) {
+      if (scan.reason === "not_a_regular_file") notRegularFileSkipped++;
+      continue;
+    }
     // 판정 불가면 빈 객체 — `claimedName`이 `baseName`(파일명)으로 떨어진다(fail-closed).
     if (scan.unmeasured !== null) frontmatterUnmeasured++;
     const frontmatter = scan.frontmatter;
@@ -311,16 +328,16 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
     found.push({ suffix, absPath: fileAbs, description: frontmatter.description });
   }
 
-  return { found, symlinksSkipped, unsafeNamesSkipped, nestedUnmeasured, frontmatterUnmeasured };
+  return { found, symlinksSkipped, unsafeNamesSkipped, nestedUnmeasured, frontmatterUnmeasured, notRegularFileSkipped };
 }
 
 /** M-1 — kind 디렉터리 자체가 거부되면 리프를 아예 열지 않는다(readdirSync 자체를 안 부른다). */
 function emptyDirScanResult(): DirScanResult {
-  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, frontmatterUnmeasured: 0 };
+  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, frontmatterUnmeasured: 0, notRegularFileSkipped: 0 };
 }
 
 function emptyFlatMdScanResult(): FlatMdScanResult {
-  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, nestedUnmeasured: 0, frontmatterUnmeasured: 0 };
+  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, nestedUnmeasured: 0, frontmatterUnmeasured: 0, notRegularFileSkipped: 0 };
 }
 
 interface DedupedKindResult {
@@ -542,6 +559,7 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
         kindDirSymlinksSkipped: 0,
         nestedUnmeasured: 0,
         frontmatterUnmeasured: 0,
+        notRegularFileSkipped: 0,
         reasons: [validated.reason],
       });
       continue;
@@ -598,13 +616,25 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
       reasons.push(`agents/: 같은 kind 안에서 자칭 name이 충돌해 ${agentsDeduped.duplicateNamesSkipped}건 건너뜀(어느 쪽도 승자로 고르지 않는다)`);
     if (agentsScan.nestedUnmeasured > 0)
       reasons.push(`agents/: 중첩 디렉터리의 .md ${agentsScan.nestedUnmeasured}건 — 이름 규약 미실측, 편입하지 않음(unmeasured)`);
+    if (skillsScan.notRegularFileSkipped > 0)
+      reasons.push(
+        `skills/: 원문이 일반 파일이 아니어서(FIFO·소켓·디바이스) 열지 않은 파일 ${skillsScan.notRegularFileSkipped}건 — 열었다면 읽기가 영구 블록됐다`,
+      );
     if (skillsScan.frontmatterUnmeasured > 0)
       reasons.push(
         `skills/: frontmatter가 스캔 상한(${FRONTMATTER_SCAN_MAX_BYTES}바이트) 안에서 닫히지 않아 판정 불가 ${skillsScan.frontmatterUnmeasured}건 — 자칭 name/description을 쓰지 않고 파일·디렉터리 이름을 썼다`,
       );
+    if (commandsScan.notRegularFileSkipped > 0)
+      reasons.push(
+        `commands/: 원문이 일반 파일이 아니어서(FIFO·소켓·디바이스) 열지 않은 파일 ${commandsScan.notRegularFileSkipped}건 — 열었다면 읽기가 영구 블록됐다`,
+      );
     if (commandsScan.frontmatterUnmeasured > 0)
       reasons.push(
         `commands/: frontmatter가 스캔 상한(${FRONTMATTER_SCAN_MAX_BYTES}바이트) 안에서 닫히지 않아 판정 불가 ${commandsScan.frontmatterUnmeasured}건 — 자칭 name/description을 쓰지 않고 파일·디렉터리 이름을 썼다`,
+      );
+    if (agentsScan.notRegularFileSkipped > 0)
+      reasons.push(
+        `agents/: 원문이 일반 파일이 아니어서(FIFO·소켓·디바이스) 열지 않은 파일 ${agentsScan.notRegularFileSkipped}건 — 열었다면 읽기가 영구 블록됐다`,
       );
     if (agentsScan.frontmatterUnmeasured > 0)
       reasons.push(
@@ -625,6 +655,8 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
         (skillsKindDirRejected ? 1 : 0) + (commandsKindDirRejected ? 1 : 0) + (agentsKindDirRejected ? 1 : 0),
       nestedUnmeasured: commandsScan.nestedUnmeasured + agentsScan.nestedUnmeasured,
       frontmatterUnmeasured: skillsScan.frontmatterUnmeasured + commandsScan.frontmatterUnmeasured + agentsScan.frontmatterUnmeasured,
+      notRegularFileSkipped:
+        skillsScan.notRegularFileSkipped + commandsScan.notRegularFileSkipped + agentsScan.notRegularFileSkipped,
       reasons,
     });
   }

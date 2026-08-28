@@ -32,6 +32,13 @@ export interface SkillSourceResult {
    * 만든다**(CLAUDE.md 안전 원칙 5). `scan.ts`가 이 값을 warnings로 옮긴다.
    */
   frontmatterUnmeasured: number;
+  /**
+   * 보안 재심 L-3 — `SKILL.md`가 일반 파일이 아니어서(FIFO·소켓·디바이스) 열지 않은 건수.
+   * M-1 방어가 막는 바로 그 공격인데 **막히기만 하고 보고되지 않았다.**
+   */
+  notRegularFileSkipped: number;
+  /** 보안 재심 L-4 — id 후보에 `:`가 있어 건너뛴 건수(번들 자식 id 참칭 · scan 전체 중단 방지). */
+  unsafeIdSkipped: number;
 }
 
 interface DiscoveredSkill {
@@ -56,6 +63,10 @@ interface SkillDirScan {
   found: DiscoveredSkill[];
   /** 판정 불가 건수 — 호출자가 합산해 사용자에게 드러낸다(L-B). */
   frontmatterUnmeasured: number;
+  /** 보안 재심 L-3 — `SKILL.md`가 일반 파일이 아니어서(FIFO·소켓·디바이스) 열지 않은 건수. */
+  notRegularFileSkipped: number;
+  /** 보안 재심 L-4 — id 후보가 `:`를 담아 건너뛴 건수(번들 자식 id 참칭 방지). */
+  unsafeIdSkipped: number;
 }
 
 function readSkillDir(skillsRootAbs: string, scope: "user" | "project", projectPath: string | null): SkillDirScan {
@@ -63,10 +74,12 @@ function readSkillDir(skillsRootAbs: string, scope: "user" | "project", projectP
   try {
     dirents = readdirSync(skillsRootAbs, { withFileTypes: true });
   } catch {
-    return { found: [], frontmatterUnmeasured: 0 };
+    return { found: [], frontmatterUnmeasured: 0, notRegularFileSkipped: 0, unsafeIdSkipped: 0 };
   }
   const found: DiscoveredSkill[] = [];
   let frontmatterUnmeasured = 0;
+  let notRegularFileSkipped = 0;
+  let unsafeIdSkipped = 0;
   for (const dirent of dirents) {
     if (!dirent.isDirectory()) continue;
     const skillDirAbs = path.join(skillsRootAbs, dirent.name);
@@ -82,7 +95,12 @@ function readSkillDir(skillsRootAbs: string, scope: "user" | "project", projectP
     // 뒤집는다. `scanFrontmatter`는 판정 불가일 때 **빈 객체**를 주므로(fail-closed) 아래
     // `claimedName`이 자연히 `dirent.name`(OS 값)으로 떨어진다.
     const scan = scanFrontmatter(skillMdAbs);
-    if (!scan.ok) continue; // SKILL.md 없음·일반 파일 아님 — 유효한 스킬 디렉터리가 아니다.
+    if (!scan.ok) {
+      // 보안 재심 L-3 — "일반 파일 아님"은 M-1 방어가 막는 **공격 신호**인데, 예전에는
+      // "SKILL.md 없음"(정상)과 똑같이 조용히 버려졌다. **막는 것과 보이는 것은 다른 축이다.**
+      if (scan.reason === "not_a_regular_file") notRegularFileSkipped++;
+      continue; // 유효한 스킬 디렉터리가 아니다.
+    }
     if (scan.unmeasured !== null) frontmatterUnmeasured++;
     const frontmatter = scan.frontmatter;
     // ⚠️ 자칭 `name`에 `:`가 있으면 기각하고 실제 디렉터리명을 쓴다(재심 S-2). `:`는 번들 자식
@@ -91,10 +109,24 @@ function readSkillDir(skillsRootAbs: string, scope: "user" | "project", projectP
     // 내놓는다 — 번들 스킬의 진짜 원본은 `skillsRoots()` 밖(플러그인 캐시)이라 후보에 오르지
     // 않기 때문이다. 모호성 신호 없이 `resolved: true`가 되어 `gen`이 그 파일을 읽는다.
     const claimedName = frontmatter.name ?? "";
+    // ⚠️ **보안 재심 L-4(2026-08-28) — 폴백에도 같은 축을 적용한다.** 자칭 name에는 `:` 기각이
+    // 있었는데 폴백값 `dirent.name`에는 없었다. `~/.claude/skills/omc:skill:ask/` 디렉터리를
+    // 만들면 id가 번들 자식(`<부모id>:<kind>:<suffix>`)과 충돌하고 `mergeAssets`의
+    // `DuplicateAssetIdError`가 **`ctk scan` 전체를 죽인다** — 빠져나갈 길 없는 fail-closed
+    // DoS다(안전 원칙 6). 덮어쓰기는 일어나지 않지만(경로 세그먼트가 `<name>__<id해시8>`라
+    // 갈린다) 스캔이 아예 못 돈다. 번들 축의 `safeSuffix`가 이미 쓰는 규칙을 여기에도 준다:
+    // **그 스킬 하나만 건너뛰고 전체를 죽이지 않는다.**
+    //
+    // ⚠️ 선재 결함이다(`main`에도 있다). 다만 frontmatter fail-closed가 이 폴백에 도달하는
+    // 경로를 하나 늘렸으므로 같은 변경에서 닫는다.
     const id = claimedName.length > 0 && !claimedName.includes(":") ? claimedName : dirent.name;
+    if (id.includes(":")) {
+      unsafeIdSkipped++;
+      continue;
+    }
     found.push({ id, dirName: dirent.name, absPath: skillDirAbs, description: frontmatter.description, scope, projectPath });
   }
-  return { found, frontmatterUnmeasured };
+  return { found, frontmatterUnmeasured, notRegularFileSkipped, unsafeIdSkipped };
 }
 
 /**
@@ -153,10 +185,14 @@ export function collectSkills(options: CollectSkillsOptions): SkillSourceResult 
 
   const discovered: DiscoveredSkill[] = [];
   let frontmatterUnmeasured = 0;
+  let notRegularFileSkipped = 0;
+  let unsafeIdSkipped = 0;
   for (const root of skillsRoots(home)) {
     const scan = readSkillDir(root.path, root.scope, root.projectPath);
     discovered.push(...scan.found);
     frontmatterUnmeasured += scan.frontmatterUnmeasured;
+    notRegularFileSkipped += scan.notRegularFileSkipped;
+    unsafeIdSkipped += scan.unsafeIdSkipped;
   }
 
   const assetById = new Map<string, Asset>();
@@ -200,5 +236,5 @@ export function collectSkills(options: CollectSkillsOptions): SkillSourceResult 
     });
   }
 
-  return { assets: [...assetById.values()], installations, frontmatterUnmeasured };
+  return { assets: [...assetById.values()], installations, frontmatterUnmeasured, notRegularFileSkipped, unsafeIdSkipped };
 }
