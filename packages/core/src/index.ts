@@ -50,6 +50,7 @@ export * from "./catalog/probe-skill.js";
 export * from "./usage/tool-names.js";
 export * from "./usage/attribution.js";
 export * from "./usage/rank.js";
+export * from "./usage/subagent-resolve.js";
 export * from "./view/view-model.js";
 export * from "./view/project-label.js";
 export * from "./view/asset-doc-state.js";

@@ -11,6 +11,8 @@ import {
   type OccupancyValue,
   type SessionUsage,
   type UsageMetric,
+  buildBundledAgentIndex,
+  resolveSubagentRef,
 } from "@ctk/core";
 import {
   collectHarnessUsage,
@@ -254,6 +256,13 @@ export async function runMeasure(options: RunMeasureOptions = {}): Promise<Measu
     const projectsRoot = options.transcriptsDir ?? path.join(home.ctkConfigDir, "projects");
     const files = listTranscriptFiles(projectsRoot);
 
+    // ⚠️ **자산 로드를 트랜스크립트 루프보다 앞으로 옮겼다**(B4-b). 서브에이전트 귀속 해석이
+    // **집계 키를 정하는 데** 쓰이기 때문이다 — 집계 뒤에 해석하면 `omc:executor`(qualified)와
+    // `executor`(bare)가 **서로 다른 행으로 남은 채 같은 asset_id를 달아** 한 자산의 사용량이
+    // 둘로 갈린다. 같은 에이전트면 같은 행에 모여야 한다.
+    const assets = listAllAssets(catalogPath);
+    const bundledAgentIndex = buildBundledAgentIndex(assets);
+
     const usageAggs = new Map<string, UsageAgg>();
     const sessionAggs = new Map<string, SessionAgg>();
     let parseFailureCount = 0;
@@ -286,13 +295,35 @@ export async function runMeasure(options: RunMeasureOptions = {}): Promise<Measu
             unattributedCallCount += 1;
             continue;
           }
-          const key = aggKey(decision.kind, decision.ref, projectPathHash);
+          // ── B4-b — 서브에이전트 귀속 해석 ──
+          // 트랜스크립트의 `subagent_type`(예: `omc:executor` · `general-purpose`)과 카탈로그의
+          // 번들 에이전트 id(`<이름>@<마켓>:agent:<이름>`)는 **형태가 달라 절대 일치하지 않았다.**
+          // 그래서 `"resolved"`는 한 번도 생산된 적이 없었다. B1이 번들 에이전트를 Asset으로
+          // 편입한 뒤에야 이을 대상이 생겼다.
+          //
+          // ⚠️ **`ref`는 그대로 두고 `assetRef`만 바꾼다.** `ref`는 트랜스크립트가 준 실측값이고
+          // `assetRef`는 카탈로그와 잇기 위한 파생값이다 — 둘을 같은 변수로 뭉개면 "무엇을 쟀는지"가
+          // 사라진다. 해석하지 못하면 실측값을 그대로 쓴다(0으로 떨어뜨리거나 행을 버리지 않는다).
+          let subagentAttribution: UsageMetric["subagent_attribution"] =
+            decision.kind === "agent" ? "unresolved" : "not_applicable";
+          let assetRef = decision.ref;
+          if (decision.kind === "agent") {
+            const resolution = resolveSubagentRef(decision.ref, bundledAgentIndex);
+            if (resolution.resolved) {
+              subagentAttribution = "resolved";
+              assetRef = resolution.assetId;
+            }
+            // 미해석은 `unresolved` 그대로다 — 후보 0건(대개 하네스 내장 에이전트)과 2건 이상
+            // (동명 충돌)을 **추측으로 고르지 않는다.** 그 구분은 `resolveSubagentRef`의 reason에
+            // 있고, 여기서는 두 경우 모두 "잇지 못했다"로 같게 취급한다(스키마에 자리가 없다).
+          }
+
+          const key = aggKey(decision.kind, assetRef, projectPathHash);
           const existing = usageAggs.get(key);
-          const subagentAttribution: UsageMetric["subagent_attribution"] = decision.kind === "agent" ? "unresolved" : "not_applicable";
           if (existing === undefined) {
             usageAggs.set(key, {
               kind: decision.kind,
-              ref: decision.ref,
+              ref: assetRef,
               projectPathHash,
               callCount: 1,
               lastUsedAt: extracted.timestamp,
@@ -407,7 +438,6 @@ export async function runMeasure(options: RunMeasureOptions = {}): Promise<Measu
     }));
 
     // ── 점유(occupancy) 측정 (AC-4.4/4.5/4.8) ──
-    const assets = listAllAssets(catalogPath);
     const occupancyRecords: Occupancy[] = [];
     const tmpCwd = catalogPath; // plugin details 호출용 cwd — 구조적 서브커맨드라 프로젝트 설정 유입 위험 없음(spawn-claude.ts가 어차피 argv를 전량 구성)
 
