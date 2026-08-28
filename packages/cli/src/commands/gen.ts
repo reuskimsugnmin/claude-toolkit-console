@@ -171,7 +171,7 @@ export interface GenDryRunReport {
   /** 원문을 못 구한 자산 — **사유별로 처방이 다르므로** id만 나열하지 않는다. */
   unresolved: GenUnresolvedAsset[];
   /** 파일 위생(심볼릭 링크·크기 상한)에 걸려 건너뛴 자산. 조용히 빼지 않는다. */
-  skipped: { assetId: string; failureClass: string; reason: string }[];
+  skipped: { assetId: string; failureClass: FailureClass; reason: string }[];
   /** 번들 자식인데 부모가 `bundledParents`에 없어 대상에서 빠진 건수. 조용히 빼지 않는다. */
   excludedBundled: number;
 }

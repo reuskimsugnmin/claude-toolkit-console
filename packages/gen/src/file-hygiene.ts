@@ -1,5 +1,6 @@
 import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
+import type { FailureClass } from "@ctk/core";
 
 /**
  * gen/src/file-hygiene.ts — iter 8 · H2.
@@ -36,7 +37,14 @@ export const DEFAULT_MAX_ASSET_SOURCE_BYTES = 200_000;
  * 추가될 때 그 나열을 빠뜨린다.** 그러면 새 규칙 하나가 다시 전체 실행을 죽인다.
  */
 export abstract class FileHygieneError extends Error {
-  abstract readonly failureClass: string;
+  /**
+   * ⚠️ **`string`이 아니라 `FailureClass`다**(B1 보안 심사 L-D, 2026-08-28). `string`이던 동안
+   * 이 계층의 네 하위 클래스 중 **셋**이 `FAILURE_CLASSES`에 등재되지 않은 값을 던지고 있었고,
+   * `extractFailureClass`가 등재 여부로 거르므로 run-log의 `failure_class`가 조용히 `null`이
+   * 됐다 — 위생이 실제로 막은 자산이 "분류 없음"으로 기록됐다. 타입을 좁혀 **등재되지 않은
+   * 값을 던지면 컴파일이 깨지게** 한다(안전 원칙 5 — 선택 필드·넓은 타입은 누락을 통과시킨다).
+   */
+  abstract readonly failureClass: FailureClass;
   /**
    * 거부된 파일의 절대경로. **메시지에는 넣지 않는다** — 이 값은 `gen_estimate`의 성공 본문을
    * 타고 브라우저까지 나가고(심사 M1), 홈 밖 프로젝트 스킬이면 홈 상대화로도 가려지지 않아

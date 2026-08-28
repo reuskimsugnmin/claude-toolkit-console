@@ -1,3 +1,5 @@
+import type { FailureClass } from "../failure/classes.js";
+
 /**
  * core/src/view/asset-doc-state.ts — "이 자산의 문서가 왜 없는가"의 4상태와 그 표시 규약.
  *
@@ -53,7 +55,7 @@ export type AssetDocState =
    * 브라우저까지 나가므로 절대경로가 섞이면 디렉터리 구조가 노출된다(심사 L-b).
    * 여기서 새로 문자열을 조립할 때도 경로를 만들어 넣지 않는다.
    */
-  | { kind: "blocked"; failure_class: string; reason: string };
+  | { kind: "blocked"; failure_class: FailureClass; reason: string };
 
 /**
  * 원문을 구하지 못한 사유. **`AssetDocState`의 kind와 문자열이 같다** — `gen`이 산출한 사유를
@@ -124,10 +126,64 @@ export function describeAssetDocState(state: AssetDocState): AssetDocStateDispla
         action: "중복 중 하나를 지우거나 이름을 갈라 충돌을 없앤다. 내용이 완전히 같아지면 그때는 자동으로 생성 대상이 된다.",
       };
     case "blocked":
+      return describeBlocked(state.failure_class);
+  }
+}
+
+/**
+ * 위생 거부의 **사유별** 문구(B1 보안 심사 L-D, 2026-08-28).
+ *
+ * ⚠️ **하나로 뭉개면 엉뚱한 처방이 나간다.** 예전에는 어떤 사유든 "스킬 원본이 심볼릭 링크인
+ * 경우가 흔한 사유다 / 링크 대상을 허용할 범위를 정하는 문제"라고 말했다 — FIFO에 막힌
+ * 사용자(`asset_source_not_a_file`)에게 있지도 않은 링크를 찾게 만들고, 200KB를 넘겨 막힌
+ * 사용자에게 "정책 결정이 필요하다"고 말했다. **셋의 처방이 전부 다르다**(안전 원칙 7과
+ * 동형 — 갈린 값을 표시가 다시 뭉개지 않는다).
+ *
+ * ⚠️ **`FailureClass` 전체를 exhaustive switch로 받지 않는다.** 37개 중 이 자리에 도달할 수
+ * 있는 것은 아래 다섯뿐이고(`gen/plan.ts`의 `judgeAsset`이 `FileHygieneError` 계층과
+ * `injection_pattern_detected`만 `blocked`으로 낸다), 나머지 32개까지 분기를 만들면 도달하지
+ * 않는 문구가 32개 생긴다. 대신 **기본 분기가 모른다고 말한다** — 틀린 처방을 주느니
+ * "전용 안내가 없다"가 낫다(안전 원칙 6 — 빠져나갈 길과 진단을 함께 준다).
+ */
+function describeBlocked(failureClass: FailureClass): AssetDocStateDisplay {
+  switch (failureClass) {
+    case "path_traversal_detected":
+      return {
+        label: "위생 거부 · 링크",
+        detail: "원문 파일이 심볼릭 링크이고 허용된 봉쇄 루트 안을 가리키지 않는다 — 링크를 따라가면 그 대상 내용이 카탈로그 문서에 박혀 저장소로 동기화된다.",
+        action: "링크 대상이 스킬 루트 안에 있고 파일명이 같아야 따라간다. 대상을 그 안으로 옮기거나 실제 파일을 그 자리에 두면 다음 스캔에서 자동으로 대상이 된다. 돈을 써도 지금 상태로는 만들어지지 않는다.",
+      };
+    case "asset_source_not_a_file":
+      return {
+        label: "위생 거부 · 일반 파일 아님",
+        detail: "원문 경로가 일반 파일이 아니다(FIFO·소켓·디바이스). 열면 읽기가 영구 블록돼 `ctk gen`·`ctk web`이 함께 멈추므로 열기 전에 거부한다.",
+        action: "그 경로에 실제 파일을 두거나 해당 자산을 정리한다. **링크 문제가 아니다** — 링크 설정을 고쳐도 바뀌지 않는다.",
+      };
+    case "asset_source_too_large":
+      return {
+        label: "위생 거부 · 크기 초과",
+        detail: "원문 파일이 자산 원문 크기 상한을 넘는다. 상한은 프롬프트 비용과 메모리를 함께 묶는 축이라 넓히지 않는다.",
+        action: "원문을 줄이면 다음 스캔에서 자동으로 대상이 된다. 정책 결정이 필요한 사안이 아니다 — 크기만 줄이면 된다.",
+      };
+    case "asset_source_missing":
+      return {
+        label: "위생 거부 · 읽는 중 사라짐",
+        detail: "존재 확인과 실제 읽기 사이에 원문이 사라졌다 — 경합·마운트 변경·깨진 링크.",
+        action: "`ctk scan`을 다시 돌린다. 반복되면 원본이 실제로 지워졌는지(드리프트) 확인한다 — `ctk doctor --drift`.",
+      };
+    case "injection_pattern_detected":
+      return {
+        label: "정책 차단",
+        detail: "원문이 인젝션 후검증 규칙에 걸린다 — 대개 README가 파괴적 명령을 문서화한 경우다. 유료 실행을 해도 산출물이 `sync` 쓰기 이전에 거부된다.",
+        action: "**재시도로 풀리지 않는다.** 원문이 바뀌면 자동으로 다시 시도한다. 지금 강제하려면 `ctk gen --retry-blocked`를 준다.",
+      };
+    default:
+      // ⚠️ 새 위생 규칙이 생기면 여기로 떨어진다. **틀린 처방을 주지 않고 모른다고 말한다** —
+      // 사유 문자열은 `gen`이 경로를 제거한 뒤 넘긴 값이므로 그대로 보여도 안전하다.
       return {
         label: "위생 거부",
-        detail: `위생 검사가 원문 읽기를 거부했다 (${state.failure_class}). 스킬 원본이 심볼릭 링크인 경우가 흔한 사유다.`,
-        action: "돈을 써도 만들어지지 않는다 — 정책 결정이 필요하다. 링크 대상을 허용할 범위를 정하는 문제이며, 지금은 거부가 안전한 기본값이다.",
+        detail: `위생 검사가 원문 읽기를 거부했다 (${failureClass}). 이 사유의 전용 안내는 아직 없다.`,
+        action: "위 사유 코드로 `docs/`와 run-log를 확인한다. 돈을 써도 지금 상태로는 만들어지지 않는다 — 사유를 먼저 없애야 한다.",
       };
   }
 }

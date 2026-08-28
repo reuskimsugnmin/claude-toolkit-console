@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Asset, AssetDocState } from "@ctk/core";
+import type { Asset, AssetDocState, FailureClass } from "@ctk/core";
 import { createBundledToolLocationCache, type BundledToolLocationCache, type HomeContext } from "@ctk/probe";
 import type { CatalogIndex, CatalogIndexEntry } from "@ctk/sync";
 import { FileHygieneError } from "./file-hygiene.js";
@@ -29,7 +29,9 @@ export interface GenPlanTarget {
 /** 파일 위생(H2)에 걸려 원문을 읽지 않은 자산 — 건너뛴 **사실과 이유**를 함께 남긴다. */
 export interface GenSkippedAsset {
   assetId: string;
-  failureClass: string;
+  /** ⚠️ `string`이 아니다(L-D) — 등재되지 않은 분류가 여기까지 흘러오면 `extractFailureClass`가
+   * 조용히 `null`로 만든다. 타입이 그 유입을 막는다. */
+  failureClass: FailureClass;
   reason: string;
 }
 
@@ -177,7 +179,7 @@ export function planGenTargets(options: PlanGenTargetsOptions): GenPlanResult {
 
 /** `judgeAsset`의 내부 판정 결과. 일괄 산출과 단건 조회가 **둘 다 이것을** 근거로 삼는다. */
 type AssetVerdict =
-  | { kind: "blocked"; failureClass: string; reason: string }
+  | { kind: "blocked"; failureClass: FailureClass; reason: string }
   | { kind: "unresolved"; reason: UnresolvedSourceReason; locationCount?: number }
   | { kind: "up-to-date" }
   | { kind: "target"; reason: GenTargetReason; sections: AssetSourceSections; sourceContentSha256: string };
