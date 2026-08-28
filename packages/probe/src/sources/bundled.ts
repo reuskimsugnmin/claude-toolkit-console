@@ -1,6 +1,6 @@
-import { type Dirent, lstatSync, readdirSync, realpathSync } from "node:fs";
+import { type Dirent, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
-import { normalizePath, type Asset, type AssetKind } from "@ctk/core";
+import { McpJsonShapeError, normalizePath, parseMcpJson, type Asset, type AssetKind } from "@ctk/core";
 import type { HomeContext } from "../home.js";
 import { FRONTMATTER_SCAN_MAX_BYTES, scanFrontmatter } from "../frontmatter-scan.js";
 import { listPluginInstallPaths } from "./plugins.js";
@@ -81,6 +81,17 @@ export interface BundledParentReport {
    * 사실을 알 수 없었다.
    */
   notRegularFileSkipped: number;
+  /**
+   * B4-a-1 — `.mcp.json`에서 편입한 서버 수. `null`이면 **읽지 못했다**(형태 오류 등) —
+   * 0("MCP를 번들하지 않는다")과 섞지 않는다(안전 원칙 7).
+   */
+  mcpServers: number | null;
+  /**
+   * B4-a-1 — `hooks/` 아래 항목 수. **Asset으로 만들지 않고 건수만 센다**(「결정 7」 유지 —
+   * 훅은 자동 발동이라 "사람이 명시적으로 지시한다"는 문제 1의 대상이 아니다). 다만 상시
+   * 컨텍스트 비용을 내는 자산이 **숨어 있다는 사실**은 드러나야 한다(문제 2). 읽지 못하면 `null`.
+   */
+  hooks: number | null;
   /** 사람이 읽을 사유 로그. state가 "ok"가 아니면 그 사유가, "ok"여도 위 카운트가 0보다 크면
    * 각각의 상세가 담긴다. */
   reasons: string[];
@@ -372,6 +383,109 @@ function buildBundledAsset(home: HomeContext, parentId: string, kind: AssetKind,
   };
 }
 
+/**
+ * B4-a-1 — `<installPath>/.mcp.json`을 읽어 서버 정의를 돌려준다.
+ *
+ * ⚠️ **`hooks/`·`.mcp.json`은 kind 디렉터리가 아니다.** 스킬·커맨드·에이전트는 디렉터리를
+ * 순회하지만 MCP는 **파일 하나가 서버 여럿을 담는다** — `isKindDirRejected`(kind 디렉터리 경계)가
+ * 적용되지 않는 대신, 그 파일 자체에 리프 방어(심볼릭 링크 거부 · 일반 파일 확인 · 크기 상한)를 건다.
+ *
+ * **읽지 못한 것과 없는 것을 가른다**(안전 원칙 7): 파일이 없으면 `{ servers: [], read: true }`
+ * (진짜 0건), 형태가 깨졌거나 열 수 없으면 `read: false`(호출자가 `null`로 보고한다).
+ */
+/**
+ * `.mcp.json` 읽기 상한. frontmatter 스캔 상한(64KB, "매칭 전 후보 전원")과도, gen의 자산 원문
+ * 상한과 **같은 값이다** — 이 파일 전체가 gen의 읽기 대상이 되므로 두 상한이 어긋나면
+ * 그 사이 크기의 파일이 **스캔에서는 자산이 되고 gen에서는 영구 `blocked`가 된다**(보안 재심 L-7:
+ * 처음엔 256KB로 두고 "gen 쪽 상한에 맞춘다"고 적어 두었는데 실제로는 31% 넓었다).
+ * ⚠️ 실측 최대 1,834바이트 — **이 축에는 실환경 양성 대조군이 없다**(테스트 픽스처로만 태운다).
+ */
+const MCP_JSON_MAX_BYTES = 200_000;
+
+interface McpScanResult {
+  /**
+   * 발견한 서버 **이름만**. ⚠️ **정의 본문을 여기 담지 않는다**(보안 재심 L-9) — `probe`가
+   * 가려지지 않은 사본을 들고 있으면, 한 줄 편집(`description: ...`)으로 자격증명이
+   * `asset.json`에 들어가 가림 층을 통째로 우회한다. 정의는 `gen`이 읽을 때 그 자리에서
+   * 가려서 읽는다(`gen/source-resolve.ts`의 `bundledMcpSource`).
+   */
+  servers: { name: string }[];
+  /** `false`면 **읽지 못했다** — 0건과 구별한다. */
+  read: boolean;
+  reason: string | null;
+}
+
+function scanBundledMcp(pluginDirAbs: string): McpScanResult {
+  const abs = path.join(pluginDirAbs, ".mcp.json");
+  let stat;
+  try {
+    stat = lstatSync(abs);
+  } catch (err) {
+    // ⚠️ **`catch`를 뭉뚱그리면 EACCES·ELOOP·EIO가 "진짜 0건"으로 보고된다**(보안 재심 M-3).
+    // 이 기능이 존재하는 이유가 바로 "없음"과 "실패"를 가르는 것인데 그 첫 줄에서 어겼다.
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { servers: [], read: true, reason: null }; // 파일 없음 — 진짜 0건.
+    return { servers: [], read: false, reason: `.mcp.json을 stat 하지 못했다(${code ?? "unknown"})` };
+  }
+  // 리프 방어 — 서드파티 트리이므로 링크를 따라가지 않는다(kind 리프와 같은 규칙).
+  if (stat.isSymbolicLink()) return { servers: [], read: false, reason: ".mcp.json이 심볼릭 링크다 — 따라가지 않는다" };
+  if (!stat.isFile()) return { servers: [], read: false, reason: ".mcp.json이 일반 파일이 아니다(FIFO·소켓·디바이스) — 열지 않는다" };
+  if (stat.size > MCP_JSON_MAX_BYTES) {
+    return { servers: [], read: false, reason: `.mcp.json이 크기 상한(${MCP_JSON_MAX_BYTES}바이트)을 넘는다` };
+  }
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(abs, "utf8")) as unknown;
+  } catch {
+    return { servers: [], read: false, reason: ".mcp.json이 JSON으로 파싱되지 않는다" };
+  }
+
+  let parsed;
+  try {
+    parsed = parseMcpJson(raw);
+  } catch (err) {
+    // 형태 오류를 **빈 결과로 삼키지 않는다** — 조용한 0건은 "MCP를 번들하지 않는다"와 같아진다.
+    return { servers: [], read: false, reason: err instanceof McpJsonShapeError ? err.message : ".mcp.json 파싱 실패" };
+  }
+
+  const servers = [...parsed.servers.keys()].map((name) => ({ name }));
+  const reason =
+    parsed.ignoredTopLevelKeys.length > 0
+      ? `.mcp.json 래퍼형에서 서버가 아닌 최상위 키 ${parsed.ignoredTopLevelKeys.length}건을 무시했다`
+      : null;
+  return { servers, read: true, reason };
+}
+
+/**
+ * B4-a-1 — `hooks/` 아래 항목 수만 센다. **Asset을 만들지 않는다**(「결정 7」 유지).
+ * 훅은 자동 발동이라 "사람이 명시적으로 지시한다"(문제 1)의 대상이 아니지만, **상시 컨텍스트
+ * 비용을 내는 자산이 숨어 있다는 사실**(문제 2)은 드러나야 한다.
+ *
+ * 읽지 못하면 `null` — 디렉터리가 없으면 0(진짜 없음)이다.
+ */
+/** `.mcp.json`의 절대경로 — `source_ref` 정규화에만 쓴다(원문 경로는 카탈로그에 저장되지 않는다). */
+function mcpJsonPathOf(pluginDirAbs: string): string {
+  return path.join(pluginDirAbs, ".mcp.json");
+}
+
+function countBundledHooks(pluginDirAbs: string): number | null {
+  const abs = path.join(pluginDirAbs, "hooks");
+  let stat;
+  try {
+    stat = lstatSync(abs);
+  } catch (err) {
+    // M-3과 같은 축 — ENOENT만 "없음"이고 나머지는 "읽지 못했다"(null)다.
+    return (err as NodeJS.ErrnoException).code === "ENOENT" ? 0 : null;
+  }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) return null; // 읽지 않는다 — "없음"이 아니다.
+  try {
+    return readdirSync(abs, { withFileTypes: true }).filter((d) => d.isFile() || d.isDirectory()).length;
+  } catch {
+    return null;
+  }
+}
+
 /** `findBundledToolPath`가 다루는 kind — 번들로만 존재하는 셋(plugin·mcp·cli는 대상이 아니다). */
 export type BundledChildKind = "skill" | "agent" | "command";
 
@@ -546,6 +660,8 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
         nestedUnmeasured: 0,
         frontmatterUnmeasured: 0,
         notRegularFileSkipped: 0,
+        mcpServers: null,
+        hooks: null,
         reasons: [validated.reason],
       });
       continue;
@@ -627,9 +743,47 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
         `agents/: frontmatter가 스캔 상한(${FRONTMATTER_SCAN_MAX_BYTES}바이트) 안에서 닫히지 않아 판정 불가 ${agentsScan.frontmatterUnmeasured}건 — 자칭 name/description을 쓰지 않고 파일·디렉터리 이름을 썼다`,
       );
 
+    // ── B4-a-1 — 번들 MCP·훅 ──
+    // ⚠️ **kind 디렉터리 순회가 아니다.** `.mcp.json`은 파일 하나가 서버 여럿을 담고,
+    // `hooks/`는 Asset을 만들지 않고 건수만 센다(「결정 7」 유지).
+    const mcpScan = scanBundledMcp(validated.absPath);
+    const hooksCount = countBundledHooks(validated.absPath);
+    if (!mcpScan.read && mcpScan.reason !== null) reasons.push(`.mcp.json: ${mcpScan.reason}`);
+    else if (mcpScan.reason !== null) reasons.push(mcpScan.reason);
+    if (hooksCount === null) reasons.push("hooks/: 심볼릭 링크이거나 디렉터리가 아니어서 읽지 않았다 — 0건이 아니라 미측정이다");
+
+    // 서버명도 자칭 문자열이므로 **경로·id 안전을 스캔 시점에 강제한다**(H6·safeSuffix와 동형).
+    const mcpKept: { name: string }[] = [];
+    let mcpUnsafeNames = 0;
+    for (const server of mcpScan.servers) {
+      const suffix = safeSuffix(server.name);
+      if (suffix === null) {
+        mcpUnsafeNames++;
+        continue;
+      }
+      mcpKept.push({ name: suffix });
+    }
+    if (mcpUnsafeNames > 0)
+      reasons.push(`.mcp.json: 서버명이 안전한 카탈로그 세그먼트가 아니어서 건너뛴 항목 ${mcpUnsafeNames}건`);
+
+    // ⚠️ **여기서는 `dedupeSameKindNames`를 쓰지 않는다 — 도달할 수 없는 가드다**(보안 재심 L-8).
+    // `parsed.servers`는 `Map`이라 한 파일 안에서 이름이 이미 유일하고, `safeSuffix`는 순수
+    // 검증기(값을 바꾸지 않고 통과 또는 `null`)라 두 이름을 하나로 접을 수 없다. 넣어 두면
+    // **양성 대조군을 만들 수 없는 가드**가 되고, 그런 가드는 도는지 확인할 방법이 없다.
+    // (스킬·커맨드·에이전트는 다르다 — 자칭 name이 서로 다른 파일에서 충돌할 수 있다.)
+    //
+    // ⚠️ 단, `JSON.parse`가 **중복 JSON 키를 last-write-wins로 이미 접은 뒤**다. 그것은 하네스
+    // 자신의 동작과 같으므로 여기서 되돌리지 않는다 — 다르게 하면 ctk가 본 것과 하네스가 쓰는
+    // 것이 갈린다.
+    for (const server of mcpKept) {
+      assets.push(buildBundledAsset(home, parentId, "mcp", { suffix: server.name, absPath: mcpJsonPathOf(validated.absPath), description: undefined }));
+    }
+
     perParent.push({
       parentId,
       state: "ok",
+      mcpServers: mcpScan.read ? mcpKept.length : null,
+      hooks: hooksCount,
       skills: skillsDeduped.kept.length,
       commands: commandsDeduped.kept.length,
       agents: agentsDeduped.kept.length,

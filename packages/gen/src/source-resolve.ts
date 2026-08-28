@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { bundledParentId, type Asset, type UnresolvedSourceReason } from "@ctk/core";
+import { bundledParentId, parseMcpJson, redactMcpServerSecrets, type Asset, type UnresolvedSourceReason } from "@ctk/core";
 import {
   createBundledToolLocationCache,
   findBundledToolPath,
@@ -63,7 +63,16 @@ export type { UnresolvedSourceReason };
 export type AssetSourceSections = PromptEnvelopeSection[];
 
 export type ResolvedAssetSource =
-  | { resolved: true; sections: AssetSourceSections }
+  | {
+      resolved: true;
+      sections: AssetSourceSections;
+      /**
+       * 보안 재심 M-5 — 원문에서 **가린 자격증명 값의 개수**(번들 MCP 경로에서만 0보다 클 수 있다).
+       * **세어 놓고 아무도 안 읽으면 미배선이다** — `plan.ts`가 `GenPlanTarget`으로 올리고
+       * `cli/gen.ts`가 run-log에 남긴다(`url_scrub`과 같은 계약).
+       */
+      credentialsRedacted: number;
+    }
   | { resolved: false; reason: "source_missing" | "no_local_source" }
   /** `locationCount`는 이 머신의 파일 배치 사실이므로 **저장하지 않고** 조회 시점에만 쓴다. */
   | { resolved: false; reason: "ambiguous_source"; locationCount: number };
@@ -102,7 +111,7 @@ function skillSource(home: HomeContext, asset: Asset): ResolvedAssetSource {
   if (new Set(contents.map(sha256)).size > 1) {
     return { resolved: false, reason: "ambiguous_source", locationCount: dirs.length };
   }
-  return { resolved: true, sections: [{ label: "SKILL.md", content: first }] };
+  return { resolved: true, sections: [{ label: "SKILL.md", content: first }], credentialsRedacted: 0 };
 }
 
 /**
@@ -142,7 +151,7 @@ function pluginSource(home: HomeContext, asset: Asset): ResolvedAssetSource {
   }
   // 설치는 돼 있는데 읽을 원문이 없다 — 있어야 할 것이 없는 상태이므로 조사 대상이다.
   if (sections.length === 0) return { resolved: false, reason: "source_missing" };
-  return { resolved: true, sections };
+  return { resolved: true, sections, credentialsRedacted: 0 };
 }
 
 /**
@@ -154,7 +163,7 @@ function descriptionOnlySource(asset: Asset): ResolvedAssetSource {
   if (asset.description === undefined || asset.description.length === 0) {
     return { resolved: false, reason: "no_local_source" };
   }
-  return { resolved: true, sections: [{ label: "asset.description", content: asset.description }] };
+  return { resolved: true, sections: [{ label: "asset.description", content: asset.description }], credentialsRedacted: 0 };
 }
 
 /**
@@ -221,7 +230,65 @@ function bundledChildSource(
   if (new Set(contents.map(sha256)).size > 1) {
     return { resolved: false, reason: "ambiguous_source", locationCount: locations.length };
   }
-  return { resolved: true, sections: [{ label, content: first }] };
+  return { resolved: true, sections: [{ label, content: first }], credentialsRedacted: 0 };
+}
+
+/**
+ * 번들 MCP 서버 하나의 원문 — 그 부모의 `.mcp.json`에서 **이 서버의 항목만** 꺼낸다(B4-a-1).
+ *
+ * ⚠️ **`findBundledToolPath`를 쓰지 않는다.** 그 함수는 "툴 하나 = 파일 하나"를 전제하는데
+ * `.mcp.json`은 **파일 하나가 서버 여럿을 담는다.** 파일 전체를 원문으로 주면 다른 서버의 정의가
+ * 이 자산의 문서에 섞여 들어간다 — 자산 정체가 흐려지고 프롬프트 비용도 서버 수만큼 곱해진다.
+ *
+ * ⚠️ **이 섹션의 인용 행번호는 파일이 아니라 합성 조각을 가리킨다**(보안 재심 L-6). 다른 라벨은
+ * 섹션 내용이 곧 파일이라 `[[cite:README.md#L12-L20]]`이 실제 파일 줄과 맞지만, `.mcp.json`은
+ * **파일 하나가 서버 여럿을 담아** 그 서버 항목만 잘라 재직렬화한 것이고 값도 가려진 뒤다.
+ * P5·후검증은 구조만 보므로 깨지지 않지만(`citationTag`는 `SectionLabel` 폐집합, `checkCitations`는
+ * 구조 검사), **출처 정확도의 문제다** — 이 사실을 적어 두고 넘어간다. 라벨을 `.mcp.json#<서버>`로
+ * 나누는 것은 `SectionLabel`이 폐집합이라 kind마다 리터럴이 늘어나므로 하지 않았다.
+ *
+ * 경로 안전은 `probe`가 이미 마쳤다 — `findPluginInstallPath`가 `validateInstallPath`
+ * (절대성·존재·realpath 경계)를 지난 값만 돌려준다(M-B). 여기서는 그 루트 아래의 `.mcp.json`을
+ * `readAssetSourceFileSafely`로 읽기만 한다. **거부는 부재로 뭉개지 않는다** — `pluginSource`와
+ * 같은 계약이다.
+ */
+function bundledMcpSource(home: HomeContext, asset: Asset): ResolvedAssetSource {
+  const parentId = bundledParentId(asset);
+  if (parentId === null) return { resolved: false, reason: "source_missing" };
+
+  const validated = findPluginInstallPath(home, parentId);
+  if (!validated.ok) {
+    if (validated.state === "install_path_rejected") {
+      throw new InstallPathRejectedError(validated.rejectedPath, validated.reason);
+    }
+    return { resolved: false, reason: "source_missing" };
+  }
+
+  const mcpJsonAbs = path.join(validated.absPath, ".mcp.json");
+  if (!existsSync(mcpJsonAbs)) return { resolved: false, reason: "source_missing" };
+  const raw = readAssetSourceFileSafely(mcpJsonAbs, validated.absPath);
+
+  let parsed;
+  try {
+    parsed = parseMcpJson(JSON.parse(raw) as unknown);
+  } catch {
+    // 스캔 시점엔 파싱됐는데 지금 안 된다 — 드리프트다. **빈 문서를 만들지 않는다.**
+    return { resolved: false, reason: "source_missing" };
+  }
+
+  const definition = parsed.servers.get(asset.name);
+  if (definition === undefined) return { resolved: false, reason: "source_missing" };
+
+  // ⚠️ **`env`·`headers`의 리터럴 값은 프롬프트에도 문서에도 싣지 않는다**(B4-a-1).
+  // 이 내용은 카탈로그 문서가 되어 동기화 저장소로 나가는데, **MCP 설정 파일은 원래 자격증명을
+  // 담는 자리다** — README와 유출면의 등급이 다르다. 키는 남기고(= "이 서버는 인증이 필요하다"는
+  // 유용한 정보) 값만 가린다. `${VAR}` 보간은 값이 아니라 참조이므로 그대로 둔다.
+  const { definition: safe, redactedCount } = redactMcpServerSecrets(definition);
+  return {
+    resolved: true,
+    sections: [{ label: ".mcp.json", content: JSON.stringify(safe, null, 2) }],
+    credentialsRedacted: redactedCount,
+  };
 }
 
 /**
@@ -246,6 +313,11 @@ export function resolveAssetSource(
     case "plugin":
       return pluginSource(home, asset);
     case "mcp":
+      // B4-a-1 — **MCP도 독립·번들 양쪽에 산다**(skill과 같은 형태, `parent_asset_id`로 갈린다).
+      // 번들 MCP는 `.mcp.json`이라는 **읽을 원문이 실제로 있으므로** `no_local_source`
+      // ("유형상 원문 없음")가 더 이상 참이 아니다 — 그 판정을 유지하면 화면이 거짓말을 한다.
+      // 독립 MCP(`~/.claude.json` 직접 등록)는 종전 그대로다: 로컬에 정형 원문이 없다.
+      return asset.parent_asset_id !== undefined ? bundledMcpSource(home, asset) : descriptionOnlySource(asset);
     case "cli":
       return descriptionOnlySource(asset);
     // B1 Step 5(probe/sources/bundled.ts)가 편입한 번들 자식 — kindConstraint가 parent_asset_id를

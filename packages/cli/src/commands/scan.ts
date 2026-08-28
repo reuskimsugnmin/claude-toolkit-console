@@ -229,6 +229,15 @@ export async function runScan(options: RunScanOptions = {}): Promise<ScanSummary
       );
     }
 
+    // 보안 재심 M-2 — 독립 MCP의 이름 기각도 조용히 버리지 않는다. 이 축은 **저장소에 담겨
+    // 배포되는 프로젝트 `.mcp.json`**에서 오므로 기각은 공격 시도일 수 있다.
+    if (collected.mcp.unsafeNamesSkipped > 0) {
+      warnings.push(
+        `MCP 서버 ${collected.mcp.unsafeNamesSkipped}건은 이름이 안전한 자산 id 세그먼트가 아니어서 건너뛰었다 — ` +
+          `\`:\`·제어문자·과길이·경로 구분자는 카탈로그 경로와 id 정체를 깨뜨린다.`,
+      );
+    }
+
     // 보안 재심 L-3 — **막는 것과 보이는 것은 다른 축이다.** M-1 방어가 FIFO를 막고 있었지만
     // 그 사실은 어디에도 드러나지 않아 "SKILL.md 없음"(정상)과 같은 화면이었다.
     if (collected.skills.notRegularFileSkipped > 0) {
@@ -256,6 +265,14 @@ export async function runScan(options: RunScanOptions = {}): Promise<ScanSummary
         warnings.push(`번들 편입 거부 — ${report.parentId}: installPath가 안전하지 않다(${report.reasons.join("; ")})`);
       } else if (report.reasons.length > 0) {
         warnings.push(`번들 편입 참고 — ${report.parentId}: ${report.reasons.join("; ")}`);
+      }
+      // B4-a-1 — **미측정을 0건으로 삼키지 않는다.** `null`은 "그 플러그인은 MCP/훅을 번들하지
+      // 않는다"가 아니라 "읽지 못했다"이고, 사용자가 할 일이 다르다(안전 원칙 7).
+      if (report.state === "ok" && report.mcpServers === null) {
+        warnings.push(`번들 MCP 미측정 — ${report.parentId}: .mcp.json을 읽지 못했다(0건이 아니다)`);
+      }
+      if (report.state === "ok" && report.hooks === null) {
+        warnings.push(`번들 훅 미측정 — ${report.parentId}: hooks/를 읽지 못했다(0건이 아니다)`);
       }
     }
 

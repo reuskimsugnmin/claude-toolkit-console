@@ -115,6 +115,10 @@ export function ruleExtract(asset: Asset, sections: readonly PromptEnvelopeSecti
   let whenToUseText: string | undefined;
   let whenToUseCitation: string | undefined;
 
+  function countLines(text: string): number {
+    return Math.max(1, text.split("\n").length);
+  }
+
   function pushCitation(sourceRef: string, lineStart: number, lineEnd: number): void {
     citations.push({ source_ref: sourceRef, line_start: lineStart, line_end: lineEnd });
   }
@@ -176,6 +180,20 @@ export function ruleExtract(asset: Asset, sections: readonly PromptEnvelopeSecti
       roleCitation = citationTag("asset.description", 1, 1);
       pushCitation("asset.description", 1, 1);
       bodySections.push(`${section.content} ${roleCitation}`);
+    } else if (section.label === ".mcp.json") {
+      // ⚠️ **보안 재심 M-4 — I-2와 같은 결함의 재발이었다.** 이 분기가 없으면 번들 MCP 원문의
+      // 결정론적 추출 소비자가 0이 되고, `description`이 없는 번들 MCP 자산은 아래 폴백으로
+      // 떨어져 **`[[cite:asset.description#L1-L1]]`을 단다** — 이 자산에 존재한 적 없는 원본을
+      // 인용하는 문서가 나온다. `checkCitations`는 구조만 보므로 통과한다.
+      //
+      // 내용은 JSON이라 heading이 없다. `title`/`description`이 있으면 그것이 역할이고,
+      // 없으면 **서버 이름과 접속 형태**가 사람이 읽을 최소 정보다(`command` 또는 `url` 호스트).
+      // 값은 이미 `redactMcpServerSecrets`가 가린 뒤이므로 그대로 실어도 안전하다.
+      const summary = summarizeMcpDefinition(section.content, asset.name);
+      roleText = summary;
+      roleCitation = citationTag(".mcp.json", 1, countLines(section.content));
+      pushCitation(".mcp.json", 1, countLines(section.content));
+      bodySections.push(`${summary} ${roleCitation}`);
     }
   }
 
@@ -221,4 +239,40 @@ export function ruleExtract(asset: Asset, sections: readonly PromptEnvelopeSecti
   };
 
   return { annotation, docPage };
+}
+
+
+/**
+ * 번들 MCP 서버 정의 한 조각을 사람이 읽을 한 줄로 요약한다(보안 재심 M-4).
+ *
+ * ⚠️ **값은 이미 `redactMcpServerSecrets`가 가린 뒤에 온다** — 여기서 다시 가리지 않고,
+ * 가려지지 않은 값을 받을 일도 없다(호출 경로가 하나다: `bundledMcpSource`).
+ *
+ * `title`·`description`이 있으면 그것이 역할이다(실측: 23개 정의 중 9개가 보유). 없으면
+ * **접속 형태**를 말한다 — `url`이면 그 호스트, `command`면 그 실행 파일. 둘 다 없으면 이름만.
+ * **추측으로 문장을 지어내지 않는다.**
+ */
+function summarizeMcpDefinition(json: string, serverName: string): string {
+  let def: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return serverName;
+    def = parsed as Record<string, unknown>;
+  } catch {
+    return serverName; // 원문을 못 읽으면 이름만 — 지어내지 않는다.
+  }
+  const stated = [def["title"], def["description"]].find((v) => typeof v === "string" && v.length > 0);
+  if (typeof stated === "string") return stated;
+
+  const url = def["url"];
+  if (typeof url === "string") {
+    try {
+      return `MCP 서버 ${serverName} — ${new URL(url).host}에 접속한다`;
+    } catch {
+      return `MCP 서버 ${serverName}`;
+    }
+  }
+  const command = def["command"];
+  if (typeof command === "string" && command.length > 0) return `MCP 서버 ${serverName} — ${command}로 실행한다`;
+  return `MCP 서버 ${serverName}`;
 }
