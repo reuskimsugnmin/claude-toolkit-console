@@ -1,4 +1,5 @@
 import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { parseSimpleFrontmatter } from "./frontmatter.js";
 
 /**
  * probe/src/frontmatter-scan.ts — **스캔 단계에서 원문 파일을 안전하게 여는 단일 관문.**
@@ -35,11 +36,10 @@ export type FrontmatterScanRead =
 /**
  * 스캔용으로 파일 앞부분을 읽는다. **`readFileSync`를 직접 부르지 말고 이 함수를 쓴다.**
  *
- * ⚠️ `truncated: true`는 **"이 파일의 frontmatter 판정을 신뢰할 수 없다"**는 뜻이다 —
- * `parseSimpleFrontmatter`는 닫는 `---`가 없으면 끝까지 소비하며 last-write-wins를 적용하므로,
- * 상한 밖에 두 번째 `name:`이 있으면 잘린 쪽과 안 잘린 쪽의 판정이 **달라진다**(3차 심사 L-A가
- * 실측으로 반증했다 — 이전 주석은 "빈 결과로 자연히 처리한다"고 **주장**했으나 거짓이었다).
- * 호출자는 이 플래그를 삼키지 말고 건수를 세어 사용자에게 드러낸다.
+ * ⚠️ `truncated: true`는 **"상한을 넘겨 앞부분만 읽었다"**는 물리적 사실일 뿐이고, 그 자체가
+ * "판정을 신뢰할 수 없다"는 뜻은 **아니다**. 판정 신뢰도는 닫는 구획자가 읽은 범위 안에 있느냐로
+ * 갈리므로 `scanFrontmatter()`(아래)가 따로 판정한다 — 이 함수를 직접 쓰는 호출자는 그 구분을
+ * 스스로 해야 하므로, **frontmatter를 파싱할 목적이면 `scanFrontmatter()`를 쓴다.**
  */
 export function readForFrontmatterScan(absPath: string): FrontmatterScanRead {
   let stat;
@@ -74,4 +74,74 @@ export function readForFrontmatterScan(absPath: string): FrontmatterScanRead {
   } catch {
     return { ok: false, reason: "read_failed" };
   }
+}
+
+
+/**
+ * frontmatter 판정을 신뢰할 수 없는 사유. 지금은 하나뿐이지만 **`boolean`으로 두지 않는다** —
+ * 사유가 늘면 호출자가 갈라야 하고, `boolean`은 그 축을 지운다(CLAUDE.md 안전 원칙 7).
+ */
+export type FrontmatterUnmeasured = "unterminated_within_scan_limit";
+
+export type FrontmatterScan =
+  /** 일반 파일이 아니어서 열지 않았다 — FIFO·소켓·디바이스(링크를 따라간 최종 대상 기준). */
+  | { ok: false; reason: "not_a_regular_file" }
+  /** 파일이 없거나 읽기에 실패했다. */
+  | { ok: false; reason: "read_failed" }
+  | {
+      ok: true;
+      /**
+       * ⚠️ **`unmeasured`가 `null`이 아니면 이 값은 항상 빈 객체다**(fail-closed). 판정할 수
+       * 없는데 반쪽짜리 값을 돌려주면 호출자가 그것을 자칭 `name`으로 쓴다 — 그게 L-A가
+       * 지적한 결함의 실체다. **판정할 수 없으면 값을 주지 않는다**(안전 원칙 7).
+       */
+      frontmatter: Record<string, string>;
+      /** `null`이면 신뢰할 수 있다. 값이 있으면 호출자는 건수를 세어 사용자에게 드러낸다. */
+      unmeasured: FrontmatterUnmeasured | null;
+    };
+
+/**
+ * **frontmatter를 파싱하는 단일 관문**(3차 심사 L-A의 처방, 2026-08-28).
+ *
+ * ⚠️ **왜 `readForFrontmatterScan` + `parseSimpleFrontmatter`를 각자 부르면 안 되는가.**
+ * `parseSimpleFrontmatter`는 닫는 `---`가 없으면 파일 끝까지 소비하며 **last-write-wins**를
+ * 적용한다. 그래서 상한(64KB) 밖에 두 번째 `name:`이 있으면 **잘린 쪽과 안 잘린 쪽의 판정이
+ * 달라진다** — 이전 주석은 "빈 결과로 자연히 처리한다"고 주장했으나 L-A가 실측으로 반증했다.
+ * 두 호출을 각자 하면 그 사실을 호출자마다 다시 기억해야 하고, 실제로 `sources/skills.ts`는
+ * `truncated`를 **읽지도 않았다**(독립 스킬은 번들보다 모집단이 더 크다).
+ *
+ * **판정 기준은 "잘렸는가"가 아니라 "닫는 구획자를 봤는가"다**(ROADMAP의 처방 그대로).
+ * - 첫 줄이 `---`가 아니다 → frontmatter가 없다. 잘렸든 아니든 판정은 `{}`로 같다 → 신뢰.
+ * - 닫는 `---`를 읽은 범위 안에서 봤다 → 블록 전체를 읽었다 → 신뢰(잘렸어도 무관하다).
+ * - 그 밖 → **판정 불가.** 상한 밖에 남은 키가 결과를 뒤집을 수 있다.
+ *
+ * 이 규칙 덕분에 "잘렸다"의 대부분은 신뢰 축에 남는다 — frontmatter는 파일 맨 앞에 있고
+ * 64KB를 넘는 frontmatter는 정상 자산에 없다. **과잉 차단을 만들지 않으면서** 판정이 뒤집힐
+ * 수 있는 경우만 골라낸다.
+ */
+export function scanFrontmatter(absPath: string): FrontmatterScan {
+  const read = readForFrontmatterScan(absPath);
+  if (!read.ok) return read;
+  if (!read.truncated) {
+    return { ok: true, frontmatter: parseSimpleFrontmatter(read.content), unmeasured: null };
+  }
+  if (!hasCompleteFrontmatterBlock(read.content)) {
+    // 판정 불가 — 빈 객체를 준다. 호출자는 자칭 값을 쓸 수 없고(fail-closed) `unmeasured`로
+    // 그 사실을 셀 수 있다.
+    return { ok: true, frontmatter: {}, unmeasured: "unterminated_within_scan_limit" };
+  }
+  return { ok: true, frontmatter: parseSimpleFrontmatter(read.content), unmeasured: null };
+}
+
+/**
+ * 읽은 범위 안에서 frontmatter 블록이 **닫혔는지** 본다. `parseSimpleFrontmatter`의 소비 규칙과
+ * 같은 판정을 써야 한다 — 여기서 다르게 적으면 두 곳이 갈린다(첫 줄 `---`, 이후 `---`를 만나면 종료).
+ */
+function hasCompleteFrontmatterBlock(content: string): boolean {
+  const lines = content.split(/\r?\n/);
+  if (lines[0]?.trim() !== "---") return true; // frontmatter가 애초에 없다 — 판정은 `{}`로 확정이다.
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i]?.trim() === "---") return true;
+  }
+  return false;
 }

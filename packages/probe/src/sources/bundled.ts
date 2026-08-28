@@ -1,4 +1,4 @@
-import { type Dirent, closeSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync } from "node:fs";
+import { type Dirent, lstatSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import {
   PathTraversalDetectedError,
@@ -8,7 +8,7 @@ import {
   type AssetKind,
 } from "@ctk/core";
 import type { HomeContext } from "../home.js";
-import { parseSimpleFrontmatter } from "../frontmatter.js";
+import { FRONTMATTER_SCAN_MAX_BYTES, scanFrontmatter } from "../frontmatter-scan.js";
 import { listPluginInstallPaths } from "./plugins.js";
 import {
   isRealPathWithinRealRoot,
@@ -71,10 +71,15 @@ export interface BundledParentReport {
    * 편입하지 않고 개수만 센다("미측정은 통과가 아니다" — CLAUDE.md). */
   nestedUnmeasured: number;
   /**
-   * 보안 심사 M-2 — frontmatter 스캔 상한(64KB)을 넘어 앞부분만 잘라 읽은 건수(3종 합산).
-   * 조용히 삼키지 않는다 — 대형 형제 파일이 있었다는 사실을 사용자가 볼 수 있어야 한다.
+   * 3차 심사 L-A(2026-08-28) — frontmatter가 스캔 상한(64KB) 안에서 **닫히지 않아** 판정할 수
+   * 없었던 건수(3종 합산). 그 파일들은 자칭 name·description을 쓰지 않고 OS 값(파일·디렉터리
+   * 이름)으로 떨어졌다(fail-closed). 조용히 삼키지 않는다.
+   *
+   * ⚠️ 예전 이름은 `oversizeTruncated`였고 **축이 달랐다** — "잘라 읽었다"는 물리적 사실일 뿐
+   * 판정이 틀렸다는 뜻이 아니다(닫는 `---`를 봤으면 잘려도 판정은 정확하다). 이름과 함께 세는
+   * 대상도 바뀌었다: **판정이 뒤집힐 수 있었던 건수만** 센다.
    */
-  oversizeTruncated: number;
+  frontmatterUnmeasured: number;
   /** 사람이 읽을 사유 로그. state가 "ok"가 아니면 그 사유가, "ok"여도 위 카운트가 0보다 크면
    * 각각의 상세가 담긴다. */
   reasons: string[];
@@ -169,41 +174,28 @@ interface DirScanResult {
   found: DiscoveredBundledTool[];
   symlinksSkipped: number;
   unsafeNamesSkipped: number;
-  /** 보안 심사 M-2 — frontmatter 스캔 상한(아래 `FRONTMATTER_SCAN_MAX_BYTES`)을 넘어 앞부분만
-   * 잘라 읽은 건수. 파일 자체를 배제하지 않는다(뒤에 frontmatter가 없다고 가정할 근거가
-   * 없다) — 다만 읽는 바이트 수를 상한으로 묶어 대형 형제 파일의 RSS 증폭을 막는다. */
-  oversizeTruncated: number;
+  /**
+   * 3차 심사 L-A — frontmatter **판정을 신뢰할 수 없어** 자칭 name·description을 쓰지 않고
+   * OS 값(디렉터리·파일 이름)으로 떨어뜨린 건수.
+   *
+   * ⚠️ 예전 이름은 `oversizeTruncated`("잘라 읽은 건수")였고 **축이 달랐다.** 잘렸다는 것은
+   * 물리적 사실일 뿐 판정이 틀렸다는 뜻이 아니다 — frontmatter는 파일 맨 앞에 있으므로 닫는
+   * `---`를 읽은 범위 안에서 봤다면 잘렸어도 판정은 정확하다. 세어야 하는 것은 **판정이
+   * 뒤집힐 수 있었던 건수**이고, 그것만 세면 과잉 보고도 사라진다.
+   */
+  frontmatterUnmeasured: number;
 }
-
-/** 보안 심사 M-2 — frontmatter 파싱용 스캔 읽기의 상한. `DEFAULT_MAX_ASSET_SOURCE_BYTES`
- * (200KB, gen이 최종 매칭된 파일 전체를 읽을 때 쓰는 상한)와는 **다른 축**이다 — 이 상한은
- * "매칭 전, 후보 전원"에 적용되므로 훨씬 작게 잡는다. frontmatter는 파일 앞부분에만 있으므로
- * 잘라 읽어도 정보 손실이 없다(닫는 `---`가 상한 밖에 있는 비정상 frontmatter만 예외이고,
- * 그건 `parseSimpleFrontmatter`가 빈 결과로 자연히 처리한다). */
-const FRONTMATTER_SCAN_MAX_BYTES = 64 * 1024;
 
 /**
- * 보안 심사 M-2 — `readFileSync`로 파일 전체를 통째 읽지 않고, 상한을 넘는 파일은 앞부분만
- * `readSync`로 잘라 읽는다. 실증: 27바이트 매칭 대상을 찾으면서 형제 60MB 파일이 상한 없이
- * 함께 읽혀 RSS +95MB였다 — 이 함수를 거치면 그 형제는 최대 64KB만 읽힌다.
+ * ⚠️ **frontmatter 스캔 읽기의 사본은 이 파일에 없다** — `../frontmatter-scan.ts`의
+ * `scanFrontmatter()`를 쓴다(3차 심사 L-A, 2026-08-28).
  *
- * 매칭된 파일의 **전체** 내용은 이 함수가 아니라 `gen/file-hygiene.ts`의
- * `readAssetSourceFileSafely`가 별도로 다시 읽는다(200KB 상한) — 이 64KB는 스캔 전용이고
- * 최종 산출물에 쓰이지 않는다.
+ * 예전에는 이 파일이 `readHeadForFrontmatter`와 `FRONTMATTER_SCAN_MAX_BYTES`를 **따로 갖고**
+ * 있었고, 그 주석은 "닫는 `---`가 상한 밖에 있는 비정상 frontmatter는 `parseSimpleFrontmatter`가
+ * 빈 결과로 자연히 처리한다"고 **주장**했다. L-A가 실측으로 반증했다 — 그 파서는 닫는 구획자가
+ * 없으면 끝까지 소비하며 last-write-wins를 적용하므로 상한 밖의 두 번째 `name:`이 판정을
+ * 뒤집는다. **사본은 원본이 배운 것을 배우지 못한다.** 판정을 한 곳으로 모은다.
  */
-function readHeadForFrontmatter(absPath: string, sizeBytes: number): { content: string; truncated: boolean } {
-  if (sizeBytes <= FRONTMATTER_SCAN_MAX_BYTES) {
-    return { content: readFileSync(absPath, "utf8"), truncated: false };
-  }
-  const fd = openSync(absPath, "r");
-  try {
-    const buf = Buffer.alloc(FRONTMATTER_SCAN_MAX_BYTES);
-    const bytesRead = readSync(fd, buf, 0, FRONTMATTER_SCAN_MAX_BYTES, 0);
-    return { content: buf.subarray(0, bytesRead).toString("utf8"), truncated: true };
-  } finally {
-    closeSync(fd);
-  }
-}
 
 /**
  * 스킬 — `<installPath>/skills/<dirName>/SKILL.md`(디렉터리). `skills.ts:26-38`의
@@ -216,7 +208,7 @@ function scanBundledSkills(pluginDirAbs: string): DirScanResult {
   const found: DiscoveredBundledTool[] = [];
   let symlinksSkipped = 0;
   let unsafeNamesSkipped = 0;
-  let oversizeTruncated = 0;
+  let frontmatterUnmeasured = 0;
 
   for (const dirent of readDirSafe(skillsDirAbs)) {
     if (dirent.isSymbolicLink()) {
@@ -242,15 +234,12 @@ function scanBundledSkills(pluginDirAbs: string): DirScanResult {
     // 본 적이 없었다 — 한 파일 안에서 두 스캐너의 축이 갈려 있었다. `SKILL.md`가 FIFO면
     // `readFileSync`가 영구 블록된다(EXIT=124로 실증) — 열기 전에 일반 파일인지 확인한다.
     if (!skillMdStat.isFile()) continue;
-    let content: string;
-    let truncated: boolean;
-    try {
-      ({ content, truncated } = readHeadForFrontmatter(skillMdAbs, skillMdStat.size));
-    } catch {
-      continue;
-    }
-    if (truncated) oversizeTruncated++;
-    const frontmatter = parseSimpleFrontmatter(content);
+    const scan = scanFrontmatter(skillMdAbs);
+    if (!scan.ok) continue;
+    // ⚠️ 판정 불가면 `frontmatter`가 **빈 객체**로 온다(fail-closed) — 아래 `claimedName`이
+    // 자연히 `dirent.name`(OS 값)으로 떨어진다. 자칭 값을 쓸 방법이 없다.
+    if (scan.unmeasured !== null) frontmatterUnmeasured++;
+    const frontmatter = scan.frontmatter;
     const claimedName = frontmatter.name && frontmatter.name.length > 0 ? frontmatter.name : dirent.name;
     const suffix = safeSuffix(claimedName);
     if (suffix === null) {
@@ -260,7 +249,7 @@ function scanBundledSkills(pluginDirAbs: string): DirScanResult {
     found.push({ suffix, absPath: skillDirAbs, description: frontmatter.description });
   }
 
-  return { found, symlinksSkipped, unsafeNamesSkipped, oversizeTruncated };
+  return { found, symlinksSkipped, unsafeNamesSkipped, frontmatterUnmeasured };
 }
 
 interface FlatMdScanResult extends DirScanResult {
@@ -282,7 +271,7 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
   let symlinksSkipped = 0;
   let unsafeNamesSkipped = 0;
   let nestedUnmeasured = 0;
-  let oversizeTruncated = 0;
+  let frontmatterUnmeasured = 0;
 
   for (const dirent of readDirSafe(kindDirAbs)) {
     if (dirent.isSymbolicLink()) {
@@ -307,15 +296,11 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
       continue;
     }
     if (!stat.isFile()) continue;
-    let content: string;
-    let truncated: boolean;
-    try {
-      ({ content, truncated } = readHeadForFrontmatter(fileAbs, stat.size));
-    } catch {
-      continue;
-    }
-    if (truncated) oversizeTruncated++;
-    const frontmatter = parseSimpleFrontmatter(content);
+    const scan = scanFrontmatter(fileAbs);
+    if (!scan.ok) continue;
+    // 판정 불가면 빈 객체 — `claimedName`이 `baseName`(파일명)으로 떨어진다(fail-closed).
+    if (scan.unmeasured !== null) frontmatterUnmeasured++;
+    const frontmatter = scan.frontmatter;
     const baseName = dirent.name.slice(0, -".md".length);
     const claimedName = frontmatter.name && frontmatter.name.length > 0 ? frontmatter.name : baseName;
     const suffix = safeSuffix(claimedName);
@@ -326,16 +311,16 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
     found.push({ suffix, absPath: fileAbs, description: frontmatter.description });
   }
 
-  return { found, symlinksSkipped, unsafeNamesSkipped, nestedUnmeasured, oversizeTruncated };
+  return { found, symlinksSkipped, unsafeNamesSkipped, nestedUnmeasured, frontmatterUnmeasured };
 }
 
 /** M-1 — kind 디렉터리 자체가 거부되면 리프를 아예 열지 않는다(readdirSync 자체를 안 부른다). */
 function emptyDirScanResult(): DirScanResult {
-  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, oversizeTruncated: 0 };
+  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, frontmatterUnmeasured: 0 };
 }
 
 function emptyFlatMdScanResult(): FlatMdScanResult {
-  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, nestedUnmeasured: 0, oversizeTruncated: 0 };
+  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, nestedUnmeasured: 0, frontmatterUnmeasured: 0 };
 }
 
 interface DedupedKindResult {
@@ -534,7 +519,7 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
         duplicateNamesSkipped: 0,
         kindDirSymlinksSkipped: 0,
         nestedUnmeasured: 0,
-        oversizeTruncated: 0,
+        frontmatterUnmeasured: 0,
         reasons: [validated.reason],
       });
       continue;
@@ -591,12 +576,18 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
       reasons.push(`agents/: 같은 kind 안에서 자칭 name이 충돌해 ${agentsDeduped.duplicateNamesSkipped}건 건너뜀(어느 쪽도 승자로 고르지 않는다)`);
     if (agentsScan.nestedUnmeasured > 0)
       reasons.push(`agents/: 중첩 디렉터리의 .md ${agentsScan.nestedUnmeasured}건 — 이름 규약 미실측, 편입하지 않음(unmeasured)`);
-    if (skillsScan.oversizeTruncated > 0)
-      reasons.push(`skills/: frontmatter 스캔 상한(${FRONTMATTER_SCAN_MAX_BYTES}바이트) 초과 ${skillsScan.oversizeTruncated}건 — 앞부분만 읽음`);
-    if (commandsScan.oversizeTruncated > 0)
-      reasons.push(`commands/: frontmatter 스캔 상한(${FRONTMATTER_SCAN_MAX_BYTES}바이트) 초과 ${commandsScan.oversizeTruncated}건 — 앞부분만 읽음`);
-    if (agentsScan.oversizeTruncated > 0)
-      reasons.push(`agents/: frontmatter 스캔 상한(${FRONTMATTER_SCAN_MAX_BYTES}바이트) 초과 ${agentsScan.oversizeTruncated}건 — 앞부분만 읽음`);
+    if (skillsScan.frontmatterUnmeasured > 0)
+      reasons.push(
+        `skills/: frontmatter가 스캔 상한(${FRONTMATTER_SCAN_MAX_BYTES}바이트) 안에서 닫히지 않아 판정 불가 ${skillsScan.frontmatterUnmeasured}건 — 자칭 name/description을 쓰지 않고 파일·디렉터리 이름을 썼다`,
+      );
+    if (commandsScan.frontmatterUnmeasured > 0)
+      reasons.push(
+        `commands/: frontmatter가 스캔 상한(${FRONTMATTER_SCAN_MAX_BYTES}바이트) 안에서 닫히지 않아 판정 불가 ${commandsScan.frontmatterUnmeasured}건 — 자칭 name/description을 쓰지 않고 파일·디렉터리 이름을 썼다`,
+      );
+    if (agentsScan.frontmatterUnmeasured > 0)
+      reasons.push(
+        `agents/: frontmatter가 스캔 상한(${FRONTMATTER_SCAN_MAX_BYTES}바이트) 안에서 닫히지 않아 판정 불가 ${agentsScan.frontmatterUnmeasured}건 — 자칭 name/description을 쓰지 않고 파일·디렉터리 이름을 썼다`,
+      );
 
     perParent.push({
       parentId,
@@ -611,7 +602,7 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
       kindDirSymlinksSkipped:
         (skillsKindDirRejected ? 1 : 0) + (commandsKindDirRejected ? 1 : 0) + (agentsKindDirRejected ? 1 : 0),
       nestedUnmeasured: commandsScan.nestedUnmeasured + agentsScan.nestedUnmeasured,
-      oversizeTruncated: skillsScan.oversizeTruncated + commandsScan.oversizeTruncated + agentsScan.oversizeTruncated,
+      frontmatterUnmeasured: skillsScan.frontmatterUnmeasured + commandsScan.frontmatterUnmeasured + agentsScan.frontmatterUnmeasured,
       reasons,
     });
   }

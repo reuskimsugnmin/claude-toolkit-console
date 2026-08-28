@@ -2,8 +2,7 @@ import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { normalizePath, type Asset, type Installation } from "@ctk/core";
 import type { HomeContext } from "../home.js";
-import { parseSimpleFrontmatter } from "../frontmatter.js";
-import { readForFrontmatterScan } from "../frontmatter-scan.js";
+import { scanFrontmatter } from "../frontmatter-scan.js";
 import { listKnownProjectPaths } from "./known-projects.js";
 
 /**
@@ -22,6 +21,17 @@ import { listKnownProjectPaths } from "./known-projects.js";
 export interface SkillSourceResult {
   assets: Asset[];
   installations: Installation[];
+  /**
+   * 3차 심사 L-A·L-B(2026-08-28) — frontmatter가 스캔 상한 안에서 **닫히지 않아** 판정할 수
+   * 없었던 스킬 건수. 그 스킬들은 자칭 `name`·`description`을 쓰지 않고 디렉터리 이름으로
+   * 떨어졌다(fail-closed).
+   *
+   * ⚠️ **이 필드가 없어서 이 축은 읽는 자리가 0이었다.** 번들 축은 `BundledParentReport`로
+   * 건수를 올려 `scan.ts`가 경고로 옮기는데, **독립 스킬은 `truncated`를 읽지도 않았다** —
+   * 그런데 실측상 독립 스킬이 번들보다 모집단이 더 크다. **신호를 만들면 읽는 자리를 함께
+   * 만든다**(CLAUDE.md 안전 원칙 5). `scan.ts`가 이 값을 warnings로 옮긴다.
+   */
+  frontmatterUnmeasured: number;
 }
 
 interface DiscoveredSkill {
@@ -42,14 +52,21 @@ function isPluginDirectory(skillDirAbs: string): boolean {
   return existsSync(path.join(skillDirAbs, ".claude-plugin", "plugin.json"));
 }
 
-function readSkillDir(skillsRootAbs: string, scope: "user" | "project", projectPath: string | null): DiscoveredSkill[] {
+interface SkillDirScan {
+  found: DiscoveredSkill[];
+  /** 판정 불가 건수 — 호출자가 합산해 사용자에게 드러낸다(L-B). */
+  frontmatterUnmeasured: number;
+}
+
+function readSkillDir(skillsRootAbs: string, scope: "user" | "project", projectPath: string | null): SkillDirScan {
   let dirents;
   try {
     dirents = readdirSync(skillsRootAbs, { withFileTypes: true });
   } catch {
-    return [];
+    return { found: [], frontmatterUnmeasured: 0 };
   }
   const found: DiscoveredSkill[] = [];
+  let frontmatterUnmeasured = 0;
   for (const dirent of dirents) {
     if (!dirent.isDirectory()) continue;
     const skillDirAbs = path.join(skillsRootAbs, dirent.name);
@@ -59,9 +76,15 @@ function readSkillDir(skillsRootAbs: string, scope: "user" | "project", projectP
     // **세지 않은 세 번째 스캐너**였고(번들 쪽 둘만 고쳤다), FIFO를 `SKILL.md`로 심으면
     // `ctk scan`·`ctk gen`·`ctk web`의 자산 상세 조회가 전부 영구 정지했다(EXIT=137로 실증).
     // 독립 스킬은 번들보다 모집단이 더 크다. 판정은 `frontmatter-scan.ts` 한 곳에 모여 있다.
-    const read = readForFrontmatterScan(skillMdAbs);
-    if (!read.ok) continue; // SKILL.md 없음·일반 파일 아님 — 유효한 스킬 디렉터리가 아니다.
-    const frontmatter = parseSimpleFrontmatter(read.content);
+    // ⚠️ 3차 심사 L-A — `readForFrontmatterScan` + `parseSimpleFrontmatter`를 각자 부르지 않는다.
+    // 예전에는 그렇게 했고 `read.truncated`를 **읽지도 않았다**: 닫는 `---`가 상한 밖에 있으면
+    // 파서가 끝까지 소비하며 last-write-wins를 적용하므로 상한 밖의 두 번째 `name:`이 판정을
+    // 뒤집는다. `scanFrontmatter`는 판정 불가일 때 **빈 객체**를 주므로(fail-closed) 아래
+    // `claimedName`이 자연히 `dirent.name`(OS 값)으로 떨어진다.
+    const scan = scanFrontmatter(skillMdAbs);
+    if (!scan.ok) continue; // SKILL.md 없음·일반 파일 아님 — 유효한 스킬 디렉터리가 아니다.
+    if (scan.unmeasured !== null) frontmatterUnmeasured++;
+    const frontmatter = scan.frontmatter;
     // ⚠️ 자칭 `name`에 `:`가 있으면 기각하고 실제 디렉터리명을 쓴다(재심 S-2). `:`는 번들 자식
     // id의 구분자이므로(`<부모id>:<kind>:<suffix>`, B1 Step 5), 독립 스킬이 그 형태를 자칭하면
     // 번들 자식과 id가 겹친다. 그때 `findSkillDirsById`는 **이 공격자 디렉터리 하나만** 후보로
@@ -71,7 +94,7 @@ function readSkillDir(skillsRootAbs: string, scope: "user" | "project", projectP
     const id = claimedName.length > 0 && !claimedName.includes(":") ? claimedName : dirent.name;
     found.push({ id, dirName: dirent.name, absPath: skillDirAbs, description: frontmatter.description, scope, projectPath });
   }
-  return found;
+  return { found, frontmatterUnmeasured };
 }
 
 /**
@@ -85,7 +108,11 @@ function readSkillDir(skillsRootAbs: string, scope: "user" | "project", projectP
 export function findSkillDirsById(home: HomeContext, assetId: string): DiscoveredSkill[] {
   const discovered: DiscoveredSkill[] = [];
   for (const root of skillsRoots(home)) {
-    discovered.push(...readSkillDir(root.path, root.scope, root.projectPath));
+    // ⚠️ 여기서는 `frontmatterUnmeasured`를 세지 않는다 — 이 함수는 **자산 하나를 되찾는**
+    // 조회 경로이고 건수를 보고할 채널이 없다. 판정 불가의 결과(자칭 name 대신 디렉터리 이름)는
+    // `readSkillDir`이 이미 적용했으므로 여기서 다시 판단할 것이 없고, 건수는 전수 수집
+    // 경로(`collectSkills` → `scan.ts` warnings)가 보고한다. **한 신호를 두 곳에서 세지 않는다.**
+    discovered.push(...readSkillDir(root.path, root.scope, root.projectPath).found);
   }
   return discovered.filter((d) => d.id === assetId);
 }
@@ -125,8 +152,11 @@ export function collectSkills(options: CollectSkillsOptions): SkillSourceResult 
   const { home, machineId } = options;
 
   const discovered: DiscoveredSkill[] = [];
+  let frontmatterUnmeasured = 0;
   for (const root of skillsRoots(home)) {
-    discovered.push(...readSkillDir(root.path, root.scope, root.projectPath));
+    const scan = readSkillDir(root.path, root.scope, root.projectPath);
+    discovered.push(...scan.found);
+    frontmatterUnmeasured += scan.frontmatterUnmeasured;
   }
 
   const assetById = new Map<string, Asset>();
@@ -170,5 +200,5 @@ export function collectSkills(options: CollectSkillsOptions): SkillSourceResult 
     });
   }
 
-  return { assets: [...assetById.values()], installations };
+  return { assets: [...assetById.values()], installations, frontmatterUnmeasured };
 }

@@ -218,6 +218,17 @@ export async function runScan(options: RunScanOptions = {}): Promise<ScanSummary
       );
     }
 
+    // 3차 심사 L-A·L-B — **독립 스킬 축에도 읽는 자리를 만든다.** 번들 축은 아래에서 이미
+    // 건수를 경고로 옮기고 있었는데 독립 스킬은 그 신호를 만들지도 읽지도 않았다(모집단은 더
+    // 크다). frontmatter가 스캔 상한 안에서 닫히지 않으면 자칭 name/description을 쓰지 않고
+    // 디렉터리 이름으로 떨어뜨리므로(fail-closed), 사용자는 **왜 이름이 그렇게 됐는지** 알아야 한다.
+    if (collected.skills.frontmatterUnmeasured > 0) {
+      warnings.push(
+        `스킬 ${collected.skills.frontmatterUnmeasured}건은 SKILL.md의 frontmatter가 스캔 상한 안에서 닫히지 않아 판정할 수 없었다 — ` +
+          `자칭 name/description 대신 디렉터리 이름을 썼다. 해당 SKILL.md의 \`---\` 블록이 제대로 닫혀 있는지 확인한다.`,
+      );
+    }
+
     // B1 Step 5 — 번들 편입 실패·거부·미측정 사실을 조용히 버리지 않는다(안전 원칙 5).
     // state가 "ok"가 아니면 그 부모의 하위 툴은 0건이 아니라 "읽지 못했다"(perParent가 null로
     // 이미 구분한다) — 여기서는 사용자가 볼 수 있는 문장으로만 옮긴다.
