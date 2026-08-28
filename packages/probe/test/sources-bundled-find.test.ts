@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { findBundledToolPath } from "../src/sources/bundled.js";
+import { findBundledToolPath, type BundledToolLocation } from "../src/sources/bundled.js";
 import type { HomeContext } from "../src/home.js";
 
 /**
@@ -67,6 +67,17 @@ function writeFlatMd(
   writeFileSync(path.join(dir, fileName), `---\n${nameLine}description: 합성 ${kindDir}\n---\n\n${body}\n`, "utf8");
 }
 
+/**
+ * ⚠️ 보안 재심 L-1(2026-08-28) — `findBundledToolPath`의 반환이 맨 배열에서
+ * `BundledToolLookup` 유니온으로 바뀌었다. **"부모 경로가 거부됐다"와 "못 찾았다"가 똑같이
+ * `[]`였기 때문이다.** 아래 헬퍼는 `ok`를 단언하고 위치 배열만 꺼낸다 — 거부 축을 다루는
+ * 테스트는 헬퍼를 쓰지 않고 `state`를 직접 본다.
+ */
+function locationsOf(lookup: ReturnType<typeof findBundledToolPath>): BundledToolLocation[] {
+  if (!lookup.ok) throw new Error(`경로 검증이 실패했다(${lookup.state}) — 이 테스트의 픽스처를 의심한다`);
+  return lookup.locations;
+}
+
 describe("probe/sources/bundled — findBundledToolPath (보안 재심 L-3)", () => {
   let fixture: { home: HomeContext; cleanup: () => void };
   afterEach(() => fixture?.cleanup());
@@ -77,7 +88,7 @@ describe("probe/sources/bundled — findBundledToolPath (보안 재심 L-3)", ()
     writeInstalledPlugins(fixture.home, { "demo-plugin@synth-marketplace": pluginDir });
     writeSkill(pluginDir, "alpha-skill", null);
 
-    const locations = findBundledToolPath(fixture.home, "demo-plugin@synth-marketplace", "skill", "alpha-skill");
+    const locations = locationsOf(findBundledToolPath(fixture.home, "demo-plugin@synth-marketplace", "skill", "alpha-skill"));
     expect(locations).toHaveLength(1);
     expect(locations[0]?.absPath).toBe(path.join(pluginDir, "skills", "alpha-skill"));
     expect(locations[0]?.containmentRoot).toBe(pluginDir);
@@ -90,11 +101,11 @@ describe("probe/sources/bundled — findBundledToolPath (보안 재심 L-3)", ()
     writeFlatMd(pluginDir, "commands", "one.md", null);
     writeFlatMd(pluginDir, "agents", "helper.md", null);
 
-    const cmd = findBundledToolPath(fixture.home, "demo-plugin@synth-marketplace", "command", "one");
+    const cmd = locationsOf(findBundledToolPath(fixture.home, "demo-plugin@synth-marketplace", "command", "one"));
     expect(cmd).toHaveLength(1);
     expect(cmd[0]?.absPath).toBe(path.join(pluginDir, "commands", "one.md"));
 
-    const agent = findBundledToolPath(fixture.home, "demo-plugin@synth-marketplace", "agent", "helper");
+    const agent = locationsOf(findBundledToolPath(fixture.home, "demo-plugin@synth-marketplace", "agent", "helper"));
     expect(agent).toHaveLength(1);
     expect(agent[0]?.absPath).toBe(path.join(pluginDir, "agents", "helper.md"));
   });
@@ -106,11 +117,11 @@ describe("probe/sources/bundled — findBundledToolPath (보안 재심 L-3)", ()
     // 디렉터리명은 actual-dir-name, frontmatter는 claimed-name을 자칭한다(라우터 스킬 실측과 동형).
     writeSkill(pluginDir, "actual-dir-name", "claimed-name", "H6 검증용 본문");
 
-    const byClaimedName = findBundledToolPath(fixture.home, "demo-plugin@synth-marketplace", "skill", "claimed-name");
+    const byClaimedName = locationsOf(findBundledToolPath(fixture.home, "demo-plugin@synth-marketplace", "skill", "claimed-name"));
     expect(byClaimedName).toHaveLength(1);
     expect(byClaimedName[0]?.absPath).toBe(path.join(pluginDir, "skills", "actual-dir-name"));
     // 실제 디렉터리명으로는 찾지 못한다 — 매칭 축은 자칭 name(=Asset.name)이다.
-    expect(findBundledToolPath(fixture.home, "demo-plugin@synth-marketplace", "skill", "actual-dir-name")).toHaveLength(0);
+    expect(locationsOf(findBundledToolPath(fixture.home, "demo-plugin@synth-marketplace", "skill", "actual-dir-name"))).toHaveLength(0);
   });
 
   it("경계 — 플러그인 A의 이름으로 플러그인 B의 스킬을 찾을 수 없다(부모 단위 격리)", () => {
@@ -123,8 +134,8 @@ describe("probe/sources/bundled — findBundledToolPath (보안 재심 L-3)", ()
     });
     writeSkill(dirB, "only-in-b", null);
 
-    expect(findBundledToolPath(fixture.home, "plugin-a@synth-marketplace", "skill", "only-in-b")).toHaveLength(0);
-    expect(findBundledToolPath(fixture.home, "plugin-b@synth-marketplace", "skill", "only-in-b")).toHaveLength(1);
+    expect(locationsOf(findBundledToolPath(fixture.home, "plugin-a@synth-marketplace", "skill", "only-in-b"))).toHaveLength(0);
+    expect(locationsOf(findBundledToolPath(fixture.home, "plugin-b@synth-marketplace", "skill", "only-in-b"))).toHaveLength(1);
   });
 
   it("경계(심볼릭 링크 주입) — 플러그인 A의 번들 스킬이 심볼릭 링크로 플러그인 B(사실은 임의 경로)를 가리켜도 그 파일을 읽는 위치로 내주지 않는다", () => {
@@ -137,7 +148,8 @@ describe("probe/sources/bundled — findBundledToolPath (보안 재심 L-3)", ()
     symlinkSync(outsideDir, path.join(pluginDir, "skills", "linked-skill"));
 
     // scanBundledSkills가 리프 심볼릭 링크를 skip하므로 못 찾는다(0건) — leaked 내용이 새지 않는다.
-    expect(findBundledToolPath(fixture.home, "demo-plugin@synth-marketplace", "skill", "leaked")).toHaveLength(0);
+    // ⚠️ 부모 installPath **자체는 정상**이므로 `ok: true` + 빈 배열이다(L-1의 거부 축과 다르다).
+    expect(locationsOf(findBundledToolPath(fixture.home, "demo-plugin@synth-marketplace", "skill", "leaked"))).toHaveLength(0);
     rmSync(outsideDir, { recursive: true, force: true });
   });
 
@@ -150,7 +162,7 @@ describe("probe/sources/bundled — findBundledToolPath (보안 재심 L-3)", ()
     writeInstalledPlugins(fixture.home, { "demo-plugin@synth-marketplace": pluginDir });
     symlinkSync(outsideDir, path.join(pluginDir, "skills"));
 
-    expect(findBundledToolPath(fixture.home, "demo-plugin@synth-marketplace", "skill", "leaked")).toHaveLength(0);
+    expect(locationsOf(findBundledToolPath(fixture.home, "demo-plugin@synth-marketplace", "skill", "leaked"))).toHaveLength(0);
     rmSync(outsideDir, { recursive: true, force: true });
   });
 
@@ -161,25 +173,37 @@ describe("probe/sources/bundled — findBundledToolPath (보안 재심 L-3)", ()
     writeSkill(pluginDir, "dir-one", "dup-name");
     writeSkill(pluginDir, "dir-two", "dup-name");
 
-    const locations = findBundledToolPath(fixture.home, "demo-plugin@synth-marketplace", "skill", "dup-name");
+    const locations = locationsOf(findBundledToolPath(fixture.home, "demo-plugin@synth-marketplace", "skill", "dup-name"));
     expect(locations).toHaveLength(2);
     expect(new Set(locations.map((l) => l.absPath)).size).toBe(2);
   });
 
-  it("못 찾음 — installPath가 없는 부모는 빈 배열을 돌려준다(예외를 던지지 않는다)", () => {
+  it("L-1 — installPath가 없는 부모는 install_path_missing이다(예외를 던지지 않고, '못 찾음'과도 다르다)", () => {
     fixture = buildHome();
-    expect(findBundledToolPath(fixture.home, "ghost-plugin@synth-marketplace", "skill", "anything")).toHaveLength(0);
+    const lookup = findBundledToolPath(fixture.home, "ghost-plugin@synth-marketplace", "skill", "anything");
+    expect(lookup.ok).toBe(false);
+    if (lookup.ok) return;
+    expect(lookup.state).toBe("install_path_missing");
   });
 
-  it("주입 검증 — validateInstallPath를 우회해 installPath 경계 밖 절대경로를 직접 받으면(가정: 방어가 없다면) 그 파일이 노출된다는 것을 대조군으로 보인다", () => {
-    // 이 테스트는 findBundledToolPath 자체가 아니라 "방어를 껐다면 실패해야 한다"는 것을 보이는
-    // 회귀 대조군이다 — installPath가 경계 밖을 직접 가리키면 findBundledToolPath는 0건을 낸다.
+  /**
+   * ⚠️ **보안 재심 L-1** — 예전에는 이 경우도 그냥 `[]`였다. 그러면 `gen`의
+   * `bundledChildSource`가 `source_missing`(= 드리프트 조사하라)으로 표시해, 오염된 플러그인의
+   * **부모 1건만** "설치 경로 거부"로 뜨고 **자식 수십 건은 "원본 없음"**으로 떴다.
+   * 읽기 자체는 막혀 유출이 없었지만 **사용자는 보안 사건을 드리프트로 조사한다.**
+   */
+  it("L-1 — installPath가 경계 밖이면 install_path_rejected다(읽지 않고, '못 찾음'으로 뭉개지도 않는다)", () => {
     fixture = buildHome();
     const outsideDir = mkdtempSync(path.join(tmpdir(), "ctk-outside-installpath-"));
     writeSkill(outsideDir, "leaked", null);
     writeInstalledPlugins(fixture.home, { "evil-plugin@synth-marketplace": outsideDir });
 
-    expect(findBundledToolPath(fixture.home, "evil-plugin@synth-marketplace", "skill", "leaked")).toHaveLength(0);
+    const lookup = findBundledToolPath(fixture.home, "evil-plugin@synth-marketplace", "skill", "leaked");
+    expect(lookup.ok, "경계 밖 경로가 성공으로 통과했다").toBe(false);
+    if (lookup.ok) return;
+    expect(lookup.state, "거부가 '없음'으로 뭉개졌다 — L-1 결함이 살아 있다").toBe("install_path_rejected");
+    // 사유 문자열에 원문 절대경로가 실리지 않는다(M-2와 같은 계약).
+    expect(lookup.reason).not.toContain(outsideDir);
     rmSync(outsideDir, { recursive: true, force: true });
   });
 });

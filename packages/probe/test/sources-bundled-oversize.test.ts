@@ -91,8 +91,9 @@ describe("probe/sources/bundled — frontmatter 스캔 상한(보안 심사 M-2)
     // findBundledToolPath 경로(gen이 실제로 타는 매칭 경로)도 상한이 걸린 스캐너를 공유하므로
     // 대형 형제가 있어도 정상 크기 대상은 그대로 찾긴다.
     const located = findBundledToolPath(fixture.home, parentId, "agent", "small-one");
-    expect(located).toHaveLength(1);
-    expect(located[0]?.absPath).toBe(path.join(agentsDir, "small.md"));
+    if (!located.ok) throw new Error("경로 검증이 실패했다 — 픽스처를 의심한다");
+    expect(located.locations).toHaveLength(1);
+    expect(located.locations[0]?.absPath).toBe(path.join(agentsDir, "small.md"));
   });
 
   /**

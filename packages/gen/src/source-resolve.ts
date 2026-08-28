@@ -186,7 +186,19 @@ function bundledChildSource(
   // 호출되고 agent·command는 스키마가 항상 보장하므로, null은 방어적 폴백일 뿐이다.
   if (parentId === null) return { resolved: false, reason: "source_missing" };
 
-  const locations: BundledToolLocation[] = findBundledToolPath(home, parentId, kind, asset.name, cache);
+  // 보안 재심 L-1 — 부모 `installPath`가 **거부**된 것과 자식을 **못 찾은** 것은 다른 축이다.
+  // 예전에는 둘 다 빈 배열이라 자식 수십 건이 전부 `source_missing`(= 드리프트 조사하라)으로
+  // 떴다. `pluginSource`와 **같은 계약**을 쓴다: 거부는 던지고(`blocked`), 부재만 떨어뜨린다.
+  const lookup = findBundledToolPath(home, parentId, kind, asset.name, cache);
+  if (!lookup.ok) {
+    if (lookup.state === "install_path_rejected") {
+      // `rejectedPath`는 거부 축에서 항상 오지만 타입상 선택이므로 방어적으로 받는다 —
+      // 없으면 부모 id를 진단값으로 쓴다(경로가 아니므로 메시지 계약을 깨지 않는다).
+      throw new InstallPathRejectedError(lookup.rejectedPath ?? parentId, lookup.reason);
+    }
+    return { resolved: false, reason: "source_missing" };
+  }
+  const locations: BundledToolLocation[] = lookup.locations;
   if (locations.length === 0) return { resolved: false, reason: "source_missing" };
 
   // 보안 심사 H-1 — 라벨은 파일명(`path.basename`)에서 뽑지 않는다. 서드파티가 짓는 파일명은

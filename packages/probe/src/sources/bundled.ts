@@ -453,8 +453,9 @@ export function createBundledToolLocationCache(): BundledToolLocationCache {
  * `name`은 `Asset.name`(= 자칭 name, `buildBundledAsset`의 `tool.suffix`)과 비교한다 — 경로
  * 세그먼트로는 쓰지 않는다(H6).
  *
- * 반환은 배열이다 — `findSkillDirsById`와 같은 관용구. 0건이면 못 찾은 것(호출자가
- * `source_missing`으로), 1건이면 확정, **2건 이상이면 판정 불가**(호출자가 `ambiguous_source`로
+ * 반환은 **성공/실패를 가르는 유니온**이다(보안 재심 L-1 — 예전에는 맨 배열이라 "부모 경로가
+ * 거부됐다"와 "못 찾았다"가 똑같이 `[]`였다). `ok: true`의 `locations`가 0건이면 못 찾은 것
+ * (호출자가 `source_missing`으로), 1건이면 확정, **2건 이상이면 판정 불가**(호출자가 `ambiguous_source`로
  * — 어느 쪽이 진짜인지 이 함수는 판정하지 않는다, H-1과 같은 태도). `collectBundled`의
  * `dedupeSameKindNames`(승자를 고르지 않고 충돌을 전부 제외)는 여기서 쓰지 않는다 — 그러면
  * 호출자가 건수를 볼 수 없게 된다.
@@ -463,13 +464,26 @@ export function createBundledToolLocationCache(): BundledToolLocationCache {
  * 만들어져 이전과 동일하게 동작한다(캐시 없음과 동형) — 여러 호출에 걸쳐 절약하려면 호출자가
  * 하나의 캐시를 만들어 반복 호출에 넘겨야 한다(`planGenTargets`가 이렇게 쓴다).
  */
+export type BundledToolLookup =
+  | { ok: true; locations: BundledToolLocation[] }
+  /**
+   * 부모의 `installPath` 검증이 실패했다 — **`ok: true` + 빈 배열과 다른 축이다.**
+   *
+   * ⚠️ 예전에는 이 함수가 검증 실패에도 `[]`를 돌려줬고, `gen`의 `bundledChildSource`가 그것을
+   * `source_missing`(= 드리프트 조사하라)으로 만들었다. 그래서 `installed_plugins.json`이
+   * 오염되면 **부모 1건만** "설치 경로 거부"로 뜨고 **자식 수십 건은 "원본 없음"**으로 떴다
+   * (보안 재심 L-1). M-B가 플러그인 축 한 자리만 고쳤던 것 — **한 자리를 고쳤으면 같은 형태의
+   * 다른 자리를 센다**(CLAUDE.md 안전 원칙 5).
+   */
+  | { ok: false; state: "install_path_missing" | "install_path_rejected"; reason: string; rejectedPath?: string };
+
 export function findBundledToolPath(
   home: HomeContext,
   parentAssetId: string,
   kind: BundledChildKind,
   name: string,
   cache: BundledToolLocationCache = createBundledToolLocationCache(),
-): BundledToolLocation[] {
+): BundledToolLookup {
   if (cache.installPaths === null) {
     cache.installPaths = listPluginInstallPaths(home);
   }
@@ -480,7 +494,12 @@ export function findBundledToolPath(
     parentEntry = { validated, scans: {} };
     cache.parents.set(parentAssetId, parentEntry);
   }
-  if (!parentEntry.validated.ok) return [];
+  if (!parentEntry.validated.ok) {
+    const v = parentEntry.validated;
+    return v.state === "install_path_rejected"
+      ? { ok: false, state: v.state, reason: v.reason, rejectedPath: v.rejectedPath }
+      : { ok: false, state: v.state, reason: v.reason };
+  }
   const containmentRoot = parentEntry.validated.absPath;
 
   let scan = parentEntry.scans[kind];
@@ -496,7 +515,10 @@ export function findBundledToolPath(
     parentEntry.scans[kind] = scan;
   }
 
-  return scan.found.filter((tool) => tool.suffix === name).map((tool) => ({ absPath: tool.absPath, containmentRoot }));
+  return {
+    ok: true,
+    locations: scan.found.filter((tool) => tool.suffix === name).map((tool) => ({ absPath: tool.absPath, containmentRoot })),
+  };
 }
 
 export function collectBundled(options: CollectBundledOptions): BundledSourceResult {
