@@ -425,6 +425,28 @@ interface ParentScanCacheEntry {
  * (`findBundledToolPath`의 기본 인자처럼) 캐시가 없는 것과 동작이 같다 — 그것이 기본값의
  * 의도다: 캐시를 넘기지 않는 기존 호출부는 이전과 동일하게 매번 다시 읽는다(회귀 없음).
  */
+/**
+ * ⚠️ **막지 못하는 것을 정확히 적는다 — 이 캐시는 TOCTOU 창을 넓힌다**(보안 심사 L-C,
+ * 2026-08-28).
+ *
+ * 캐시가 없으면 `installPath` 검증(`validateInstallPath` — 절대성·존재·realpath 경계)이 자산
+ * 조회 **한 건마다** 다시 돈다. 캐시가 있으면 **부모 하나당 배치 전체에서 한 번만** 돈다
+ * (`parents`에 `validated`가 메모이즈된다). 즉 검증 시점과 실제 읽기 시점 사이의 간격이
+ * "그 자산 한 건" 에서 **"배치 전체"**(실측 `ctk gen` 1회 = 수십 초~수 분)로 늘어난다.
+ * 그 사이에 `installed_plugins.json`이 바뀌거나 `installPath`의 어느 상위 디렉터리가 심볼릭
+ * 링크로 바뀌면, **검증은 옛 상태를 보고 읽기는 새 상태를 읽는다.**
+ *
+ * **이것은 캐시가 새로 만든 축이 아니라 넓힌 축이다** — `gen/file-hygiene.ts`가 이미 적어 둔
+ * TOCTOU(검사와 `readFileSync`가 경로를 각각 해소한다, 실측 우회율 11%)와 같은 성질이고,
+ * 캐시는 그 창의 **길이**를 키운다. 닫으려면 fd를 한 번 열어 `fstat`+`fd 읽기`로 묶어야 하는데
+ * 그것은 이 캐시가 아니라 위생 계층의 과제다.
+ *
+ * **왜 그럼에도 캐시를 두는가**: 캐시가 없으면 자산 N건에 대해 `installed_plugins.json`을 N번
+ * 읽고 부모 트리를 N번 순회한다(M-3 — B1이 번들 자식을 편입하면서 N이 수백으로 늘었다).
+ * 위험은 "옛 검증 결과를 쓴다"이고 이득은 O(N²) 제거다. **창을 좁히려면 캐시 인스턴스의
+ * 수명을 짧게 잡는다** — 기본 인자(`createBundledToolLocationCache()`)를 쓰는 호출부는 호출당
+ * 새 캐시라 창이 캐시 없음과 같다.
+ */
 export interface BundledToolLocationCache {
   installPaths: Map<string, string> | null;
   parents: Map<string, ParentScanCacheEntry>;
