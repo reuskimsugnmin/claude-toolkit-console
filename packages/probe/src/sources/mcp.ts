@@ -10,6 +10,7 @@ import {
   type Toggle,
 } from "@ctk/core";
 import type { HomeContext } from "../home.js";
+import { safeAssetNameSegment } from "./asset-name.js";
 import { listKnownProjectPaths, readClaudeJsonFile } from "./known-projects.js";
 
 /**
@@ -39,6 +40,16 @@ export interface McpSourceResult {
   assets: Asset[];
   installations: Installation[];
   toggles: Toggle[];
+  /**
+   * 보안 재심 M-2 — 서버 이름이 안전한 자산 id 세그먼트가 아니어서 건너뛴 건수.
+   *
+   * ⚠️ **이 축에는 검사 자체가 없었다.** 이 파일은 `.mcp.json`·`~/.claude.json`의 **최상위 키를
+   * 그대로** `Asset.id`로 썼고, 그중 하나(프로젝트 `.mcp.json`)는 **저장소에 담겨 배포되는
+   * 파일**이다. `"<플러그인id>:mcp:x"`를 자칭하는 저장소를 한 번 열면 번들 자산과 id가 겹쳐
+   * `mergeAssets`가 `DuplicateAssetIdError`로 **`ctk scan` 전체를 죽인다.**
+   * 이제 그 서버 하나만 건너뛰고 건수를 올린다(안전 원칙 6 — 빠져나갈 길을 남긴다).
+   */
+  unsafeNamesSkipped: number;
 }
 
 export interface CollectMcpOptions {
@@ -102,8 +113,14 @@ export function collectMcp(options: CollectMcpOptions): McpSourceResult {
 
   // 자산 — 이름 기준 고유 집계(같은 이름이 user+local 등 여러 스코프에 있어도 자산은 하나).
   const assetByName = new Map<string, Asset>();
+  let unsafeNamesSkipped = 0;
   for (const def of definitions) {
     if (assetByName.has(def.name)) continue;
+    // ⚠️ **번들 축과 같은 관문을 지난다**(M-2). 예전에는 이 축만 검사 없이 지나갔다.
+    if (safeAssetNameSegment(def.name, "MCP 서버 이름") === null) {
+      unsafeNamesSkipped++;
+      continue;
+    }
     assetByName.set(def.name, {
       schema_version: 1,
       _scope: "machine_independent",
@@ -217,5 +234,5 @@ export function collectMcp(options: CollectMcpOptions): McpSourceResult {
     mcp_state_source: draft.mcp_state_source,
   }));
 
-  return { assets: [...assetByName.values()], installations, toggles };
+  return { assets: [...assetByName.values()], installations, toggles, unsafeNamesSkipped };
 }
