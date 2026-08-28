@@ -140,8 +140,8 @@ export function describeAssetDocState(state: AssetDocState): AssetDocStateDispla
  * 동형 — 갈린 값을 표시가 다시 뭉개지 않는다).
  *
  * ⚠️ **`FailureClass` 전체를 exhaustive switch로 받지 않는다.** 37개 중 이 자리에 도달할 수
- * 있는 것은 아래 다섯뿐이고(`gen/plan.ts`의 `judgeAsset`이 `FileHygieneError` 계층과
- * `injection_pattern_detected`만 `blocked`으로 낸다), 나머지 32개까지 분기를 만들면 도달하지
+ * 있는 것은 아래 여섯뿐이고(`gen/plan.ts`의 `judgeAsset`이 `FileHygieneError` 계층과
+ * `injection_pattern_detected`만 `blocked`으로 낸다), 나머지까지 분기를 만들면 도달하지
  * 않는 문구가 32개 생긴다. 대신 **기본 분기가 모른다고 말한다** — 틀린 처방을 주느니
  * "전용 안내가 없다"가 낫다(안전 원칙 6 — 빠져나갈 길과 진단을 함께 준다).
  */
@@ -170,6 +170,12 @@ function describeBlocked(failureClass: FailureClass): AssetDocStateDisplay {
         label: "위생 거부 · 읽는 중 사라짐",
         detail: "존재 확인과 실제 읽기 사이에 원문이 사라졌다 — 경합·마운트 변경·깨진 링크.",
         action: "`ctk scan`을 다시 돌린다. 반복되면 원본이 실제로 지워졌는지(드리프트) 확인한다 — `ctk doctor --drift`.",
+      };
+    case "install_path_rejected":
+      return {
+        label: "위생 거부 · 설치 경로 거부",
+        detail: "이 플러그인의 `installed_plugins.json` 설치 경로가 절대경로가 아니거나 `<config>/plugins` 밖을 가리킨다 — 그 경로의 원문을 읽으면 카탈로그 문서를 통해 저장소로 흘러나간다.",
+        action: "**드리프트가 아니라 설정 오염 신호다.** `<config>/plugins/installed_plugins.json`의 해당 항목을 확인하고, 기억에 없는 경로라면 그 플러그인을 재설치한다. 경로가 정상으로 돌아오면 다음 스캔에서 자동으로 대상이 된다.",
       };
     case "injection_pattern_detected":
       return {

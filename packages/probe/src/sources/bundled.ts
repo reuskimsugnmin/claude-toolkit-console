@@ -1,4 +1,4 @@
-import { type Dirent, closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync } from "node:fs";
+import { type Dirent, closeSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import {
   PathTraversalDetectedError,
@@ -10,6 +10,12 @@ import {
 import type { HomeContext } from "../home.js";
 import { parseSimpleFrontmatter } from "../frontmatter.js";
 import { listPluginInstallPaths } from "./plugins.js";
+import {
+  isRealPathWithinRealRoot,
+  validateInstallPath,
+  type InstallPathState,
+  type ValidatedInstallPath,
+} from "./install-path.js";
 
 /**
  * probe/src/sources/bundled.ts — B1 Step 5. 플러그인이 번들한 스킬·커맨드·에이전트를 부모
@@ -30,7 +36,11 @@ import { listPluginInstallPaths } from "./plugins.js";
  * 세어 AC-1을 과대 계상한다.
  */
 
-export type BundledParentState = "ok" | "install_path_missing" | "install_path_rejected";
+/**
+ * ⚠️ `install-path.ts`의 `InstallPathState`를 그대로 쓴다(M-B). 두 곳에 같은 문자열 유니온을
+ * 적어 두면 한쪽에 축이 늘 때 다른 쪽이 조용히 뒤처진다 — 판정과 표시가 같은 목록을 본다.
+ */
+export type BundledParentState = InstallPathState;
 
 export interface BundledParentReport {
   parentId: string;
@@ -85,96 +95,12 @@ export interface CollectBundledOptions {
   pluginIds: readonly string[];
 }
 
-function pluginsBoundaryRootAbs(home: HomeContext): string {
-  return path.join(home.ctkConfigDir, "plugins");
-}
-
-type ValidatedInstallPath = { ok: true; absPath: string } | { ok: false; state: BundledParentState; reason: string };
-
 /**
- * 보안 심사 M-2 — 거부 사유 메시지에 원문 절대경로를 넣지 않는다. `installPath`는 `scan.ts`의
- * `warnings`를 거쳐 `web-actions.ts`의 응답 본문에 그대로 실려 브라우저까지 나간다(그
- * 응답 필드 화이트리스트는 `warnings`라는 필드 자체는 통과시키므로, 문자열 안에 박힌 원문
- * 경로는 걸러지지 않는다). `gen/file-hygiene.ts:40-45`가 이미 못박은 규칙과 동형이다 —
- * "원문 절대경로는 메시지에 넣지 않는다. 로컬 디버깅용으로 필드에만 둔다." 여기는 사람이 읽는
- * 사유 문자열 하나뿐이라 별도 필드를 둘 자리가 없으므로, `normalizePath`가 이미 `source_ref`에
- * 쓰는 것과 같은 비식별 요약(`home_relative` 우선, 없으면 `path_hash`)으로 대체한다. 상대경로
- * 입력(순회 문자열 등)은 `home_relative`가 나오지 않지만 `path_hash`는 항상 나온다 — 어느
- * 경우든 원문 문자열 자체는 메시지에 남지 않는다.
+ * ⚠️ `installPath` 검증(`validateInstallPath`)과 그 보조 함수들은 **이 파일에 없다** —
+ * `./install-path.ts`로 옮겼다(보안 심사 M-B). private으로 두었더니 플러그인 축
+ * (`findPluginInstallPath` → `gen`의 `pluginSource`)이 같은 값을 **검증 없이** 읽기 루트로
+ * 쓰고 있었다. 판정을 한 파일에 모아 두 축이 같은 함수를 부르게 한다.
  */
-function describePathForReason(home: HomeContext, rawPath: string): string {
-  const normalized = normalizePath(rawPath, home.ctkHome);
-  return normalized.home_relative ?? `path_hash:${normalized.path_hash}`;
-}
-
-/**
- * 이미 `realpath`로 해소된 두 경로를 비교하는 순수 함수 — 예외를 던지지 않는다(경로 해소
- * 실패는 호출자가 각자의 축("없음" vs "거부")으로 분류한다). `validateInstallPath`(installPath
- * 경계)와 `isKindDirRejected`(M-1, kind 디렉터리 경계)가 함께 쓰는 단일 관문이다.
- *
- * ⚠️ `gen/src/file-hygiene.ts`의 `assertRealpathWithinRoot`와 판정 형태가 같지만 **직접
- * import할 수 없다** — probe는 core만 import할 수 있고(eslint 계층 경계) `gen → probe` 방향만
- * 허용된다(`probe → gen`은 순환이 된다). 재구현이 아니라 이 파일에 이미 있던 동형 판정을
- * 함수로 뽑아 두 호출부가 공유하도록 좁힌 것 — 단일 관문 원칙을 이 파일 안에서 지킨다.
- */
-function isRealPathWithinRealRoot(realTarget: string, realRoot: string): boolean {
-  return realTarget === realRoot || realTarget.startsWith(realRoot + path.sep);
-}
-
-/**
- * `installed_plugins.json`의 `installPath`는 `z.string()` + `.passthrough()`로만 검증돼 있다
- * (`core/harness/installed-plugins.schema.ts:21,30`) — 절대경로인지도 `..`를 담는지도 스키마
- * 단계에서 보지 않는다. 여기가 그 값을 `readdirSync`의 순회 루트로 승격시키기 **직전**이므로,
- * 순회를 시작하기 전에 ⓐ 절대경로인지 ⓑ `realpath` 해소 후에도 `<config>/plugins` 아래인지
- * 확인한다 — B1이 새로 여는 유일한 공격면(architect 심사 항목 1).
- */
-function validateInstallPath(home: HomeContext, installPath: string | undefined): ValidatedInstallPath {
-  if (installPath === undefined) {
-    return { ok: false, state: "install_path_missing", reason: "installed_plugins.json에 installPath 항목이 없다" };
-  }
-  if (!path.isAbsolute(installPath)) {
-    return {
-      ok: false,
-      state: "install_path_rejected",
-      reason: `installPath가 절대경로가 아니다: ${describePathForReason(home, installPath)}`,
-    };
-  }
-  if (!existsSync(installPath)) {
-    // 오늘 실재율 100%(architect 실측)이므로 부재는 드리프트 신호다 — "없음"이 아니라 "실패".
-    return {
-      ok: false,
-      state: "install_path_missing",
-      reason: `installPath가 디스크에 없다: ${describePathForReason(home, installPath)}`,
-    };
-  }
-  const boundaryRootAbs = pluginsBoundaryRootAbs(home);
-  let realInstallPath: string;
-  let realBoundaryRoot: string;
-  try {
-    realInstallPath = realpathSync(installPath);
-    realBoundaryRoot = realpathSync(boundaryRootAbs);
-  } catch {
-    return {
-      ok: false,
-      state: "install_path_missing",
-      reason: `installPath realpath 해석 실패: ${describePathForReason(home, installPath)}`,
-    };
-  }
-  if (!isRealPathWithinRealRoot(realInstallPath, realBoundaryRoot)) {
-    return {
-      ok: false,
-      state: "install_path_rejected",
-      reason: `installPath가 <config>/plugins 밖을 가리킨다(realpath 기준): ${describePathForReason(home, installPath)}`,
-    };
-  }
-  // ⚠️ 이후 순회·`source_ref` 정규화는 realpath가 아니라 **원문 `installPath`**를 쓴다(검증에만
-  // realpath를 쓰고, 값은 바꾸지 않는다). macOS는 시스템 임시 디렉터리 자체가 심볼릭 링크라
-  // (`/tmp` → `/private/tmp`), realpath 결과를 그대로 쓰면 `home.ctkHome`(realpath를 거치지
-  // 않는 원문)과 접두사가 어긋나 `normalizePath`의 홈 상대화가 깨진다(실측, 이 파일 테스트에서
-  // 발견). 보안 검증과 이후 값의 기준을 분리한다 — `gen/file-hygiene.ts`의 `readAssetSourceFileSafely`도
-  // 같은 원칙(검증은 realpath로, 실제 읽기는 원래 경로로)을 따른다.
-  return { ok: true, absPath: installPath };
-}
 
 /**
  * 보안 심사 M-1 — kind 디렉터리(`skills`/`commands`/`agents`) **자체**가 심볼릭 링크이거나

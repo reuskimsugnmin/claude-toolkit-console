@@ -88,6 +88,29 @@ export class AssetSourceNotAFileError extends FileHygieneError {
 }
 
 /**
+ * 보안 심사 M-B — 플러그인 자산의 **설치 경로 자체**가 거부됐다(절대경로가 아니거나 realpath
+ * 해소 후 `<config>/plugins` 밖). 리프 파일이 아니라 **읽기 루트**가 거부된 것이라 위의 세
+ * 클래스와 축이 다르다 — 파일을 열어 보기도 전에 막힌다.
+ *
+ * ⚠️ **`FileHygieneError` 계층에 넣는 이유**: `gen/plan.ts`의 `judgeAsset`은 이 계층만 자산
+ * 단위로 가둔다. 계층 밖 예외를 던지면 플러그인 하나의 오염된 경로가 **`gen` 실행 전체를
+ * 중단시킨다.** 자산 하나만 `blocked`으로 빼고 나머지는 계속 간다.
+ *
+ * `reason`은 `probe`가 이미 경로를 비식별 요약으로 바꿔 넘긴 값이라 그대로 메시지에 실어도
+ * 안전하다. 원문 경로는 `targetPath` 필드에만 둔다(이 클래스 위쪽의 계약과 동일).
+ */
+export class InstallPathRejectedError extends FileHygieneError {
+  readonly failureClass = "install_path_rejected" as const;
+  constructor(
+    readonly targetPath: string,
+    reason: string,
+  ) {
+    super(`플러그인 설치 경로가 안전 경계 밖이다 — ${reason}`);
+    this.name = "InstallPathRejectedError";
+  }
+}
+
+/**
  * `absPath`가 심볼릭 링크가 아닌지 확인한다. `lstatSync`(링크 자체의 stat, 대상을 따라가지
  * 않음)를 쓴다 — `statSync`를 쓰면 링크를 투명하게 따라가 검사 자체가 무의미해진다.
  */

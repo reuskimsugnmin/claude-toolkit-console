@@ -21,6 +21,9 @@ const REACHABLE: readonly FailureClass[] = [
   "asset_source_not_a_file",
   "asset_source_too_large",
   "asset_source_missing",
+  // M-B(2026-08-28) — 플러그인 설치 경로 자체가 경계 밖. `gen/source-resolve.ts`의
+  // `pluginSource`가 `InstallPathRejectedError`로 던지고 `judgeAsset`이 `blocked`으로 낸다.
+  "install_path_rejected",
   "injection_pattern_detected",
 ];
 
@@ -29,7 +32,7 @@ function blocked(failure_class: FailureClass): AssetDocState {
 }
 
 describe("describeAssetDocState — blocked은 사유별로 다른 처방을 준다(L-D)", () => {
-  it("도달 가능한 다섯 사유가 전부 세 필드를 채운다", () => {
+  it("도달 가능한 사유가 전부 세 필드를 채운다", () => {
     for (const fc of REACHABLE) {
       const d = describeAssetDocState(blocked(fc));
       expect(d.label.length, fc).toBeGreaterThan(0);
@@ -38,7 +41,7 @@ describe("describeAssetDocState — blocked은 사유별로 다른 처방을 준
     }
   });
 
-  it("다섯 사유의 action이 서로 다르다 — 하나로 뭉개지 않았다", () => {
+  it("도달 가능한 사유의 action이 서로 다르다 — 하나로 뭉개지 않았다", () => {
     const actions = REACHABLE.map((fc) => describeAssetDocState(blocked(fc)).action);
     expect(new Set(actions).size).toBe(REACHABLE.length);
   });

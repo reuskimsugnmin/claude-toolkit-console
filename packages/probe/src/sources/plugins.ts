@@ -17,6 +17,7 @@ import type { HomeContext } from "../home.js";
 import { spawnClaude, type SpawnClaudeResult } from "../harness/spawn-claude.js";
 import { CommandFailedError, ParseSchemaMismatchError } from "./errors.js";
 import { listKnownProjectPaths } from "./known-projects.js";
+import { validateInstallPath, type ValidatedInstallPath } from "./install-path.js";
 
 /**
  * probe/src/sources/plugins.ts — plan §4.1 Step 2.
@@ -226,20 +227,34 @@ export async function collectPlugins(options: CollectPluginsOptions): Promise<Pl
 }
 
 /**
- * Step 4(`gen`) 전용 — 플러그인 자산의 실제 설치 경로(절대경로)를 되찾는다. `installed_plugins.json`
+ * Step 4(`gen`) 전용 — 플러그인 자산의 실제 설치 경로를 되찾는다. `installed_plugins.json`
  * 의 `installPath`가 유일한 권위 출처다(P0-3과 동일 논리 — `plugin list --json`의 정규화된
  * `source_ref`는 이미 홈 상대화·해시화됐으므로 실제 파일을 읽을 절대경로로 되돌릴 수 없다).
  * 같은 id가 여러 스코프(project별 local 등)에 설치돼 있으면 첫 항목을 대표값으로 쓴다 —
  * `gen`은 원문 텍스트를 읽는 용도일 뿐 어느 설치를 "정답"으로 볼지가 카탈로그 정합성에 영향을
  * 주지 않는다(플러그인 코드 자체는 스코프와 무관하게 동일하다).
+ *
+ * ⚠️ **`string | null`이 아니라 `ValidatedInstallPath`다**(보안 심사 M-B, 2026-08-28).
+ * 두 가지가 함께 틀려 있었다:
+ *
+ * ① **검증이 없었다.** 이 함수의 반환값은 `gen/source-resolve.ts`의 `pluginSource`에서 곧바로
+ *    `readAssetSourceFileSafely`의 루트가 된다. 번들 축은 같은 파일의 같은 필드에 3중 방어를
+ *    거는데 플러그인 축만 맨몸이었다 — `installed_plugins.json`이 오염되면 `gen`이 임의 경로의
+ *    README를 읽어 카탈로그 문서에 넣고 `sync` 저장소로 내보낸다. 이제 `validateInstallPath`
+ *    (절대성·존재·realpath 경계)를 지난다.
+ * ② **`null`이 두 축을 뭉갰다.** 예전에는 "이 플러그인이 목록에 없다"와 "경로가 안전하지 않다"가
+ *    똑같이 `null`이었고, 호출자는 둘 다 `source_missing`(= 드리프트 조사하라)으로 표시했다.
+ *    **거부를 "원본 없음"으로 말하면 사용자는 보안 사건을 드리프트로 조사한다**(안전 원칙 7).
+ *    이제 `state`가 `install_path_missing`과 `install_path_rejected`를 갈라 준다.
  */
-export function findPluginInstallPath(home: HomeContext, assetId: string): string | null {
+export function findPluginInstallPath(home: HomeContext, assetId: string): ValidatedInstallPath {
   const installedPluginsAbsPath = path.join(home.ctkConfigDir, "plugins", "installed_plugins.json");
   const raw = readJsonOrNull(installedPluginsAbsPath);
-  if (raw === null) return null;
+  if (raw === null) {
+    return { ok: false, state: "install_path_missing", reason: "installed_plugins.json을 읽지 못했다" };
+  }
   const parsed = parseInstalledPluginsFile(raw);
-  const entries = parsed.plugins[assetId];
-  return entries?.[0]?.installPath ?? null;
+  return validateInstallPath(home, parsed.plugins[assetId]?.[0]?.installPath);
 }
 
 /**

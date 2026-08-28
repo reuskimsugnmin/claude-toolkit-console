@@ -13,7 +13,7 @@ import {
   type BundledToolLocationCache,
   type HomeContext,
 } from "@ctk/probe";
-import { DEFAULT_MAX_ASSET_SOURCE_BYTES, readAssetSourceFileSafely } from "./file-hygiene.js";
+import { DEFAULT_MAX_ASSET_SOURCE_BYTES, InstallPathRejectedError, readAssetSourceFileSafely } from "./file-hygiene.js";
 
 /**
  * 스킬 원본 링크의 **봉쇄 루트 목록** — `probe`의 `skillsRoots()`를 그대로 쓴다.
@@ -105,11 +105,28 @@ function skillSource(home: HomeContext, asset: Asset): ResolvedAssetSource {
   return { resolved: true, sections: [{ label: "SKILL.md", content: first }] };
 }
 
+/**
+ * ⚠️ **설치 경로는 `probe`의 `findPluginInstallPath`가 이미 검증해서 준다**(보안 심사 M-B,
+ * 2026-08-28). 예전에는 이 함수가 `installed_plugins.json`의 `installPath` 원문을 그대로 받아
+ * `readAssetSourceFileSafely`의 루트로 썼다 — 번들 축은 같은 값에 3중 방어를 거는데 **플러그인
+ * 축만 맨몸이었다.** 그 파일이 오염되면 임의 경로의 README가 카탈로그 문서에 실려 `sync`
+ * 저장소로 나간다.
+ *
+ * **거부와 부재를 다르게 처리한다**(안전 원칙 7):
+ * - `install_path_missing` → `source_missing`. 드리프트일 수 있으니 조사 대상이다.
+ * - `install_path_rejected` → **던진다.** 위생 계층이 `blocked`으로 분류하고 사용자에게
+ *   "설정 오염 신호"라고 말한다. 예전처럼 `source_missing`으로 뭉개면 **보안 사건을
+ *   드리프트 조사로** 돌려보낸다.
+ */
 function pluginSource(home: HomeContext, asset: Asset): ResolvedAssetSource {
-  const installPath = findPluginInstallPath(home, asset.id);
-  if (installPath === null || !existsSync(installPath)) {
+  const validated = findPluginInstallPath(home, asset.id);
+  if (!validated.ok) {
+    if (validated.state === "install_path_rejected") {
+      throw new InstallPathRejectedError(validated.rejectedPath, validated.reason);
+    }
     return { resolved: false, reason: "source_missing" };
   }
+  const installPath = validated.absPath;
   const sections: PromptEnvelopeSection[] = [];
   const pluginJsonAbs = path.join(installPath, ".claude-plugin", "plugin.json");
   if (existsSync(pluginJsonAbs)) {

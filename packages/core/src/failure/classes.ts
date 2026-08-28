@@ -50,6 +50,11 @@ export const FAILURE_CLASSES = [
   "project_list_changed", // actuator/move: 조치 도중 known projects 목록이 바뀌어 검증 모집단이 흔들렸다
   "skill_source_not_found", // cli/verify-ac3: AC-3 게이트가 대조할 스킬 원문을 찾지 못했다 — 미측정이지 통과가 아니다
 
+  // B1 보안 심사 M-B(2026-08-28) — installed_plugins.json의 installPath가 절대경로가 아니거나
+  // realpath 해소 후 <config>/plugins 밖을 가리킨다. **"없음"과 다른 축이다** — 부재는 드리프트
+  // 조사이고 이것은 설정 파일 오염 신호다(gen이 임의 경로 README를 카탈로그로 내보낼 수 있었다).
+  "install_path_rejected",
+
   "unclassified",
 ] as const;
 
