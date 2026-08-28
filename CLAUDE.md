@@ -42,7 +42,7 @@ config dir에 churn을 남기므로 **실측 허용목록 기준**으로 판정�
 | 성격 | 엔티티 | 동기화 |
 |---|---|---|
 | 머신 **종속** | Machine · Installation(scope·enabled·토큰) · Project · Usage | 머신별로 따로 쌓임 |
-| 머신 **독립** | Asset(툴 정체) · **Annotation(언제 쓰는가)** · Tag | 전 머신 공유 |
+| 머신 **독립** | Asset(툴 정체) · **Annotation(언제 쓰는가)** · Tag(**미구현** — B4-c) | 전 머신 공유 |
 
 문제 1의 "어떤 상황에 어떤 툴"은 **Annotation**이고 머신이 바뀌어도 유지돼야 한다.
 문제 3의 "이 로컬에 깔려 있나"는 **Installation**이고 머신마다 달라야 한다. **이 둘을 섞지 않는다.**
