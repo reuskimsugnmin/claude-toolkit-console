@@ -22,6 +22,7 @@ export * from "./harness/plugin-details.schema.js";
 export * from "./harness/transcript-row.schema.js";
 export * from "./harness/subagent-meta.schema.js";
 export * from "./harness/installed-plugins.schema.js";
+export * from "./harness/mcp-json.schema.js";
 export * from "./harness/known-marketplaces.schema.js";
 export * from "./harness/settings-file.schema.js";
 export * from "./harness/claude-json.schema.js";

@@ -47,6 +47,17 @@ function kindConstraint(kind: AssetKind): KindConstraint {
     case "skill":
       return { marketplace: "forbidden", parentAssetId: "optional" };
     case "mcp":
+      // B4-a-1 — MCP는 **독립·번들 양쪽에 산다**(skill과 같은 형태). 사용자가
+      // `~/.claude.json`에 직접 등록한 서버는 부모가 없고, 플러그인이 `.mcp.json`으로 번들한
+      // 서버는 그 플러그인이 부모다. **둘을 합치지 않는다** — 같은 서버명이어도 정의(command·
+      // args)가 다를 수 있고, 어느 쪽이 진짜인지 판정하는 것은 이 프로젝트가 거부해 온 추측이다.
+      // ⚠️ **"충돌하지 않는다"는 공짜가 아니다**(보안 재심 M-2). 번들 쪽 id는
+      // `<부모id>:mcp:<서버명>`이고 독립 쪽은 서버명 그대로다 — 겹치려면 독립 MCP가
+      // `"<플러그인id>:mcp:x"`를 **자칭**해야 하는데, 프로젝트 `.mcp.json`은 저장소에 담겨
+      // 배포되므로 공격자가 그 이름을 쓸 수 있다. 그래서 두 축 **모두**
+      // `probe/sources/asset-name.ts`의 `safeAssetNameSegment`(`:` 기각)를 지나게 했다 —
+      // 그 배선이 이 주장의 근거이고, 없으면 `mergeAssets`가 `ctk scan` 전체를 죽인다.
+      return { marketplace: "forbidden", parentAssetId: "optional" };
     case "cli":
       return { marketplace: "forbidden", parentAssetId: "forbidden" };
   }
