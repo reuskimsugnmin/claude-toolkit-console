@@ -1,4 +1,4 @@
-import { type Dirent, closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync } from "node:fs";
+import { type Dirent, lstatSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
 import {
   PathTraversalDetectedError,
@@ -8,8 +8,14 @@ import {
   type AssetKind,
 } from "@ctk/core";
 import type { HomeContext } from "../home.js";
-import { parseSimpleFrontmatter } from "../frontmatter.js";
+import { FRONTMATTER_SCAN_MAX_BYTES, scanFrontmatter } from "../frontmatter-scan.js";
 import { listPluginInstallPaths } from "./plugins.js";
+import {
+  isRealPathWithinRealRoot,
+  validateInstallPath,
+  type InstallPathState,
+  type ValidatedInstallPath,
+} from "./install-path.js";
 
 /**
  * probe/src/sources/bundled.ts — B1 Step 5. 플러그인이 번들한 스킬·커맨드·에이전트를 부모
@@ -30,7 +36,11 @@ import { listPluginInstallPaths } from "./plugins.js";
  * 세어 AC-1을 과대 계상한다.
  */
 
-export type BundledParentState = "ok" | "install_path_missing" | "install_path_rejected";
+/**
+ * ⚠️ `install-path.ts`의 `InstallPathState`를 그대로 쓴다(M-B). 두 곳에 같은 문자열 유니온을
+ * 적어 두면 한쪽에 축이 늘 때 다른 쪽이 조용히 뒤처진다 — 판정과 표시가 같은 목록을 본다.
+ */
+export type BundledParentState = InstallPathState;
 
 export interface BundledParentReport {
   parentId: string;
@@ -61,10 +71,21 @@ export interface BundledParentReport {
    * 편입하지 않고 개수만 센다("미측정은 통과가 아니다" — CLAUDE.md). */
   nestedUnmeasured: number;
   /**
-   * 보안 심사 M-2 — frontmatter 스캔 상한(64KB)을 넘어 앞부분만 잘라 읽은 건수(3종 합산).
-   * 조용히 삼키지 않는다 — 대형 형제 파일이 있었다는 사실을 사용자가 볼 수 있어야 한다.
+   * 3차 심사 L-A(2026-08-28) — frontmatter가 스캔 상한(64KB) 안에서 **닫히지 않아** 판정할 수
+   * 없었던 건수(3종 합산). 그 파일들은 자칭 name·description을 쓰지 않고 OS 값(파일·디렉터리
+   * 이름)으로 떨어졌다(fail-closed). 조용히 삼키지 않는다.
+   *
+   * ⚠️ 예전 이름은 `oversizeTruncated`였고 **축이 달랐다** — "잘라 읽었다"는 물리적 사실일 뿐
+   * 판정이 틀렸다는 뜻이 아니다(닫는 `---`를 봤으면 잘려도 판정은 정확하다). 이름과 함께 세는
+   * 대상도 바뀌었다: **판정이 뒤집힐 수 있었던 건수만** 센다.
    */
-  oversizeTruncated: number;
+  frontmatterUnmeasured: number;
+  /**
+   * 보안 재심 L-3 — 원문이 일반 파일이 아니어서(FIFO·소켓·디바이스) 열지 않은 건수(3종 합산).
+   * **막는 것과 보이는 것은 다른 축이다** — M-1 방어가 이 공격을 막고 있었지만 아무도 그
+   * 사실을 알 수 없었다.
+   */
+  notRegularFileSkipped: number;
   /** 사람이 읽을 사유 로그. state가 "ok"가 아니면 그 사유가, "ok"여도 위 카운트가 0보다 크면
    * 각각의 상세가 담긴다. */
   reasons: string[];
@@ -85,96 +106,12 @@ export interface CollectBundledOptions {
   pluginIds: readonly string[];
 }
 
-function pluginsBoundaryRootAbs(home: HomeContext): string {
-  return path.join(home.ctkConfigDir, "plugins");
-}
-
-type ValidatedInstallPath = { ok: true; absPath: string } | { ok: false; state: BundledParentState; reason: string };
-
 /**
- * 보안 심사 M-2 — 거부 사유 메시지에 원문 절대경로를 넣지 않는다. `installPath`는 `scan.ts`의
- * `warnings`를 거쳐 `web-actions.ts`의 응답 본문에 그대로 실려 브라우저까지 나간다(그
- * 응답 필드 화이트리스트는 `warnings`라는 필드 자체는 통과시키므로, 문자열 안에 박힌 원문
- * 경로는 걸러지지 않는다). `gen/file-hygiene.ts:40-45`가 이미 못박은 규칙과 동형이다 —
- * "원문 절대경로는 메시지에 넣지 않는다. 로컬 디버깅용으로 필드에만 둔다." 여기는 사람이 읽는
- * 사유 문자열 하나뿐이라 별도 필드를 둘 자리가 없으므로, `normalizePath`가 이미 `source_ref`에
- * 쓰는 것과 같은 비식별 요약(`home_relative` 우선, 없으면 `path_hash`)으로 대체한다. 상대경로
- * 입력(순회 문자열 등)은 `home_relative`가 나오지 않지만 `path_hash`는 항상 나온다 — 어느
- * 경우든 원문 문자열 자체는 메시지에 남지 않는다.
+ * ⚠️ `installPath` 검증(`validateInstallPath`)과 그 보조 함수들은 **이 파일에 없다** —
+ * `./install-path.ts`로 옮겼다(보안 심사 M-B). private으로 두었더니 플러그인 축
+ * (`findPluginInstallPath` → `gen`의 `pluginSource`)이 같은 값을 **검증 없이** 읽기 루트로
+ * 쓰고 있었다. 판정을 한 파일에 모아 두 축이 같은 함수를 부르게 한다.
  */
-function describePathForReason(home: HomeContext, rawPath: string): string {
-  const normalized = normalizePath(rawPath, home.ctkHome);
-  return normalized.home_relative ?? `path_hash:${normalized.path_hash}`;
-}
-
-/**
- * 이미 `realpath`로 해소된 두 경로를 비교하는 순수 함수 — 예외를 던지지 않는다(경로 해소
- * 실패는 호출자가 각자의 축("없음" vs "거부")으로 분류한다). `validateInstallPath`(installPath
- * 경계)와 `isKindDirRejected`(M-1, kind 디렉터리 경계)가 함께 쓰는 단일 관문이다.
- *
- * ⚠️ `gen/src/file-hygiene.ts`의 `assertRealpathWithinRoot`와 판정 형태가 같지만 **직접
- * import할 수 없다** — probe는 core만 import할 수 있고(eslint 계층 경계) `gen → probe` 방향만
- * 허용된다(`probe → gen`은 순환이 된다). 재구현이 아니라 이 파일에 이미 있던 동형 판정을
- * 함수로 뽑아 두 호출부가 공유하도록 좁힌 것 — 단일 관문 원칙을 이 파일 안에서 지킨다.
- */
-function isRealPathWithinRealRoot(realTarget: string, realRoot: string): boolean {
-  return realTarget === realRoot || realTarget.startsWith(realRoot + path.sep);
-}
-
-/**
- * `installed_plugins.json`의 `installPath`는 `z.string()` + `.passthrough()`로만 검증돼 있다
- * (`core/harness/installed-plugins.schema.ts:21,30`) — 절대경로인지도 `..`를 담는지도 스키마
- * 단계에서 보지 않는다. 여기가 그 값을 `readdirSync`의 순회 루트로 승격시키기 **직전**이므로,
- * 순회를 시작하기 전에 ⓐ 절대경로인지 ⓑ `realpath` 해소 후에도 `<config>/plugins` 아래인지
- * 확인한다 — B1이 새로 여는 유일한 공격면(architect 심사 항목 1).
- */
-function validateInstallPath(home: HomeContext, installPath: string | undefined): ValidatedInstallPath {
-  if (installPath === undefined) {
-    return { ok: false, state: "install_path_missing", reason: "installed_plugins.json에 installPath 항목이 없다" };
-  }
-  if (!path.isAbsolute(installPath)) {
-    return {
-      ok: false,
-      state: "install_path_rejected",
-      reason: `installPath가 절대경로가 아니다: ${describePathForReason(home, installPath)}`,
-    };
-  }
-  if (!existsSync(installPath)) {
-    // 오늘 실재율 100%(architect 실측)이므로 부재는 드리프트 신호다 — "없음"이 아니라 "실패".
-    return {
-      ok: false,
-      state: "install_path_missing",
-      reason: `installPath가 디스크에 없다: ${describePathForReason(home, installPath)}`,
-    };
-  }
-  const boundaryRootAbs = pluginsBoundaryRootAbs(home);
-  let realInstallPath: string;
-  let realBoundaryRoot: string;
-  try {
-    realInstallPath = realpathSync(installPath);
-    realBoundaryRoot = realpathSync(boundaryRootAbs);
-  } catch {
-    return {
-      ok: false,
-      state: "install_path_missing",
-      reason: `installPath realpath 해석 실패: ${describePathForReason(home, installPath)}`,
-    };
-  }
-  if (!isRealPathWithinRealRoot(realInstallPath, realBoundaryRoot)) {
-    return {
-      ok: false,
-      state: "install_path_rejected",
-      reason: `installPath가 <config>/plugins 밖을 가리킨다(realpath 기준): ${describePathForReason(home, installPath)}`,
-    };
-  }
-  // ⚠️ 이후 순회·`source_ref` 정규화는 realpath가 아니라 **원문 `installPath`**를 쓴다(검증에만
-  // realpath를 쓰고, 값은 바꾸지 않는다). macOS는 시스템 임시 디렉터리 자체가 심볼릭 링크라
-  // (`/tmp` → `/private/tmp`), realpath 결과를 그대로 쓰면 `home.ctkHome`(realpath를 거치지
-  // 않는 원문)과 접두사가 어긋나 `normalizePath`의 홈 상대화가 깨진다(실측, 이 파일 테스트에서
-  // 발견). 보안 검증과 이후 값의 기준을 분리한다 — `gen/file-hygiene.ts`의 `readAssetSourceFileSafely`도
-  // 같은 원칙(검증은 realpath로, 실제 읽기는 원래 경로로)을 따른다.
-  return { ok: true, absPath: installPath };
-}
 
 /**
  * 보안 심사 M-1 — kind 디렉터리(`skills`/`commands`/`agents`) **자체**가 심볼릭 링크이거나
@@ -243,41 +180,30 @@ interface DirScanResult {
   found: DiscoveredBundledTool[];
   symlinksSkipped: number;
   unsafeNamesSkipped: number;
-  /** 보안 심사 M-2 — frontmatter 스캔 상한(아래 `FRONTMATTER_SCAN_MAX_BYTES`)을 넘어 앞부분만
-   * 잘라 읽은 건수. 파일 자체를 배제하지 않는다(뒤에 frontmatter가 없다고 가정할 근거가
-   * 없다) — 다만 읽는 바이트 수를 상한으로 묶어 대형 형제 파일의 RSS 증폭을 막는다. */
-  oversizeTruncated: number;
+  /**
+   * 3차 심사 L-A — frontmatter **판정을 신뢰할 수 없어** 자칭 name·description을 쓰지 않고
+   * OS 값(디렉터리·파일 이름)으로 떨어뜨린 건수.
+   *
+   * ⚠️ 예전 이름은 `oversizeTruncated`("잘라 읽은 건수")였고 **축이 달랐다.** 잘렸다는 것은
+   * 물리적 사실일 뿐 판정이 틀렸다는 뜻이 아니다 — frontmatter는 파일 맨 앞에 있으므로 닫는
+   * `---`를 읽은 범위 안에서 봤다면 잘렸어도 판정은 정확하다. 세어야 하는 것은 **판정이
+   * 뒤집힐 수 있었던 건수**이고, 그것만 세면 과잉 보고도 사라진다.
+   */
+  frontmatterUnmeasured: number;
+  /** 보안 재심 L-3 — 원문이 일반 파일이 아니어서(FIFO·소켓·디바이스) 열지 않은 건수. */
+  notRegularFileSkipped: number;
 }
-
-/** 보안 심사 M-2 — frontmatter 파싱용 스캔 읽기의 상한. `DEFAULT_MAX_ASSET_SOURCE_BYTES`
- * (200KB, gen이 최종 매칭된 파일 전체를 읽을 때 쓰는 상한)와는 **다른 축**이다 — 이 상한은
- * "매칭 전, 후보 전원"에 적용되므로 훨씬 작게 잡는다. frontmatter는 파일 앞부분에만 있으므로
- * 잘라 읽어도 정보 손실이 없다(닫는 `---`가 상한 밖에 있는 비정상 frontmatter만 예외이고,
- * 그건 `parseSimpleFrontmatter`가 빈 결과로 자연히 처리한다). */
-const FRONTMATTER_SCAN_MAX_BYTES = 64 * 1024;
 
 /**
- * 보안 심사 M-2 — `readFileSync`로 파일 전체를 통째 읽지 않고, 상한을 넘는 파일은 앞부분만
- * `readSync`로 잘라 읽는다. 실증: 27바이트 매칭 대상을 찾으면서 형제 60MB 파일이 상한 없이
- * 함께 읽혀 RSS +95MB였다 — 이 함수를 거치면 그 형제는 최대 64KB만 읽힌다.
+ * ⚠️ **frontmatter 스캔 읽기의 사본은 이 파일에 없다** — `../frontmatter-scan.ts`의
+ * `scanFrontmatter()`를 쓴다(3차 심사 L-A, 2026-08-28).
  *
- * 매칭된 파일의 **전체** 내용은 이 함수가 아니라 `gen/file-hygiene.ts`의
- * `readAssetSourceFileSafely`가 별도로 다시 읽는다(200KB 상한) — 이 64KB는 스캔 전용이고
- * 최종 산출물에 쓰이지 않는다.
+ * 예전에는 이 파일이 `readHeadForFrontmatter`와 `FRONTMATTER_SCAN_MAX_BYTES`를 **따로 갖고**
+ * 있었고, 그 주석은 "닫는 `---`가 상한 밖에 있는 비정상 frontmatter는 `parseSimpleFrontmatter`가
+ * 빈 결과로 자연히 처리한다"고 **주장**했다. L-A가 실측으로 반증했다 — 그 파서는 닫는 구획자가
+ * 없으면 끝까지 소비하며 last-write-wins를 적용하므로 상한 밖의 두 번째 `name:`이 판정을
+ * 뒤집는다. **사본은 원본이 배운 것을 배우지 못한다.** 판정을 한 곳으로 모은다.
  */
-function readHeadForFrontmatter(absPath: string, sizeBytes: number): { content: string; truncated: boolean } {
-  if (sizeBytes <= FRONTMATTER_SCAN_MAX_BYTES) {
-    return { content: readFileSync(absPath, "utf8"), truncated: false };
-  }
-  const fd = openSync(absPath, "r");
-  try {
-    const buf = Buffer.alloc(FRONTMATTER_SCAN_MAX_BYTES);
-    const bytesRead = readSync(fd, buf, 0, FRONTMATTER_SCAN_MAX_BYTES, 0);
-    return { content: buf.subarray(0, bytesRead).toString("utf8"), truncated: true };
-  } finally {
-    closeSync(fd);
-  }
-}
 
 /**
  * 스킬 — `<installPath>/skills/<dirName>/SKILL.md`(디렉터리). `skills.ts:26-38`의
@@ -290,7 +216,8 @@ function scanBundledSkills(pluginDirAbs: string): DirScanResult {
   const found: DiscoveredBundledTool[] = [];
   let symlinksSkipped = 0;
   let unsafeNamesSkipped = 0;
-  let oversizeTruncated = 0;
+  let frontmatterUnmeasured = 0;
+  let notRegularFileSkipped = 0;
 
   for (const dirent of readDirSafe(skillsDirAbs)) {
     if (dirent.isSymbolicLink()) {
@@ -316,15 +243,16 @@ function scanBundledSkills(pluginDirAbs: string): DirScanResult {
     // 본 적이 없었다 — 한 파일 안에서 두 스캐너의 축이 갈려 있었다. `SKILL.md`가 FIFO면
     // `readFileSync`가 영구 블록된다(EXIT=124로 실증) — 열기 전에 일반 파일인지 확인한다.
     if (!skillMdStat.isFile()) continue;
-    let content: string;
-    let truncated: boolean;
-    try {
-      ({ content, truncated } = readHeadForFrontmatter(skillMdAbs, skillMdStat.size));
-    } catch {
+    const scan = scanFrontmatter(skillMdAbs);
+    if (!scan.ok) {
+      // "일반 파일 아님"은 공격 신호이고 "읽기 실패"는 경합·권한이다 — 전자만 센다(L-3).
+      if (scan.reason === "not_a_regular_file") notRegularFileSkipped++;
       continue;
     }
-    if (truncated) oversizeTruncated++;
-    const frontmatter = parseSimpleFrontmatter(content);
+    // ⚠️ 판정 불가면 `frontmatter`가 **빈 객체**로 온다(fail-closed) — 아래 `claimedName`이
+    // 자연히 `dirent.name`(OS 값)으로 떨어진다. 자칭 값을 쓸 방법이 없다.
+    if (scan.unmeasured !== null) frontmatterUnmeasured++;
+    const frontmatter = scan.frontmatter;
     const claimedName = frontmatter.name && frontmatter.name.length > 0 ? frontmatter.name : dirent.name;
     const suffix = safeSuffix(claimedName);
     if (suffix === null) {
@@ -334,7 +262,7 @@ function scanBundledSkills(pluginDirAbs: string): DirScanResult {
     found.push({ suffix, absPath: skillDirAbs, description: frontmatter.description });
   }
 
-  return { found, symlinksSkipped, unsafeNamesSkipped, oversizeTruncated };
+  return { found, symlinksSkipped, unsafeNamesSkipped, frontmatterUnmeasured, notRegularFileSkipped };
 }
 
 interface FlatMdScanResult extends DirScanResult {
@@ -356,7 +284,8 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
   let symlinksSkipped = 0;
   let unsafeNamesSkipped = 0;
   let nestedUnmeasured = 0;
-  let oversizeTruncated = 0;
+  let frontmatterUnmeasured = 0;
+  let notRegularFileSkipped = 0;
 
   for (const dirent of readDirSafe(kindDirAbs)) {
     if (dirent.isSymbolicLink()) {
@@ -381,15 +310,14 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
       continue;
     }
     if (!stat.isFile()) continue;
-    let content: string;
-    let truncated: boolean;
-    try {
-      ({ content, truncated } = readHeadForFrontmatter(fileAbs, stat.size));
-    } catch {
+    const scan = scanFrontmatter(fileAbs);
+    if (!scan.ok) {
+      if (scan.reason === "not_a_regular_file") notRegularFileSkipped++;
       continue;
     }
-    if (truncated) oversizeTruncated++;
-    const frontmatter = parseSimpleFrontmatter(content);
+    // 판정 불가면 빈 객체 — `claimedName`이 `baseName`(파일명)으로 떨어진다(fail-closed).
+    if (scan.unmeasured !== null) frontmatterUnmeasured++;
+    const frontmatter = scan.frontmatter;
     const baseName = dirent.name.slice(0, -".md".length);
     const claimedName = frontmatter.name && frontmatter.name.length > 0 ? frontmatter.name : baseName;
     const suffix = safeSuffix(claimedName);
@@ -400,16 +328,16 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
     found.push({ suffix, absPath: fileAbs, description: frontmatter.description });
   }
 
-  return { found, symlinksSkipped, unsafeNamesSkipped, nestedUnmeasured, oversizeTruncated };
+  return { found, symlinksSkipped, unsafeNamesSkipped, nestedUnmeasured, frontmatterUnmeasured, notRegularFileSkipped };
 }
 
 /** M-1 — kind 디렉터리 자체가 거부되면 리프를 아예 열지 않는다(readdirSync 자체를 안 부른다). */
 function emptyDirScanResult(): DirScanResult {
-  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, oversizeTruncated: 0 };
+  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, frontmatterUnmeasured: 0, notRegularFileSkipped: 0 };
 }
 
 function emptyFlatMdScanResult(): FlatMdScanResult {
-  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, nestedUnmeasured: 0, oversizeTruncated: 0 };
+  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, nestedUnmeasured: 0, frontmatterUnmeasured: 0, notRegularFileSkipped: 0 };
 }
 
 interface DedupedKindResult {
@@ -499,6 +427,28 @@ interface ParentScanCacheEntry {
  * (`findBundledToolPath`의 기본 인자처럼) 캐시가 없는 것과 동작이 같다 — 그것이 기본값의
  * 의도다: 캐시를 넘기지 않는 기존 호출부는 이전과 동일하게 매번 다시 읽는다(회귀 없음).
  */
+/**
+ * ⚠️ **막지 못하는 것을 정확히 적는다 — 이 캐시는 TOCTOU 창을 넓힌다**(보안 심사 L-C,
+ * 2026-08-28).
+ *
+ * 캐시가 없으면 `installPath` 검증(`validateInstallPath` — 절대성·존재·realpath 경계)이 자산
+ * 조회 **한 건마다** 다시 돈다. 캐시가 있으면 **부모 하나당 배치 전체에서 한 번만** 돈다
+ * (`parents`에 `validated`가 메모이즈된다). 즉 검증 시점과 실제 읽기 시점 사이의 간격이
+ * "그 자산 한 건" 에서 **"배치 전체"**(실측 `ctk gen` 1회 = 수십 초~수 분)로 늘어난다.
+ * 그 사이에 `installed_plugins.json`이 바뀌거나 `installPath`의 어느 상위 디렉터리가 심볼릭
+ * 링크로 바뀌면, **검증은 옛 상태를 보고 읽기는 새 상태를 읽는다.**
+ *
+ * **이것은 캐시가 새로 만든 축이 아니라 넓힌 축이다** — `gen/file-hygiene.ts`가 이미 적어 둔
+ * TOCTOU(검사와 `readFileSync`가 경로를 각각 해소한다, 실측 우회율 11%)와 같은 성질이고,
+ * 캐시는 그 창의 **길이**를 키운다. 닫으려면 fd를 한 번 열어 `fstat`+`fd 읽기`로 묶어야 하는데
+ * 그것은 이 캐시가 아니라 위생 계층의 과제다.
+ *
+ * **왜 그럼에도 캐시를 두는가**: 캐시가 없으면 자산 N건에 대해 `installed_plugins.json`을 N번
+ * 읽고 부모 트리를 N번 순회한다(M-3 — B1이 번들 자식을 편입하면서 N이 수백으로 늘었다).
+ * 위험은 "옛 검증 결과를 쓴다"이고 이득은 O(N²) 제거다. **창을 좁히려면 캐시 인스턴스의
+ * 수명을 짧게 잡는다** — 기본 인자(`createBundledToolLocationCache()`)를 쓰는 호출부는 호출당
+ * 새 캐시라 창이 캐시 없음과 같다.
+ */
 export interface BundledToolLocationCache {
   installPaths: Map<string, string> | null;
   parents: Map<string, ParentScanCacheEntry>;
@@ -520,8 +470,9 @@ export function createBundledToolLocationCache(): BundledToolLocationCache {
  * `name`은 `Asset.name`(= 자칭 name, `buildBundledAsset`의 `tool.suffix`)과 비교한다 — 경로
  * 세그먼트로는 쓰지 않는다(H6).
  *
- * 반환은 배열이다 — `findSkillDirsById`와 같은 관용구. 0건이면 못 찾은 것(호출자가
- * `source_missing`으로), 1건이면 확정, **2건 이상이면 판정 불가**(호출자가 `ambiguous_source`로
+ * 반환은 **성공/실패를 가르는 유니온**이다(보안 재심 L-1 — 예전에는 맨 배열이라 "부모 경로가
+ * 거부됐다"와 "못 찾았다"가 똑같이 `[]`였다). `ok: true`의 `locations`가 0건이면 못 찾은 것
+ * (호출자가 `source_missing`으로), 1건이면 확정, **2건 이상이면 판정 불가**(호출자가 `ambiguous_source`로
  * — 어느 쪽이 진짜인지 이 함수는 판정하지 않는다, H-1과 같은 태도). `collectBundled`의
  * `dedupeSameKindNames`(승자를 고르지 않고 충돌을 전부 제외)는 여기서 쓰지 않는다 — 그러면
  * 호출자가 건수를 볼 수 없게 된다.
@@ -530,13 +481,26 @@ export function createBundledToolLocationCache(): BundledToolLocationCache {
  * 만들어져 이전과 동일하게 동작한다(캐시 없음과 동형) — 여러 호출에 걸쳐 절약하려면 호출자가
  * 하나의 캐시를 만들어 반복 호출에 넘겨야 한다(`planGenTargets`가 이렇게 쓴다).
  */
+export type BundledToolLookup =
+  | { ok: true; locations: BundledToolLocation[] }
+  /**
+   * 부모의 `installPath` 검증이 실패했다 — **`ok: true` + 빈 배열과 다른 축이다.**
+   *
+   * ⚠️ 예전에는 이 함수가 검증 실패에도 `[]`를 돌려줬고, `gen`의 `bundledChildSource`가 그것을
+   * `source_missing`(= 드리프트 조사하라)으로 만들었다. 그래서 `installed_plugins.json`이
+   * 오염되면 **부모 1건만** "설치 경로 거부"로 뜨고 **자식 수십 건은 "원본 없음"**으로 떴다
+   * (보안 재심 L-1). M-B가 플러그인 축 한 자리만 고쳤던 것 — **한 자리를 고쳤으면 같은 형태의
+   * 다른 자리를 센다**(CLAUDE.md 안전 원칙 5).
+   */
+  | { ok: false; state: "install_path_missing" | "install_path_rejected"; reason: string; rejectedPath?: string };
+
 export function findBundledToolPath(
   home: HomeContext,
   parentAssetId: string,
   kind: BundledChildKind,
   name: string,
   cache: BundledToolLocationCache = createBundledToolLocationCache(),
-): BundledToolLocation[] {
+): BundledToolLookup {
   if (cache.installPaths === null) {
     cache.installPaths = listPluginInstallPaths(home);
   }
@@ -547,7 +511,12 @@ export function findBundledToolPath(
     parentEntry = { validated, scans: {} };
     cache.parents.set(parentAssetId, parentEntry);
   }
-  if (!parentEntry.validated.ok) return [];
+  if (!parentEntry.validated.ok) {
+    const v = parentEntry.validated;
+    return v.state === "install_path_rejected"
+      ? { ok: false, state: v.state, reason: v.reason, rejectedPath: v.rejectedPath }
+      : { ok: false, state: v.state, reason: v.reason };
+  }
   const containmentRoot = parentEntry.validated.absPath;
 
   let scan = parentEntry.scans[kind];
@@ -563,7 +532,10 @@ export function findBundledToolPath(
     parentEntry.scans[kind] = scan;
   }
 
-  return scan.found.filter((tool) => tool.suffix === name).map((tool) => ({ absPath: tool.absPath, containmentRoot }));
+  return {
+    ok: true,
+    locations: scan.found.filter((tool) => tool.suffix === name).map((tool) => ({ absPath: tool.absPath, containmentRoot })),
+  };
 }
 
 export function collectBundled(options: CollectBundledOptions): BundledSourceResult {
@@ -586,7 +558,8 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
         duplicateNamesSkipped: 0,
         kindDirSymlinksSkipped: 0,
         nestedUnmeasured: 0,
-        oversizeTruncated: 0,
+        frontmatterUnmeasured: 0,
+        notRegularFileSkipped: 0,
         reasons: [validated.reason],
       });
       continue;
@@ -643,12 +616,30 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
       reasons.push(`agents/: 같은 kind 안에서 자칭 name이 충돌해 ${agentsDeduped.duplicateNamesSkipped}건 건너뜀(어느 쪽도 승자로 고르지 않는다)`);
     if (agentsScan.nestedUnmeasured > 0)
       reasons.push(`agents/: 중첩 디렉터리의 .md ${agentsScan.nestedUnmeasured}건 — 이름 규약 미실측, 편입하지 않음(unmeasured)`);
-    if (skillsScan.oversizeTruncated > 0)
-      reasons.push(`skills/: frontmatter 스캔 상한(${FRONTMATTER_SCAN_MAX_BYTES}바이트) 초과 ${skillsScan.oversizeTruncated}건 — 앞부분만 읽음`);
-    if (commandsScan.oversizeTruncated > 0)
-      reasons.push(`commands/: frontmatter 스캔 상한(${FRONTMATTER_SCAN_MAX_BYTES}바이트) 초과 ${commandsScan.oversizeTruncated}건 — 앞부분만 읽음`);
-    if (agentsScan.oversizeTruncated > 0)
-      reasons.push(`agents/: frontmatter 스캔 상한(${FRONTMATTER_SCAN_MAX_BYTES}바이트) 초과 ${agentsScan.oversizeTruncated}건 — 앞부분만 읽음`);
+    if (skillsScan.notRegularFileSkipped > 0)
+      reasons.push(
+        `skills/: 원문이 일반 파일이 아니어서(FIFO·소켓·디바이스) 열지 않은 파일 ${skillsScan.notRegularFileSkipped}건 — 열었다면 읽기가 영구 블록됐다`,
+      );
+    if (skillsScan.frontmatterUnmeasured > 0)
+      reasons.push(
+        `skills/: frontmatter가 스캔 상한(${FRONTMATTER_SCAN_MAX_BYTES}바이트) 안에서 닫히지 않아 판정 불가 ${skillsScan.frontmatterUnmeasured}건 — 자칭 name/description을 쓰지 않고 파일·디렉터리 이름을 썼다`,
+      );
+    if (commandsScan.notRegularFileSkipped > 0)
+      reasons.push(
+        `commands/: 원문이 일반 파일이 아니어서(FIFO·소켓·디바이스) 열지 않은 파일 ${commandsScan.notRegularFileSkipped}건 — 열었다면 읽기가 영구 블록됐다`,
+      );
+    if (commandsScan.frontmatterUnmeasured > 0)
+      reasons.push(
+        `commands/: frontmatter가 스캔 상한(${FRONTMATTER_SCAN_MAX_BYTES}바이트) 안에서 닫히지 않아 판정 불가 ${commandsScan.frontmatterUnmeasured}건 — 자칭 name/description을 쓰지 않고 파일·디렉터리 이름을 썼다`,
+      );
+    if (agentsScan.notRegularFileSkipped > 0)
+      reasons.push(
+        `agents/: 원문이 일반 파일이 아니어서(FIFO·소켓·디바이스) 열지 않은 파일 ${agentsScan.notRegularFileSkipped}건 — 열었다면 읽기가 영구 블록됐다`,
+      );
+    if (agentsScan.frontmatterUnmeasured > 0)
+      reasons.push(
+        `agents/: frontmatter가 스캔 상한(${FRONTMATTER_SCAN_MAX_BYTES}바이트) 안에서 닫히지 않아 판정 불가 ${agentsScan.frontmatterUnmeasured}건 — 자칭 name/description을 쓰지 않고 파일·디렉터리 이름을 썼다`,
+      );
 
     perParent.push({
       parentId,
@@ -663,7 +654,9 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
       kindDirSymlinksSkipped:
         (skillsKindDirRejected ? 1 : 0) + (commandsKindDirRejected ? 1 : 0) + (agentsKindDirRejected ? 1 : 0),
       nestedUnmeasured: commandsScan.nestedUnmeasured + agentsScan.nestedUnmeasured,
-      oversizeTruncated: skillsScan.oversizeTruncated + commandsScan.oversizeTruncated + agentsScan.oversizeTruncated,
+      frontmatterUnmeasured: skillsScan.frontmatterUnmeasured + commandsScan.frontmatterUnmeasured + agentsScan.frontmatterUnmeasured,
+      notRegularFileSkipped:
+        skillsScan.notRegularFileSkipped + commandsScan.notRegularFileSkipped + agentsScan.notRegularFileSkipped,
       reasons,
     });
   }

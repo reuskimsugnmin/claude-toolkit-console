@@ -14,6 +14,7 @@ export * from "./managed-policy.js";
 export * from "./auth-status.js";
 export * from "./sources/errors.js";
 export * from "./sources/known-projects.js";
+export * from "./sources/install-path.js";
 export * from "./sources/plugins.js";
 export * from "./sources/skills.js";
 export * from "./sources/bundled.js";

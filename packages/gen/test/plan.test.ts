@@ -413,7 +413,11 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
      */
     it("플러그인 원문이 링크면 봉쇄와 무관하게 거부된다 — 봉쇄는 스킬 경로에만 준다", () => {
       init();
-      const installPath = path.join(ctkHome, "plugins", "demo-plugin");
+      // ⚠️ 경계 루트는 `<ctkConfigDir>/plugins`다 — 예전 픽스처는 `<ctkHome>/plugins`(경계 밖)에
+      // 두고 있었고, M-B로 installPath 검증이 배선되자 **링크 축에 닿기 전에** 거부됐다.
+      // 링크 축을 태우려면 픽스처가 먼저 정상 설치여야 한다(테스트가 코드를 단언하는지 환경을
+      // 단언하는지 본다 — CLAUDE.md). 아래 별도 테스트가 경계 밖 축을 따로 태운다.
+      const installPath = path.join(home.ctkConfigDir, "plugins", "demo-plugin");
       mkdirSync(path.join(installPath, ".claude-plugin"), { recursive: true });
       writeFileSync(path.join(installPath, ".claude-plugin", "plugin.json"), '{"name":"demo-plugin"}');
       // README를 <configDir>/skills 안(= 스킬 봉쇄 루트 안)의 파일로 링크한다.
@@ -440,6 +444,95 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
       const result = planGenTargets({ home, bundledParents: [], assets: [asset], index: { schema_version: 1, assets: [] } });
       expect(result.skipped.map((sk) => sk.assetId), "플러그인 링크가 통과했다").toEqual(["demo-plugin"]);
       expect(result.skipped[0]?.failureClass).toBe("path_traversal_detected");
+    });
+
+    /**
+     * ⚠️ **보안 심사 M-B(2026-08-28).** `installed_plugins.json`의 `installPath`는
+     * `z.string()`+`.passthrough()`로만 검증되므로 절대경로인지도 `..`를 담는지도 스키마가 보지
+     * 않는다. 번들 축은 `validateInstallPath`로 3중 방어를 거는데 **플러그인 축은 그 값을 그대로
+     * `readAssetSourceFileSafely`의 루트로 승격**시키고 있었다 — 그 파일이 오염되면 `gen`이 임의
+     * 경로의 README를 읽어 카탈로그 문서에 싣고 `sync` 저장소로 내보낸다.
+     *
+     * **`source_missing`이 아니라 `blocked`여야 한다.** 거부를 "원본 없음"으로 말하면 화면이
+     * 사용자에게 드리프트 조사를 시킨다 — 설정 오염 신호를 엉뚱한 처방으로 돌려보내는 것이다
+     * (안전 원칙 7). 그래서 `unresolved`가 아니라 `skipped`에 실려야 하고 분류도 달라야 한다.
+     */
+    it("M-B — installPath가 <config>/plugins 경계 밖이면 읽지 않고 install_path_rejected로 거부한다", () => {
+      init();
+      // 경계 **밖**에 실재하는 트리를 만든다(존재 검사는 통과하고 경계 검사만 걸리게 한다 —
+      // 그래야 이 테스트가 "없어서 막혔다"가 아니라 "경계라서 막혔다"를 단언한다).
+      const outside = path.join(ctkHome, "outside-plugins", "evil-plugin");
+      mkdirSync(path.join(outside, ".claude-plugin"), { recursive: true });
+      writeFileSync(path.join(outside, ".claude-plugin", "plugin.json"), '{"name":"evil-plugin"}');
+      writeFileSync(path.join(outside, "README.md"), "경계 밖 원문 — 읽히면 안 된다");
+      mkdirSync(path.join(home.ctkConfigDir, "plugins"), { recursive: true });
+      writeFileSync(
+        path.join(home.ctkConfigDir, "plugins", "installed_plugins.json"),
+        JSON.stringify({
+          plugins: {
+            "evil-plugin": [
+              { scope: "user", installPath: outside, version: "1.0.0", installedAt: "2026-08-24T00:00:00Z", lastUpdated: "2026-08-24T00:00:00Z" },
+            ],
+          },
+        }),
+      );
+
+      const asset: Asset = {
+        schema_version: 1, _scope: "machine_independent", id: "evil-plugin", kind: "plugin", name: "evil-plugin",
+      };
+      const result = planGenTargets({ home, bundledParents: [], assets: [asset], index: { schema_version: 1, assets: [] } });
+
+      expect(result.targets, "경계 밖 원문이 생성 대상이 됐다").toEqual([]);
+      expect(result.unresolved, "거부가 '원본 없음'으로 뭉개졌다").toEqual([]);
+      expect(result.skipped.map((sk) => sk.assetId)).toEqual(["evil-plugin"]);
+      expect(result.skipped[0]?.failureClass).toBe("install_path_rejected");
+      // 사유 문자열에 원문 절대경로가 실리지 않는다(M-2와 같은 계약) — 이 값은 브라우저까지 나간다.
+      expect(result.skipped[0]?.reason ?? "").not.toContain(outside);
+    });
+
+    it("M-B — installPath가 상대경로여도 거부한다(절대성 축)", () => {
+      init();
+      mkdirSync(path.join(home.ctkConfigDir, "plugins"), { recursive: true });
+      writeFileSync(
+        path.join(home.ctkConfigDir, "plugins", "installed_plugins.json"),
+        JSON.stringify({
+          plugins: {
+            "rel-plugin": [
+              { scope: "user", installPath: "../../etc", version: "1.0.0", installedAt: "2026-08-24T00:00:00Z", lastUpdated: "2026-08-24T00:00:00Z" },
+            ],
+          },
+        }),
+      );
+      const asset: Asset = {
+        schema_version: 1, _scope: "machine_independent", id: "rel-plugin", kind: "plugin", name: "rel-plugin",
+      };
+      const result = planGenTargets({ home, bundledParents: [], assets: [asset], index: { schema_version: 1, assets: [] } });
+      expect(result.skipped[0]?.failureClass).toBe("install_path_rejected");
+    });
+
+    it("M-B 대조군 — 경계 **안**의 정상 installPath는 그대로 생성 대상이 된다(과잉 차단 아님)", () => {
+      init();
+      const installPath = path.join(home.ctkConfigDir, "plugins", "good-plugin");
+      mkdirSync(path.join(installPath, ".claude-plugin"), { recursive: true });
+      writeFileSync(path.join(installPath, ".claude-plugin", "plugin.json"), '{"name":"good-plugin"}');
+      writeFileSync(path.join(installPath, "README.md"), "정상 원문");
+      mkdirSync(path.join(home.ctkConfigDir, "plugins"), { recursive: true });
+      writeFileSync(
+        path.join(home.ctkConfigDir, "plugins", "installed_plugins.json"),
+        JSON.stringify({
+          plugins: {
+            "good-plugin": [
+              { scope: "user", installPath, version: "1.0.0", installedAt: "2026-08-24T00:00:00Z", lastUpdated: "2026-08-24T00:00:00Z" },
+            ],
+          },
+        }),
+      );
+      const asset: Asset = {
+        schema_version: 1, _scope: "machine_independent", id: "good-plugin", kind: "plugin", name: "good-plugin",
+      };
+      const result = planGenTargets({ home, bundledParents: [], assets: [asset], index: { schema_version: 1, assets: [] } });
+      expect(result.skipped, "정상 설치가 거부됐다 — 보안 수정이 기능을 죽였다").toEqual([]);
+      expect(result.targets.map((t) => t.asset.id)).toEqual(["good-plugin"]);
     });
 
     it("skills/ 안의 다른 스킬을 가리키는 링크는 허용된다 — 실측 54건이 이 모양이다", () => {

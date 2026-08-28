@@ -36,6 +36,25 @@ export const FAILURE_CLASSES = [
   "backup_manifest_tampered", // 롤백 시 manifest.json의 실측 sha256이 journal에 기록된 값과 다르다 — 백업 저장소 자체가 변조됐을 가능성(H2/AC-2.13) — Step 5 보안 심사 수정
   "config_clobbered", // 백업~롤백 사이 사용자가 대상 파일을 별도로 바꿔 lost update 위험(M8) — 복원 직전 재확인 — Step 5 보안 심사 수정
   "skill_location_ambiguous", // 스킬 자산 id(frontmatter name)에 대응하는 실제 디렉터리가 0개 또는 2개 이상(H6) — Step 5 보안 심사 수정
+
+  // ── B1 보안 심사 L-D(2026-08-28) — **던져지고 있었는데 등재만 빠져 있던 6건.**
+  // 심사가 지적한 것은 `asset_source_not_a_file` 하나였지만 세어 보니 여섯이었다(범위로 닫는다).
+  // 미등재의 대가는 "기록 안 됨"이 아니라 **오분류**다 — `extractFailureClass`(cli/scan.ts ·
+  // move.ts · rollback.ts)가 `FAILURE_CLASS_SET.has()`로 거르므로 미등재 클래스를 던지면
+  // run-log의 `failure_class`가 조용히 `null`이 된다. **"실패"가 "분류 없음"으로 삼켜졌다**
+  // (안전 원칙 7). 등재가 곧 배선인 자리다.
+  "asset_source_missing", // gen 위생: existsSync 확인과 읽기 사이에 원문이 사라졌다(경합·마운트 변경·깨진 링크)
+  "asset_source_too_large", // gen 위생: 자산 원문이 DEFAULT_MAX_ASSET_SOURCE_BYTES(200KB) 초과
+  "asset_source_not_a_file", // gen 위생: 자산 원문 경로가 FIFO·소켓·디바이스 — 열면 영구 블록된다(M-1, EXIT=124로 실증)
+  "dirty_catalog_repo", // sync: 구 레이아웃 경로 이전 직전 카탈로그 저장소에 커밋되지 않은 변경이 있다
+  "project_list_changed", // actuator/move: 조치 도중 known projects 목록이 바뀌어 검증 모집단이 흔들렸다
+  "skill_source_not_found", // cli/verify-ac3: AC-3 게이트가 대조할 스킬 원문을 찾지 못했다 — 미측정이지 통과가 아니다
+
+  // B1 보안 심사 M-B(2026-08-28) — installed_plugins.json의 installPath가 절대경로가 아니거나
+  // realpath 해소 후 <config>/plugins 밖을 가리킨다. **"없음"과 다른 축이다** — 부재는 드리프트
+  // 조사이고 이것은 설정 파일 오염 신호다(gen이 임의 경로 README를 카탈로그로 내보낼 수 있었다).
+  "install_path_rejected",
+
   "unclassified",
 ] as const;
 
