@@ -24,6 +24,8 @@ export interface GenPlanTarget {
   reason: GenTargetReason;
   sections: AssetSourceSections;
   sourceContentSha256: string;
+  /** 이 자산 원문에서 가린 자격증명 값의 개수(M-5). `cli/gen.ts`가 run-log에 합산해 남긴다. */
+  credentialsRedacted: number;
 }
 
 /** 파일 위생(H2)에 걸려 원문을 읽지 않은 자산 — 건너뛴 **사실과 이유**를 함께 남긴다. */
@@ -168,6 +170,7 @@ export function planGenTargets(options: PlanGenTargetsOptions): GenPlanResult {
           asset,
           reason: verdict.reason,
           sections: verdict.sections,
+          credentialsRedacted: verdict.credentialsRedacted,
           sourceContentSha256: verdict.sourceContentSha256,
         });
         continue;
@@ -182,7 +185,7 @@ type AssetVerdict =
   | { kind: "blocked"; failureClass: FailureClass; reason: string }
   | { kind: "unresolved"; reason: UnresolvedSourceReason; locationCount?: number }
   | { kind: "up-to-date" }
-  | { kind: "target"; reason: GenTargetReason; sections: AssetSourceSections; sourceContentSha256: string };
+  | { kind: "target"; reason: GenTargetReason; sections: AssetSourceSections; sourceContentSha256: string; credentialsRedacted: number };
 
 /**
  * 자산 하나의 생성 상태를 판정한다. **파일시스템을 읽지만 아무것도 쓰지 않는다.**
@@ -223,7 +226,7 @@ function judgeAsset(
   if (indexEntry?.gen_state === "policy_blocked") {
     if (retryPolicyBlocked === true) {
       // 강제 재시도 — 해시가 같아도 대상이다. 문서는 애초에 쓰이지 않았다.
-      return { kind: "target", reason: "stale", sections: resolved.sections, sourceContentSha256 };
+      return { kind: "target", reason: "stale", sections: resolved.sections, sourceContentSha256, credentialsRedacted: resolved.credentialsRedacted };
     }
     if (indexEntry.gen_content_sha256 === sourceContentSha256) {
       return {
@@ -237,13 +240,13 @@ function judgeAsset(
     // 원문이 바뀌었다 — 아래 `changed` 경로로 흘러 자동으로 다시 시도한다(자기 치유).
   }
   if (indexEntry?.gen_state === "stale") {
-    return { kind: "target", reason: "stale", sections: resolved.sections, sourceContentSha256 };
+    return { kind: "target", reason: "stale", sections: resolved.sections, sourceContentSha256, credentialsRedacted: resolved.credentialsRedacted };
   }
   if (indexEntry?.gen_content_sha256 === undefined) {
-    return { kind: "target", reason: "new", sections: resolved.sections, sourceContentSha256 };
+    return { kind: "target", reason: "new", sections: resolved.sections, sourceContentSha256, credentialsRedacted: resolved.credentialsRedacted };
   }
   if (indexEntry.gen_content_sha256 !== sourceContentSha256) {
-    return { kind: "target", reason: "changed", sections: resolved.sections, sourceContentSha256 };
+    return { kind: "target", reason: "changed", sections: resolved.sections, sourceContentSha256, credentialsRedacted: resolved.credentialsRedacted };
   }
   return { kind: "up-to-date" };
 }

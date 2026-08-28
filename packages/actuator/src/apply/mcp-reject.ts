@@ -51,6 +51,14 @@ function classifyMoveRejection(kind: AssetKind): MoveRejectionReason {
     case "skill":
       return null;
     case "mcp":
+      // ⚠️ **B4-a-1에서 두 축으로 따로 물었고, 같은 규칙이 옳다**(한 판정 함수를 두 축이 쓰면
+      // 각 축에서 따로 묻는다 — CLAUDE.md). MCP는 이제 독립(`~/.claude.json` 직접 등록)과
+      // 번들(`.mcp.json`) 양쪽에 산다. 번들 쪽도 **거부 사유가 `bundled_child`가 아니라 `mcp`다**:
+      // `McpMoveRejectedError`의 처방("변경은 `/mcp`로 하세요")이 번들 MCP에도 **그대로 맞기**
+      // 때문이다 — 번들 서버의 활성 상태도 `plugin:<p>:<s>` 토글로 같은 `/mcp` UI에서 다룬다
+      // (`probe/sources/mcp.ts:24` · `docs/harness-facts.md`). `bundled_child`로 바꾸면
+      // "부모에 종속돼 이관할 수 없다"고만 말하고 **빠져나갈 길을 지운다**(안전 원칙 6).
+      // 이 판정은 재검토된 것이지 놓친 것이 아니다.
       return "mcp";
     case "cli":
       return "cli";

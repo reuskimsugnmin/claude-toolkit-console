@@ -377,6 +377,10 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
         // 오염 신호인데 사후 감사 경로가 없었다. `session_owned_excluded`·`url_scrub`과 같은
         // 선례를 따른다 — "조용히 지움"을 정상 경로에서도 막는다.
         hygiene_skips: countHygieneSkips(plan.skipped),
+        // 보안 재심 M-5 — **가린 자격증명 건수를 지속 기록에 남긴다.** `url_scrub`과 같은 계약이다:
+        // 세어 놓고 아무도 읽지 않으면 미배선이고, 그러면 "깨끗해서 0"과 "가림이 안 돌아서 0"이
+        // 구별되지 않는다. 0도 **사실로** 기록한다(필드가 없는 것과 다르다).
+        mcp_credentials_redacted: plan.targets.reduce((sum, t) => sum + t.credentialsRedacted, 0),
         // 통과한 실행에서도 감사 집계를 남긴다(보안 재심 M3) — "조용히 지움"을 정상 경로에서도 막는다.
         session_owned_excluded: summary.sealAudit.sessionOwnedExcluded,
         concurrency_overrides: summary.sealAudit.concurrencyOverrides,

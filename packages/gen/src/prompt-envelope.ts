@@ -33,7 +33,9 @@ export type SectionLabel =
   | "Readme.md"
   | "asset.description"
   | "agent.md"
-  | "command.md";
+  | "command.md"
+  /** B4-a-1 — 번들 MCP 서버 정의. 파일 하나가 서버 여럿을 담으므로 **그 서버의 항목만** 싣는다. */
+  | ".mcp.json";
 
 export interface PromptEnvelopeSection {
   /** 사람이 읽는 라벨(파일 종류) — `SectionLabel` 폐집합만 허용한다(호출자는 고정된 파일 종류
