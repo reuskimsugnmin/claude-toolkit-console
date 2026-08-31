@@ -1,0 +1,93 @@
+import type { AssetKind } from "../schema/asset.js";
+import { pluginNameFromId } from "../usage/subagent-resolve.js";
+
+/**
+ * `(kind, pluginName, name)` 3튜플 색인 (B4-c · D-5).
+ *
+ * ⚠️ **2튜플 `(kind, name)`은 이 머신에서 유일하지 않다.** 실측 2026-08-31 — 표의 21자산 중
+ * **5건**이 2튜플로는 후보가 둘 이상이다(`code-reviewer` 4 · `code-simplifier` 4 · `architect` 2 ·
+ * `planner` 2 · `security-reviewer` 2). 충돌 상대는 `docs/workflow-assets.md`가 「쓰지 않는 것」으로
+ * **스스로 적어 둔** `pr-review-toolkit`·`feature-dev` 등이다. 문서 표기가
+ * `Agent(oh-my-claudecode:code-reviewer)`처럼 **플러그인을 이미 담고 있으므로** 키를 3튜플로 올린다.
+ *
+ * ⚠️ **예외 맵으로는 못 막는다** — 예외 맵의 치역이 바로 그 모호한 축이다. 해소는 3튜플이 한다.
+ *
+ * **선례를 계승하되 입력 축을 바꾼다.** `usage/subagent-resolve.ts`(PR #37 · B4-b)가 같은 문제를
+ * 이미 풀었다 — 2단 맵 · `pluginNameFromId` · "후보가 정확히 하나일 때만 잇는다". 그러나 그 파일의
+ * `buildBundledAgentIndex`는 **`kind === "agent"` 전용**이고 **`Asset[]` 전수**를 받는다.
+ * `Asset`을 전수로 받으면 `description`·`source_ref`까지 메모리에 들어와 D-8의 "좁힌 뒤의 값만
+ * 출력 경로에 도달한다"가 흐려지므로, **인덱스 행**만 받는다(인덱스에는 `description`이 없다).
+ */
+
+/**
+ * 색인이 필요로 하는 최소 필드 — `sync`의 `CatalogIndexEntry`와 구조적으로 호환된다.
+ * `core`는 `@ctk/*`를 import할 수 없으므로(계층 lint) 타입을 여기서 구조적으로 선언한다.
+ * **`description`이 없다는 것이 요점이다.**
+ */
+export interface IndexRowForLookup {
+  readonly id: string;
+  readonly kind: AssetKind;
+  readonly name: string;
+  readonly parent_asset_id?: string;
+}
+
+export interface TupleIndex {
+  /** kind → pluginName → name → id[]. **`id[]`가 2건 이상이면 `ambiguous`다.** */
+  readonly byTuple: ReadonlyMap<string, readonly string[]>;
+  /**
+   * `parent_asset_id`가 없어 색인에 들어가지 못한 행 수.
+   * **막지 않되 보이게 한다** — 독립 자산과 이름이 겹치면 그 독립 자산은 보이지 않는데,
+   * 그것을 `not_installed`로 뭉개면 "없음"과 "안 봤음"이 같아진다.
+   */
+  readonly parentlessRows: number;
+}
+
+/**
+ * 맵 키 — 세 축을 **NUL(`\0`)**로 잇는다. 자산 이름·플러그인 이름에 절대 나올 수 없는 문자라
+ * 축이 섞이지 않는다(`a b`+`c` vs `a`+`b c` 같은 충돌이 구조적으로 불가능하다).
+ *
+ * ⚠️ **소스에는 이스케이프 시퀀스로 적는다 — 리터럴 제어문자를 넣지 않는다.** 처음에 리터럴
+ * NUL을 넣었더니 **git이 이 파일을 바이너리로 취급해 diff를 보여주지 않았다**(커밋 8995b07의
+ * `Bin 0 -> 3945 bytes`). 동작은 같아도 **코드 리뷰가 불가능해진다.**
+ *
+ * ⚠️ **키 형식은 이 함수만 안다** — 호출부·테스트가 문자열을 하드코딩하면 사본이 되고,
+ * 구분자를 바꾸는 순간 조용히 어긋난다(실제로 테스트가 그렇게 짜였다가 걸렸다).
+ */
+export function tupleKey(kind: AssetKind, pluginName: string, name: string): string {
+  return `${kind}\0${pluginName}\0${name}`;
+}
+
+export function buildTupleIndex(rows: readonly IndexRowForLookup[]): TupleIndex {
+  const byTuple = new Map<string, string[]>();
+  let parentlessRows = 0;
+
+  for (const row of rows) {
+    const parent = row.parent_asset_id;
+    if (parent === undefined || parent.length === 0) {
+      parentlessRows += 1;
+      continue;
+    }
+    const key = tupleKey(row.kind, pluginNameFromId(parent), row.name);
+    const bucket = byTuple.get(key);
+    if (bucket === undefined) byTuple.set(key, [row.id]);
+    else bucket.push(row.id);
+  }
+
+  return { byTuple, parentlessRows };
+}
+
+/**
+ * 후보 id를 찾는다. **0건·1건·2건 이상을 호출부가 갈라야 하므로 배열을 그대로 돌려준다** —
+ * `string | null`로 뭉개면 "없다"와 "여럿이다"가 같아진다(B1 심사 M-B가 정확히 그 형태였다).
+ *
+ * ⚠️ **같은 플러그인 안에서도 2건일 수 있다** — `subagent-resolve.ts:96`이 그 가능성을 인정한다.
+ * 플러그인 축이 유일성을 준다고 **믿지 않는다.**
+ */
+export function lookupCandidates(
+  index: TupleIndex,
+  kind: AssetKind,
+  pluginName: string,
+  name: string,
+): readonly string[] {
+  return index.byTuple.get(tupleKey(kind, pluginName, name)) ?? [];
+}

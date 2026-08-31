@@ -1,6 +1,12 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  findUnusedLeakAllowances,
+  findWorkflowDocLeaks,
+  INSTALL_INVENTORY_AXES,
+} from "@ctk/core";
 import { describe, expect, it } from "vitest";
 
 /**
@@ -102,25 +108,46 @@ describe("README가 안내하는 pnpm 스크립트가 실재한다", () => {
   });
 });
 
-describe.each([
+/**
+ * 개인 환경 데이터 부정 단언 — **대상이 `README.md`·`ROADMAP.md` 둘뿐이었다(B4-c Step 1에서 확장).**
+ * `docs/`는 이 축에서 무방비였다: `scripts/hygiene-check.mjs`는 헤더에 적힌 대로 경로 리터럴 축만
+ * 보고 **설치 목록 축은 스스로 범위 밖**이라 적어 두었으며, 이 파일은 두 문서만 보고 있었다.
+ *
+ * ⚠️ **정규식을 여기 두지 않는다** — `@ctk/core`의 `findWorkflowDocLeaks`를 부른다. 사본을 남기면
+ * 원본의 정정이 사본에 도달하지 않는다(이 저장소가 반복해 데인 형태다).
+ * ⚠️ **축은 `INSTALL_INVENTORY_AXES`(설치 목록 3축)다.** 6축을 문서 전문에 걸면 `~/`만으로
+ * 오늘 27건이 위반이 되는데 전부 `~/.claude.json` 같은 정당한 설정 경로 표기다 —
+ * **초록인 게이트를 새로 빨갛게 만들지 않는다.**
+ */
+const HYGIENE_DOCS: readonly (readonly [string, string])[] = [
   ["README.md", README],
   ["ROADMAP.md", ROADMAP],
-])("%s에 개인 환경 데이터가 없다 (public 저장소)", (_name, DOC) => {
-  /**
-   * 위생 검사는 **경로 리터럴만** 본다 — 설치된 툴 이름·머신 id는 그 축이 아니라서 통과한다
-   * (이번 세션에 같은 사각지대를 두 번 만났다). README는 사용 안내라 실제 출력을 붙여넣기
-   * 쉬우므로 여기서 따로 막는다.
-   */
-  it("실제 machine_id(UUID)가 없다 — `ctk init` 출력을 그대로 붙이면 들어온다", () => {
-    expect(DOC).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+  ...execFileSync("git", ["ls-files", "docs"], { cwd: repoRoot, encoding: "utf8" })
+    .split("\n")
+    .filter((f) => f.endsWith(".md"))
+    .map((f) => [f, readFileSync(path.join(repoRoot, f), "utf8")] as const),
+];
+
+describe.each(HYGIENE_DOCS)("%s에 개인 환경 데이터가 없다 (public 저장소)", (_name, DOC) => {
+  it("설치 목록 축(자산 id·machine_id·스냅샷 파일명)이 새지 않는다", () => {
+    const leaks = findWorkflowDocLeaks(DOC, INSTALL_INVENTORY_AXES);
+    expect(leaks, `유출: ${leaks.map((l) => `${l.axis}=${l.match}`).join(", ")}`).toEqual([]);
+  });
+});
+
+describe("위생 허용목록", () => {
+  it("대상 문서를 하나 이상 실제로 읽었다 — 목록이 비면 위 단언이 통째로 공허하다", () => {
+    // 이 저장소의 실패: 정규식이 빈손이면 파일 전체가 아무것도 검사하지 않는다.
+    expect(HYGIENE_DOCS.length).toBeGreaterThanOrEqual(3);
   });
 
-  it("실제 스냅샷 파일명이 없다 — 시각이 곧 사용 이력이다", () => {
-    expect(DOC).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z\.jsonl/);
+  it("쓰이지 않는 허용 항목이 없다 — 상류가 바뀌면 허용도 사라져야 한다", () => {
+    const unused = findUnusedLeakAllowances(HYGIENE_DOCS.map(([, text]) => text));
+    expect(unused.map((a) => a.match), "미사용 허용 항목은 조용히 썩는다").toEqual([]);
   });
 
-  it("마켓플레이스 자산 id 형태(`name@marketplace`)가 없다 — 설치된 툴 목록이다", () => {
-    // 코드펜스 안의 `<자산id>` 같은 자리표시자는 이 패턴에 걸리지 않는다.
-    expect(DOC).not.toMatch(/\b[a-z][a-z0-9-]{2,}@[a-z][a-z0-9-]{2,}\b/);
+  it("양성 대조군 — 오염된 합성 문서는 실제로 걸린다", () => {
+    const polluted = "machine_id는 3f2a91be-77c4-4d18-9b02-5ea6c1d40f88이다";
+    expect(findWorkflowDocLeaks(polluted, INSTALL_INVENTORY_AXES)).toHaveLength(1);
   });
 });

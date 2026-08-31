@@ -45,6 +45,16 @@ export * from "./snapshot/freshness.js";
 export * from "./snapshot/path-normalize.js";
 
 export * from "./catalog/layout.js";
+export * from "./workflow-doc/leaks.js";
+export * from "./workflow-doc/markers.js";
+export * from "./workflow-doc/errors.js";
+export * from "./workflow-doc/asset-cell.js";
+export * from "./workflow-doc/asset-row.js";
+export * from "./workflow-doc/table-locate.js";
+export * from "./workflow-doc/index-3tuple.js";
+export * from "./workflow-doc/exceptions.js";
+export * from "./workflow-doc/resolve.js";
+export * from "./workflow-doc/summary.js";
 export * from "./catalog/render-markdown.js";
 export * from "./catalog/skill-body-lint.js";
 export * from "./catalog/probe-skill.js";
