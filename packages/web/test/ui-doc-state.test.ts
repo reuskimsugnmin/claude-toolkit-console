@@ -336,9 +336,12 @@ describe("자산 상세 — frontmatter 접기 (D-3)", () => {
     expect(det.children[1]!.textContent).toContain("gen_source_trust");
 
     expect(bodies.length).toBeGreaterThan(0);
-    const body = bodies[0]!.textContent;
-    expect(body.startsWith("## Role"), `본문이 frontmatter로 시작한다: ${body.slice(0, 30)}`).toBe(true);
-    expect(body, "메타가 본문에 남았다").not.toContain("schema_version");
+    const body = bodies[0]!;
+    // ⚠️ B3 Step 5부터 본문은 **렌더된 노드**다 — `## Role`이 헤딩 노드가 되고 마커는 사라진다.
+    expect(body.children[0]!.tag, "본문 첫 노드가 헤딩이 아니다").toBe("h5");
+    expect(body.children[0]!.textContent).toBe("Role");
+    expect(body.textContent, "메타가 본문에 남았다").not.toContain("schema_version");
+    expect(body.textContent).toContain("합성 본문이다");
   });
 
   it("여는 구획자만 있으면 **자르지 않는다** — 원문 전체가 본문으로 간다 (fail-safe)", async () => {
@@ -350,14 +353,16 @@ describe("자산 상세 — frontmatter 접기 (D-3)", () => {
     expect(details.length, "닫는 구획자가 없는데 frontmatter를 잘라냈다").toBe(0);
     const body = bodies[0]!.textContent;
     expect(body, "원문이 통째로 보존돼야 한다").toContain("schema_version");
-    expect(body).toContain("## Role");
+    expect(body, "본문도 함께 남아야 한다").toContain("Role");
+    expect(body).toContain("합성 본문이다");
   });
 
   it("frontmatter가 아예 없으면 details를 만들지 않는다", async () => {
     const { docs } = await bootAndShowDetail(null, "## Role\n\n합성 본문이다.");
     const { details, bodies } = partsOf(docs);
     expect(details.length).toBe(0);
-    expect(bodies[0]!.textContent.startsWith("## Role")).toBe(true);
+    expect(bodies[0]!.children[0]!.tag).toBe("h5");
+    expect(bodies[0]!.children[0]!.textContent).toBe("Role");
   });
 
   it("문서가 없으면(404) details도 본문도 만들지 않고 '없다'고 말한다 — 대조군", async () => {
@@ -365,5 +370,127 @@ describe("자산 상세 — frontmatter 접기 (D-3)", () => {
     const { details } = partsOf(docs);
     expect(details.length).toBe(0);
     expect(docs.textContent).toContain("이 문서는 아직 없다");
+  });
+});
+
+/**
+ * B3 Step 5 — D-4. 마크다운 최소 렌더러. 범위는 **모집단 실측**으로 정했다
+ * (주석 174파일·4,695줄 + 사용법 174파일·8,210줄).
+ */
+describe("자산 상세 — 마크다운 최소 렌더 (D-4)", () => {
+  /** 하위 트리에 해당 태그의 노드가 있는가. */
+  function hasTag(el: El, tag: string): boolean {
+    if (el.tag === tag) return true;
+    return el.children.some((c) => hasTag(c, tag));
+  }
+  function nodesOf(el: El, tag: string): El[] {
+    const out: El[] = el.tag === tag ? [el] : [];
+    for (const c of el.children) out.push(...nodesOf(c, tag));
+    return out;
+  }
+  const doc = (body: string) => `---\nschema_version: "1"\n---\n${body}`;
+
+  /**
+   * ⚠️ `showDetail`은 **주석과 사용법 두 문서를 모두** 렌더하고, 이 하네스는 둘에 같은 원문을
+   * 돌려준다 — 그래서 노드 수를 통째로 세면 **정확히 두 배**가 나온다. 첫 본문 하나로 좁혀
+   * 센다(그 사실을 모른 채 "2를 기대"로 고치면 두 문서를 렌더한다는 계약이 테스트에서 사라진다).
+   */
+  function firstBody(docs: El): El {
+    const body = docs.children.find((c) => c.tag === "div" && c.className === "doc");
+    expect(body, "렌더된 본문이 없다").toBeTruthy();
+    return body as El;
+  }
+
+  it("인용 표기가 본문과 구분되는 노드로 나온다 — 본문에서 가장 흔한 요소다", async () => {
+    const { docs } = await bootAndShowDetail(null, doc("역할을 설명한다 [[cite:EXAMPLE.md#L2-L3]] 끝."));
+    const body = firstBody(docs);
+    const cites = nodesOf(body, "sup");
+    expect(cites.length, "인용 표기가 노드로 분리되지 않았다").toBe(1);
+    expect(cites[0]!.className).toBe("cite");
+    expect(cites[0]!.textContent).toBe("EXAMPLE.md#L2-L3");
+    expect(body.textContent, "대괄호 표기가 그대로 남았다").not.toContain("[[cite:");
+  });
+
+  /**
+   * ⚠️ **이 저장소에서 가장 중요한 렌더 테스트다.** 서드파티 원문에는 `<div>`처럼 **문자 그대로의
+   * 태그**가 실재한다(실측 214건). 마크업으로 해석되면 안 되고 글자로 보여야 한다.
+   * **두 단언을 모두** 건다 — 앞의 것만 있으면 텍스트가 우연히 남은 경우와 구분되지 않고,
+   * 뒤의 것만 있으면 태그가 통째로 사라진 경우("안전하지만 내용이 없어진")도 통과한다.
+   */
+  it("원문의 리터럴 HTML 태그가 **글자로 보이고** 노드가 되지 않는다", async () => {
+    const { docs } = await bootAndShowDetail(null, doc("설명: <div>는 블록 요소다."));
+    expect(firstBody(docs).textContent, "문자열 <div>가 화면에서 사라졌다").toContain("<div>");
+    // ⚠️ 본문 컨테이너 자체가 `div`이므로 **그 안쪽만** 본다. `hasTag(docs, ...)`로 물으면
+    // 컨테이너가 걸려 언제나 참이 된다 — 처음 쓸 때 그대로 걸렸다.
+    const body = firstBody(docs);
+    expect(
+      body.children.some((c) => hasTag(c, "div")),
+      "리터럴 태그가 실제 노드가 됐다 — 마크업으로 해석됐다",
+    ).toBe(false);
+  });
+
+  it("위 테스트가 공허하지 않다 — 태그를 해석하는 렌더러는 같은 입력에서 실제로 노드를 만든다", () => {
+    // 대조군. 우리 렌더러가 안전한 것은 `createElement`+`textContent`만 쓰기 때문이지
+    // 입력이 무해해서가 아니다 — 그 차이를 여기서 보인다.
+    const naive = new El("div-host");
+    const m = /<([a-z]+)>/.exec("설명: <div>는 블록 요소다.");
+    naive.appendChild(new El(m![1]!));
+    expect(hasTag(naive, "div"), "대조군이 div를 만들지 못하면 위 단언은 아무것도 증명하지 않는다").toBe(true);
+  });
+
+  it("실제 백틱 입력이 코드 노드가 되고 백틱 문자는 사라진다", async () => {
+    const { docs } = await bootAndShowDetail(null, doc("경로는 `skills/` 아래다."));
+    const body = firstBody(docs);
+    const codes = nodesOf(body, "code");
+    expect(codes.length).toBe(1);
+    expect(codes[0]!.textContent).toBe("skills/");
+    expect(body.textContent, "백틱 문자가 화면에 남았다").not.toContain("`");
+  });
+
+  it("굵게는 렌더하고 기울임은 원문 그대로 둔다 — 후자는 리스트 마커와 축이 겹친다", async () => {
+    const { docs } = await bootAndShowDetail(null, doc("**중요**하고 *덜 중요*하다."));
+    const body = firstBody(docs);
+    const strongs = nodesOf(body, "strong");
+    expect(strongs.length).toBe(1);
+    expect(strongs[0]!.textContent).toBe("중요");
+    expect(body.textContent, "미지원 문법은 사라지지 않고 원문 그대로 보인다").toContain("*덜 중요*");
+  });
+
+  it("헤딩·순서없는 리스트·순서있는 리스트·인용이 각각 제 노드가 된다", async () => {
+    const { docs } = await bootAndShowDetail(
+      null,
+      doc("## 제목\n\n- 하나\n- 둘\n\n1. 첫째\n2. 둘째\n\n> 인용문이다"),
+    );
+    const body = firstBody(docs);
+    expect(nodesOf(body, "h5").length, "## 는 h5여야 한다").toBe(1);
+    expect(nodesOf(body, "ul").length).toBe(1);
+    expect(nodesOf(body, "ol").length).toBe(1);
+    expect(nodesOf(body, "li").length).toBe(4);
+    expect(nodesOf(body, "blockquote").length).toBe(1);
+    expect(nodesOf(body, "blockquote")[0]!.textContent).toBe("인용문이다");
+  });
+
+  /**
+   * ⚠️ 울타리 코드를 넣은 근거는 미관이 아니라 **오해 방지**다. 코드 블록 안의 `#`·`-`를
+   * 헤딩·리스트로 읽으면 그건 "렌더 안 함"이 아니라 **"틀린 렌더"**다.
+   */
+  it("울타리 코드 안에서는 파싱을 멈춘다 — 안의 # 과 - 가 헤딩·리스트가 되지 않는다", async () => {
+    const { docs } = await bootAndShowDetail(null, doc("```\n# 주석이다\n- 옵션\n```"));
+    const body = firstBody(docs);
+    expect(nodesOf(body, "pre").length, "코드 블록이 pre가 되지 않았다").toBe(1);
+    expect(nodesOf(body, "h4").length + nodesOf(body, "h5").length, "코드 안의 #이 헤딩이 됐다").toBe(0);
+    expect(nodesOf(body, "li").length, "코드 안의 -가 리스트가 됐다").toBe(0);
+    expect(nodesOf(body, "pre")[0]!.textContent).toBe("# 주석이다\n- 옵션");
+  });
+
+  it("닫히지 않은 울타리도 내용을 잃지 않는다 (fail-safe)", async () => {
+    const { docs } = await bootAndShowDetail(null, doc("```\n# 열린 채 끝났다"));
+    expect(docs.textContent, "열린 채 끝났다고 내용을 삼켰다").toContain("열린 채 끝났다");
+  });
+
+  it("인식하지 못한 줄은 문단으로 그대로 낸다 — 표는 범위 밖이지만 사라지지 않는다", async () => {
+    const { docs } = await bootAndShowDetail(null, doc("| 열 | 값 |\n| --- | --- |\n| a | b |"));
+    expect(docs.textContent).toContain("| 열 | 값 |");
+    expect(docs.textContent).toContain("| a | b |");
   });
 });

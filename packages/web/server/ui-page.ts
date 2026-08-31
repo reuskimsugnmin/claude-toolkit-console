@@ -114,6 +114,25 @@ function renderUiHtml(nonce: string): string {
     background: var(--panel); color: var(--ink); font: inherit; font-size: 14px; }
   .doc { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px;
     white-space: pre-wrap; font-size: 13.5px; overflow-x: auto; }
+  /* 마크다운 최소 렌더(D-4). 블록이 노드가 되었으므로 문단 안에서만 개행을 보존한다 —
+     \`.doc\`의 pre-wrap을 그대로 두면 블록 사이 빈 줄이 이중으로 벌어진다. */
+  .doc h4, .doc h5, .doc h6 { margin: 18px 0 8px; font-weight: 600; }
+  .doc h4 { font-size: 15px; } .doc h5 { font-size: 14px; } .doc h6 { font-size: 13.5px; }
+  .doc p { margin: 0 0 12px; white-space: pre-wrap; }
+  .doc ul, .doc ol { margin: 0 0 12px; padding-inline-start: 20px; }
+  .doc li { margin: 2px 0; }
+  .doc blockquote { margin: 0 0 14px; padding: 6px 14px; border-inline-start: 2px solid var(--line);
+    color: var(--muted); font-size: 13px; white-space: pre-wrap; }
+  .doc code { font-size: 12.5px; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 4px; padding: 0 4px;
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, Menlo, monospace; }
+  .doc pre.code { margin: 0 0 12px; padding: 10px 12px; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; font-size: 12.5px;
+    white-space: pre; font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, Menlo, monospace; }
+  /* 인용 표기는 본문에서 가장 흔한 요소라 눌러야 읽힌다 — 다만 지우지는 않는다. */
+  .cite { font-size: 10px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px;
+    padding: 0 3px; margin-inline-start: 2px; white-space: nowrap;
+    font-family: ui-monospace, "SF Mono", Consolas, Menlo, monospace; }
   .row-link { background: none; border: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer;
     text-align: left; }
   /* 가시성은 클래스가 아니라 속성이다 — 이 파일에서 요소를 숨기는 유일한 규칙.
@@ -825,6 +844,163 @@ function renderDetailMeta(asset) {
 }
 
 /**
+ * 인라인 토큰 — 인라인 코드 · 굵게 · 인용 표기 세 가지.
+ *
+ * ⚠️ **단일 \`*\` 기울임은 넣지 않는다.** 줄머리 \`* \`가 순서없는 리스트 마커와 같은 문자라
+ * 한 문자를 두 축이 판정하게 된다. \`**\`는 그 충돌이 없다(리스트 마커가 될 수 없다).
+ * 실측: 굵게 769건 대 기울임 17건 — 흔한 쪽만 취하고 모호한 쪽은 원문 그대로 둔다.
+ */
+const INLINE_RE = /(\`[^\`]+\`)|(\\*\\*[^*]+\\*\\*)|(\\[\\[cite:[^\\]]+\\]\\])/g;
+
+/** 인라인 토큰을 노드로 편다. **\`innerHTML\`을 쓰지 않는다** — 원문은 서드파티 텍스트다. */
+function renderInline(el, text) {
+  INLINE_RE.lastIndex = 0;
+  if (!INLINE_RE.test(text)) { el.textContent = text; return; }
+  INLINE_RE.lastIndex = 0;
+
+  const put = (s) => {
+    if (s === "") return;
+    const span = document.createElement("span");
+    span.textContent = s;
+    el.appendChild(span);
+  };
+
+  let last = 0;
+  let m = INLINE_RE.exec(text);
+  while (m !== null) {
+    put(text.slice(last, m.index));
+    const tok = m[0];
+    if (m[1] !== undefined) {
+      const code = document.createElement("code");
+      code.textContent = tok.slice(1, -1);
+      el.appendChild(code);
+    } else if (m[2] !== undefined) {
+      const strong = document.createElement("strong");
+      strong.textContent = tok.slice(2, -2);
+      el.appendChild(strong);
+    } else {
+      // 인용 표기 — 문서당 평균 열일곱 개로 **본문에서 가장 흔한 요소**다. 읽는 흐름에서
+      // 빠지도록 작은 첨자 칩으로 누르되 **지우지는 않는다**(출처 추적이 그 값이다).
+      const cite = document.createElement("sup");
+      cite.className = "cite";
+      // \`[[cite:\`는 **7글자**다(대괄호 둘 + \`cite\` 넷 + 콜론 하나). 8로 자르면 참조의 첫
+      // 글자가 조용히 사라진다 — 테스트가 잡았다.
+      cite.textContent = tok.slice(7, -2);
+      el.appendChild(cite);
+    }
+    last = m.index + tok.length;
+    m = INLINE_RE.exec(text);
+  }
+  put(text.slice(last));
+}
+
+/**
+ * 생성 문서의 마크다운을 **최소 범위만** 렌더한다 — **D-4**(B3 Step 5).
+ *
+ * 범위는 추측이 아니라 **모집단 실측**으로 정했다(주석 174파일·4,695줄 + 사용법 174파일·8,210줄):
+ * ATX 헤딩 · 순서없는/있는 리스트 · 인용 · 울타리 코드 · 인라인 코드 · 굵게 · 인용 표기.
+ * **표와 기울임은 넣지 않는다** — 각각 12줄·17건이고, 인식하지 못하면 문단으로 그대로 나와
+ * **오해될 여지가 없다.**
+ *
+ * ⚠️ **울타리 코드는 미관이 아니라 오해 방지 때문에 넣는다.** 코드 블록 **안**에 \`#\`·\`-\`로
+ * 시작하는 줄이 있으면 헤딩·리스트로 **잘못 해석된다** — 그건 "렌더 안 함"이 아니라 **"틀린
+ * 렌더"**다. 울타리 안에서는 파싱을 멈추고 원문 그대로 낸다.
+ *
+ * ⚠️ **인식하지 못한 줄은 문단으로 그대로 낸다.** "해석 못 함"을 "내용 없음"으로 만들지 않는다.
+ *
+ * ⚠️ **\`createElement\` + \`textContent\`만 쓴다.** 원문에는 \`<div>\`처럼 **문자 그대로의 태그**가
+ * 실재한다(실측 214건) — 마크업으로 해석되면 안 되고, 글자로 보여야 한다. 안전이 파서의
+ * 완성도가 아니라 **노드를 만드는 방식**에 걸려 있다.
+ */
+function renderMarkdownInto(host, text) {
+  const lines = text.split("\\n");
+  let para = [];
+  let quote = [];
+  let list = null;
+  // ⚠️ 열려 있는 리스트의 종류를 **별도 변수로** 기억한다. \`list.tag\`를 읽으면 테스트 스텁에서만
+  // 동작한다 — 실제 DOM 요소에는 \`tag\`가 없고 \`tagName\`이 있다(그리고 대문자다).
+  let listTag = null;
+  let fence = null;
+
+  const flushPara = () => {
+    if (para.length === 0) return;
+    const p = document.createElement("p");
+    renderInline(p, para.join("\\n"));
+    host.appendChild(p);
+    para = [];
+  };
+  const flushQuote = () => {
+    if (quote.length === 0) return;
+    const bq = document.createElement("blockquote");
+    renderInline(bq, quote.join("\\n"));
+    host.appendChild(bq);
+    quote = [];
+  };
+  const flushList = () => { list = null; listTag = null; };
+  const flushAll = () => { flushPara(); flushQuote(); flushList(); };
+
+  for (const line of lines) {
+    // ── 울타리 안에서는 아무것도 해석하지 않는다 ──
+    if (fence !== null) {
+      if (line.startsWith("\`\`\`")) {
+        const pre = document.createElement("pre");
+        pre.className = "code";
+        pre.textContent = fence.join("\\n");
+        host.appendChild(pre);
+        fence = null;
+      } else {
+        fence.push(line);
+      }
+      continue;
+    }
+    if (line.startsWith("\`\`\`")) { flushAll(); fence = []; continue; }
+
+    const heading = /^(#{1,6})\\s+(.*)$/.exec(line);
+    if (heading !== null) {
+      flushAll();
+      // 페이지가 이미 h2(자산명)·h3(문서 제목)를 쓰므로 문서 안의 헤딩은 h4부터 시작한다.
+      const h = document.createElement("h" + Math.min(6, heading[1].length + 3));
+      renderInline(h, heading[2]);
+      host.appendChild(h);
+      continue;
+    }
+
+    const quoted = /^>\\s?(.*)$/.exec(line);
+    if (quoted !== null) { flushPara(); flushList(); quote.push(quoted[1]); continue; }
+
+    const bullet = /^\\s*[-*]\\s+(.*)$/.exec(line);
+    const numbered = /^\\s*\\d+\\.\\s+(.*)$/.exec(line);
+    if (bullet !== null || numbered !== null) {
+      flushPara(); flushQuote();
+      const wantTag = bullet !== null ? "ul" : "ol";
+      if (list === null || listTag !== wantTag) {
+        list = document.createElement(wantTag);
+        listTag = wantTag;
+        host.appendChild(list);
+      }
+      const li = document.createElement("li");
+      renderInline(li, (bullet !== null ? bullet[1] : numbered[1]));
+      list.appendChild(li);
+      continue;
+    }
+
+    if (line.trim() === "") { flushAll(); continue; }
+
+    flushQuote(); flushList();
+    para.push(line);
+  }
+
+  flushAll();
+  // 닫히지 않은 울타리도 **내용을 잃지 않는다** — 열린 채 끝났다고 삼키지 않는다.
+  if (fence !== null && fence.length > 0) {
+    const pre = document.createElement("pre");
+    pre.className = "code";
+    pre.textContent = fence.join("\\n");
+    host.appendChild(pre);
+  }
+}
+
+/**
  * 문서 원문을 frontmatter와 본문으로 가른다 — **D-3**(B3 Step 4b).
  *
  * 생성 문서는 \`---\` 두 줄 사이에 기계용 메타(\`schema_version\`·\`gen_source_trust\` 등)를
@@ -914,7 +1090,7 @@ async function showDetail(asset) {
       }
       const body = document.createElement("div");
       body.className = "doc";
-      body.textContent = parts.body;
+      renderMarkdownInto(body, parts.body);
       host.appendChild(body);
       continue;
     }
