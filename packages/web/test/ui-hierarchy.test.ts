@@ -443,3 +443,90 @@ describe("B3 Step 3a — 출처 칸 4갈래 (지금까지 링크 분기는 미�
     expect(bad.textContent).toBe("링크 형식 아님(git)");
   });
 });
+
+describe("B3 Step 3b — 계층 편의 (자식 수 · 전체 펼치기 · 토글 여백)", () => {
+  it("부모 행이 자식 수를 **펼치기 전에** 말한다 — 열어보기 전엔 안이 안 보였다", async () => {
+    const { byId, renderAssets } = await bootWithViewModel(buildFixtureViewModel());
+    renderAssets();
+    const nameTd = rowByName(byId, "synth-plugin").children[0]!;
+    const last = nameTd.children[nameTd.children.length - 1]!;
+    expect(last.className).toBe("kidcount");
+    expect(last.textContent, "픽스처의 자식은 C1·C2·C3 셋이다").toBe("(3)");
+  });
+
+  it("자식 행에는 자식 수가 붙지 않는다 — 대조군", async () => {
+    const { byId, renderAssets } = await bootWithViewModel(buildFixtureViewModel());
+    byId.get("q")!.value = "needle";
+    renderAssets();
+    const childTd = rowByName(byId, "needle-one").children[0]!;
+    expect(childTd.children.some((c) => c.className === "kidcount")).toBe(false);
+  });
+
+  it("펼치기 버튼이 이름 칸의 **첫 자식**으로 남는다 — 이 결합은 의도적으로 유지한다", async () => {
+    const { byId, renderAssets } = await bootWithViewModel(buildFixtureViewModel());
+    renderAssets();
+    const first = rowByName(byId, "synth-plugin").children[0]!.children[0]!;
+    expect(first.tag).toBe("button");
+    expect(first.className, "D-10 — 토글에 여백 클래스가 붙어야 이름과 붙어 보이지 않는다").toContain("twisty");
+  });
+
+  it("전체 펼치기를 누르면 자식이 전부 보이고, 다시 누르면 전부 사라진다", async () => {
+    const { byId, renderAssets } = await bootWithViewModel(buildFixtureViewModel());
+    renderAssets();
+    const btn = byId.get("btn-expand-all")!;
+    expect(btn.textContent).toBe("전체 펼치기");
+    expect(byId.get("assets-body")!.textContent).not.toContain("needle-one");
+
+    btn.click();
+    let text = byId.get("assets-body")!.textContent;
+    expect(text, "전체 펼치기 뒤에도 C1이 안 보인다").toContain("needle-one");
+    expect(text).toContain("needle-two");
+    expect(text).toContain("unrelated-sub");
+    expect(btn.textContent, "전부 펼쳐졌으면 라벨이 반대 동작을 말해야 한다").toBe("전체 접기");
+
+    btn.click();
+    text = byId.get("assets-body")!.textContent;
+    expect(text, "전체 접기 뒤에도 C1이 남았다").not.toContain("needle-one");
+    expect(text, "부모는 계속 보여야 한다").toContain("synth-plugin");
+    expect(btn.textContent).toBe("전체 펼치기");
+  });
+
+  it("부모가 하나도 없으면 버튼을 숨긴다 — 눌러도 아무 일이 없는 버튼은 고장으로 읽힌다", async () => {
+    // 자식 없는 최상위 자산만 있는 뷰모델. `dropParentRow`는 부모 **행**만 빼므로 여기서는
+    // 쓸 수 없다(자식들은 남아 parent_id를 가리킨다) — 자산 하나짜리 모델을 따로 만든다.
+    const soloVm = JSON.parse(
+      JSON.stringify(
+        buildConsoleViewModel({
+          machineId: "synthetic-machine",
+          projects: [],
+          projectsUnavailable: null,
+          assets: [
+            parseAsset({
+              schema_version: 1,
+              _scope: "machine_independent",
+              id: "synth-solo",
+              kind: "skill",
+              name: "synth-solo",
+            }),
+          ],
+          installations: [],
+          occupancy: [],
+          usage: [],
+          lastScanAt: null,
+          docPresence: new Map(),
+          unusedExpensiveLimit: 5,
+          now: new Date("2026-08-22T00:00:00.000Z"),
+        }),
+      ),
+    ) as unknown;
+    const { byId, renderAssets } = await bootWithViewModel(soloVm);
+    renderAssets();
+    expect(byId.get("btn-expand-all")!.hidden).toBe(true);
+  });
+
+  it("부모가 있으면 버튼이 보인다 — 위 케이스가 '항상 숨김'과 구별된다", async () => {
+    const { byId, renderAssets } = await bootWithViewModel(buildFixtureViewModel());
+    renderAssets();
+    expect(byId.get("btn-expand-all")!.hidden).toBe(false);
+  });
+});

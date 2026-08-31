@@ -84,6 +84,10 @@ function renderUiHtml(nonce: string): string {
      한 문자열로 이어붙이면 두 축이 뭉개진다(B3 Step 3a). */
   .install-scope { display: block; }
   .install-enabled { display: block; color: var(--muted); font-size: 12.5px; }
+  /* D-10 — 토글과 이름이 붙어 보이던 문제. \`.row-link\`의 padding:0은 유지하고 여백만 준다. */
+  .twisty { margin-inline-end: 6px; }
+  .kidcount { color: var(--muted); font-size: 12px; margin-inline-start: 6px;
+    font-variant-numeric: tabular-nums; }
   .badge { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 12px; border: 1px solid var(--line); }
   .b-enabled { color: var(--accent); border-color: var(--accent); }
   .b-disabled { color: var(--muted); }
@@ -151,6 +155,12 @@ function renderUiHtml(nonce: string): string {
         <option value="">모든 종류</option>
         ${KIND_OPTIONS_HTML}
       </select>
+      <!-- ⚠️ **버튼이다. 체크박스·라디오·submit 입력으로 만들지 않는다** —
+           \`readonly-server.test.ts\`가 그 세 입력 유형의 부재를 단언한다(MCP 쓰기 UI 부재 가드).
+           그 가드는 범위가 넓지만 옳고, 여기서 깨면 정당한 이유 없이 보안 단언이 지워진다.
+           (그 정규식을 여기 그대로 옮겨 적지 않는다 — 게이트가 자기 규칙을 적은 주석에
+           반응하면 신호가 아니라 잡음이다.) -->
+      <button class="row-link" id="btn-expand-all">전체 펼치기</button>
       <span class="meta" id="filter-count"></span>
     </div>
     <table>
@@ -581,7 +591,10 @@ function assetRow(a, depth) {
   const kids = CHILDREN.get(a.id);
   if (depth === 0 && kids && kids.length > 0) {
     const toggle = document.createElement("button");
-    toggle.className = "row-link";
+    // D-10 — \`row-link\`는 \`padding:0\`이라 토글과 이름이 붙어 보였다(\`▸example-plugin\`).
+    // 여백은 \`twisty\`가 준다. **연속 appendChild 구조는 그대로 둔다** — 이름 칸의 첫 자식이
+    // 펼치기 버튼이라는 결합에 기존 테스트가 기대고 있고, 그 결합은 의도적으로 유지한다.
+    toggle.className = "row-link twisty";
     toggle.setAttribute("aria-expanded", String(EXPANDED.has(a.id)));
     toggle.textContent = EXPANDED.has(a.id) ? "▾" : "▸";
     toggle.addEventListener("click", () => {
@@ -596,6 +609,16 @@ function assetRow(a, depth) {
   btn.textContent = (depth > 0 ? "└ " : "") + a.name;
   btn.addEventListener("click", () => showDetail(a));
   nameTd.appendChild(btn);
+
+  // 자식 수를 **펼치기 전에** 보여준다. 지금은 열어보기 전까지 안에 뭐가 있는지 전혀 알 수
+  // 없어서, 46개 부모를 하나씩 눌러봐야 했다. 개수만 있어도 펼칠지 말지 판단이 선다.
+  if (depth === 0 && kids && kids.length > 0) {
+    const n = document.createElement("span");
+    n.className = "kidcount";
+    // 괄호를 붙인다 — 맨 숫자는 이름의 일부로 읽힌다(\`example-plugin 12\`).
+    n.textContent = "(" + kids.length + ")";
+    nameTd.appendChild(n);
+  }
   tr.appendChild(nameTd);
 
   const kindTd = document.createElement("td");
@@ -622,6 +645,37 @@ function assetRow(a, depth) {
   cell(tr, [a.has_annotation ? "주석" : null, a.has_usage_doc ? "사용법" : null].filter(Boolean).join(" · ") || "—",
     a.has_annotation || a.has_usage_doc ? "" : "muted");
   return tr;
+}
+
+/**
+ * 부모 id 집합 — \`CHILDREN\`은 매 렌더에 다시 만들어지므로 여기서는 **뷰모델에서 직접** 센다.
+ * 렌더 시점 자료구조에 기대면 아직 한 번도 렌더하지 않은 상태에서 버튼이 틀린 말을 한다.
+ */
+function parentIdsFromVm() {
+  const ids = new Set();
+  for (const a of VM.assets) {
+    if (a.parent_id !== null && a.parent_id !== undefined) ids.add(a.parent_id);
+  }
+  return ids;
+}
+
+/**
+ * 부모가 **하나라도 있고** 전부 펼쳐져 있는가.
+ *
+ * ⚠️ 부모가 0건이면 \`false\`다 — 공집합에 대한 "전부"는 참이지만, 그걸 참으로 두면 부모가
+ * 없는 카탈로그에서 버튼이 "전체 접기"라고 말한다(접을 것이 없는데).
+ */
+function allParentsExpanded() {
+  const parents = parentIdsFromVm();
+  if (parents.size === 0) return false;
+  for (const id of parents) if (!EXPANDED.has(id)) return false;
+  return true;
+}
+
+function toggleExpandAll() {
+  if (allParentsExpanded()) EXPANDED.clear();
+  else for (const id of parentIdsFromVm()) EXPANDED.add(id);
+  renderAssets();
 }
 
 /**
@@ -683,6 +737,11 @@ function renderAssets() {
   const filtered = q !== "" || kind !== "";
   const tail = "최상위 " + visibleTops.size + "건 · 전체 " + VM.assets.length + "건";
   $("filter-count").textContent = filtered ? "매치 " + matched.length + "건 · " + tail : tail;
+
+  // 접을 것이 없으면 버튼을 숨긴다 — 눌러도 아무 일이 없는 버튼은 사용자가 고장으로 읽는다.
+  const expandBtn = $("btn-expand-all");
+  expandBtn.hidden = parentIdsFromVm().size === 0;
+  expandBtn.textContent = allParentsExpanded() ? "전체 접기" : "전체 펼치기";
 }
 
 async function showDetail(asset) {
@@ -950,6 +1009,7 @@ async function boot() {
 
   $("q").addEventListener("input", renderAssets);
   $("kind").addEventListener("change", renderAssets);
+  $("btn-expand-all").addEventListener("click", toggleExpandAll);
   $("tab-assets").addEventListener("click", () => showTab("assets"));
   $("tab-usage").addEventListener("click", () => showTab("usage"));
   $("back").addEventListener("click", () => showTab("assets"));
