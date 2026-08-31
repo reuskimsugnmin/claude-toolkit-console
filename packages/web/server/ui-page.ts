@@ -50,19 +50,49 @@ function renderUiHtml(nonce: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ctk — 툴 콘솔</title>
 <style>
+  /* ── 토큰 (B3 Step 6a) ───────────────────────────────────────────────────
+     웹폰트도 외부 이미지도 못 불러온다(CSP에 font-src·img-src가 없어 default-src 'none'으로
+     떨어진다). 그래서 개성은 서체가 아니라 **정보 밀도와 상태 체계**가 만든다.
+
+     ⚠️ 대비는 실측했다 — 텍스트/배경 16개 조합(8쌍 × 라이트/다크)이 전부 본문 기준 4.5:1을
+     넘는다. **가장 빠듯한 곳은 라이트의 accent on bg로 4.90**이라 여유가 0.4뿐이다.
+     \`--accent\`를 밝게 조정하면 그 조합이 가장 먼저 깨진다 — 색을 손대면 다시 잰다. */
   :root {
-    --bg: #fbfbfa; --panel: #fff; --ink: #1b1b1a; --muted: #6b6b66; --line: #e4e4e0;
-    --accent: #2f6f4f; --warn-bg: #fdf6e3; --warn-line: #e0cd94; --warn-ink: #6b5518;
+    --bg: #f6f7f8; --panel: #ffffff; --ink: #14181c; --muted: #626b74; --line: #e2e6ea;
+    --accent: #1f7a5c;
+    --warn-bg: #fdf3d9; --warn-line: #e3c976; --warn-ink: #7a5b0f;
+    /* ⚠️ danger는 **신설**이다. 이전에는 액션 실패(.result.fail)가 warn을 재사용해
+       "아직 판정 중"(MCP 모름 · 순위 무의미)과 "확실히 실패"(액션 거부)가 같은 색이었다 —
+       색 축에서 「없음과 실패를 구분한다」가 깨져 있었다. */
+    --danger-bg: #fbe9e7; --danger-line: #e2a49a; --danger-ink: #8a2f1f;
+
+    --fs-1: 11.5px; --fs-2: 12.5px; --fs-3: 13px; --fs-4: 13.5px;
+    --fs-5: 14px; --fs-6: 15px; --fs-7: 17px; --fs-8: 20px;
+    --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+    --space-5: 20px; --space-6: 24px; --space-7: 28px; --space-8: 32px;
+    --radius-sm: 4px; --radius-md: 6px; --radius-pill: 999px;
+
+    /* ⚠️ **크로스 플랫폼 스택이다.** 이전 스택은 macOS 계열 셋과 로컬 설치가 필요한 한글
+       폰트 하나뿐이라 Windows·Linux·ChromeOS 사용자는 전부 브라우저 기본값으로 떨어졌다.
+       이 저장소는 public이고 다른 사람이 클론해 자기 머신에서 띄운다. 웹폰트로는 못 고친다. */
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Noto Sans KR",
+      "Malgun Gothic", "Apple SD Gothic Neo", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Segoe UI Mono", Consolas,
+      "Liberation Mono", Menlo, Monaco, monospace;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #16171a; --panel: #1e2024; --ink: #e8e8e6; --muted: #9a9a95; --line: #2e3138;
-      --accent: #7fc0a0; --warn-bg: #2a2416; --warn-line: #5c4d24; --warn-ink: #e0cd94;
+      --bg: #12151a; --panel: #1a1e24; --ink: #e7e9ec; --muted: #8b93a0; --line: #2b313a;
+      --accent: #4fd8a6;
+      --warn-bg: #2a2416; --warn-line: #5c4d24; --warn-ink: #e0cd94;
+      --danger-bg: #2e1a17; --danger-line: #6b3128; --danger-ink: #f0a898;
     }
   }
+  /* 키보드 사용자가 지금 어디에 있는지 보여야 한다 — 이전에는 명시적 포커스 스타일이 없었다. */
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink);
-    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Pretendard", "Apple SD Gothic Neo", sans-serif; }
+    font: var(--fs-6)/1.6 var(--font-sans); }
   header { padding: 18px 24px; border-bottom: 1px solid var(--line); display: flex;
     align-items: baseline; gap: 16px; flex-wrap: wrap; }
   h1 { font-size: 17px; margin: 0; letter-spacing: -0.01em; }
@@ -82,8 +112,12 @@ function renderUiHtml(nonce: string): string {
     font-size: 12px; color: var(--muted); margin-inline-end: 4px; }
   /* 설치 칸은 한 열이지만 **두 줄**이다 — 스코프와 활성은 다른 축이라 노드를 나눠 둔다.
      한 문자열로 이어붙이면 두 축이 뭉개진다(B3 Step 3a). */
-  .install-scope { display: block; }
-  .install-enabled { display: block; color: var(--muted); font-size: 12.5px; }
+  /* ⚠️ 두 줄에 **각각 이름**을 붙인다. 이전에는 스코프가 라벨 없는 굵은 줄이었는데,
+     최상위 자산 대다수가 스코프 기록이 없어 **첫 줄이 대시 하나(정보 0)이고 실제 값은
+     흐린 둘째 줄**에 왔다 — 눈이 빈 값으로 먼저 갔다. 이름을 붙이면 어느 줄이 무슨 축인지
+     묻지 않아도 되고, 어느 쪽도 "더 중요한 줄"이 아니게 된다. */
+  .install-scope { display: block; font-size: var(--fs-2); }
+  .install-enabled { display: block; font-size: var(--fs-2); color: var(--muted); }
   /* D-10 — 토글과 이름이 붙어 보이던 문제. \`.row-link\`의 padding:0은 유지하고 여백만 준다. */
   .twisty { margin-inline-end: 6px; }
   /* 상세 머리의 메타 그리드 — 목록에만 있던 설치·활성·출처를 상세에서도 보여준다(D-5). */
@@ -99,7 +133,7 @@ function renderUiHtml(nonce: string): string {
   summary { cursor: pointer; font-size: 13px; color: var(--muted); }
   pre.fm { margin: 12px 0 0; font-size: 12.5px; color: var(--muted);
     white-space: pre-wrap; overflow-x: auto;
-    font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, Menlo, monospace; }
+    font-family: var(--font-mono); }
   .kidcount { color: var(--muted); font-size: 12px; margin-inline-start: 6px;
     font-variant-numeric: tabular-nums; }
   .badge { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 12px; border: 1px solid var(--line); }
@@ -125,14 +159,16 @@ function renderUiHtml(nonce: string): string {
     color: var(--muted); font-size: 13px; white-space: pre-wrap; }
   .doc code { font-size: 12.5px; background: var(--bg); border: 1px solid var(--line);
     border-radius: 4px; padding: 0 4px;
-    font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, Menlo, monospace; }
+    font-family: var(--font-mono); }
   .doc pre.code { margin: 0 0 12px; padding: 10px 12px; background: var(--bg);
     border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; font-size: 12.5px;
-    white-space: pre; font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, Menlo, monospace; }
+    white-space: pre; font-family: var(--font-mono); }
   /* 인용 표기는 본문에서 가장 흔한 요소라 눌러야 읽힌다 — 다만 지우지는 않는다. */
-  .cite { font-size: 10px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px;
-    padding: 0 3px; margin-inline-start: 2px; white-space: nowrap;
-    font-family: ui-monospace, "SF Mono", Consolas, Menlo, monospace; }
+  /* 좌우 여백을 비대칭으로 준다 — 앞 낱말과는 띄고 **뒤따르는 문장부호와는 붙는다.**
+     대칭 패딩이면 "…이다 [칩] ." 처럼 마침표가 떨어져 보였다(Step 5 실측). */
+  .cite { font-size: 10px; color: var(--muted); border: 1px solid var(--line);
+    border-radius: var(--radius-sm); padding: 0 2px 0 3px; margin-inline-start: 3px;
+    white-space: nowrap; font-family: var(--font-mono); vertical-align: baseline; }
   .row-link { background: none; border: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer;
     text-align: left; }
   /* 가시성은 클래스가 아니라 속성이다 — 이 파일에서 요소를 숨기는 유일한 규칙.
@@ -159,7 +195,9 @@ function renderUiHtml(nonce: string): string {
   .confirm .hint { margin: 8px 0 0; font-size: 13px; font-weight: 600; }
   .result { border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px; margin: 12px 0;
     font-size: 13.5px; white-space: pre-wrap; background: var(--panel); }
-  .result.fail { border-color: var(--warn-line); background: var(--warn-bg); color: var(--warn-ink); }
+  /* ⚠️ 클래스명은 그대로 두고 **가리키는 값만** 바꾼다 — 기존 단언이 클래스명을 본다.
+     "아직 판정 중"(warn)과 "확실히 실패"(danger)를 색으로 가른다. */
+  .result.fail { border-color: var(--danger-line); background: var(--danger-bg); color: var(--danger-ink); }
 </style>
 </head>
 <body>
@@ -613,12 +651,16 @@ function installCellNodes(a) {
   }
 
   const inherited = a.installations.source === "inherited_from_parent";
+  // ⚠️ **두 줄에 각각 이름을 붙인다**(B3 Step 6a). 이전에는 스코프가 라벨 없는 줄이었는데,
+  // 최상위 자산 대다수가 스코프 기록이 없어 **첫 줄이 대시 하나(정보 0)**이고 실제 값은 흐린
+  // 둘째 줄에 왔다 — 눈이 빈 값으로 먼저 갔다. 이름이 붙으면 \`스코프: —\`가 "기록 없음"으로
+  // 읽히고, 값을 감추지 않으면서 오해도 없앤다.
   const scope = document.createElement("span");
   scope.className = "install-scope";
   const scopeText = uniqueJoin(list.map((i) => i.install_scope));
   // 상속 표시는 **스코프 줄에만** 붙인다. 두 줄에 다 붙이면 같은 사실이 두 번 나오고,
   // 어느 줄도 안 붙이면 자식이 자기 설치를 가진 것처럼 보인다.
-  scope.textContent = inherited ? (scopeText === "—" ? "부모 상속" : scopeText + " (부모 상속)") : scopeText;
+  scope.textContent = inherited ? "스코프: " + scopeText + " (부모 상속)" : "스코프: " + scopeText;
   td.appendChild(scope);
 
   const enabled = document.createElement("span");

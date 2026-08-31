@@ -202,6 +202,42 @@ describe("UI 한 장 — Step 6a 수용 기준의 회귀 테스트", () => {
     expect(csp).toContain("default-src 'none'");
     expect(csp).toContain("connect-src 'self'");
     expect(UI_HTML).not.toMatch(/<(script|link|img)[^>]+(src|href)=["']https?:/i);
+
+    // ⚠️ **축을 넓힌다(B3 Step 6a).** 위 정규식은 **태그만** 본다 — CSS의 `url(`은 보지 않는다.
+    // CSP에는 `font-src`도 `img-src`도 없어 둘 다 `default-src 'none'`으로 떨어지므로,
+    // 스타일시트에서 무언가를 불러오면 **조용히 실패한다**(오류도 안 보인다). 토큰 시스템이
+    // CSS를 크게 늘리는 이 Step에서 그 축을 추가한다.
+    const style = /<style>([\s\S]*?)<\/style>/.exec(UI_HTML)?.[1] ?? "";
+    expect(style, "스타일시트가 비었다 — 정규식이 잘못 잡았다").not.toBe("");
+    expect(style, "CSS에서 외부 리소스를 불러온다 — CSP가 조용히 막는다").not.toMatch(/url\(/i);
+  });
+
+  /**
+   * B3 Step 6a — 토큰 시스템. 이 저장소는 **public이고 다른 사람이 클론해 자기 머신에서 띄운다.**
+   * 이전 폰트 스택은 macOS 계열 셋과 로컬 설치가 필요한 한글 폰트 하나뿐이라 Windows·Linux·
+   * ChromeOS는 전부 브라우저 기본값으로 떨어졌고, **웹폰트로는 고칠 수 없다**(위 CSP).
+   */
+  it("폰트 스택이 macOS 밖의 플랫폼을 담는다", () => {
+    const style = /<style>([\s\S]*?)<\/style>/.exec(UI_HTML)?.[1] ?? "";
+    for (const family of ["Segoe UI", "system-ui", "Noto Sans KR", "Malgun Gothic"]) {
+      expect(style, `폰트 스택에 ${family}가 없다`).toContain(family);
+    }
+  });
+
+  it("danger 토큰이 라이트·다크 **양쪽에** 정의돼 있다 — 한쪽만 있으면 다른 테마에서 색이 사라진다", () => {
+    const style = /<style>([\s\S]*?)<\/style>/.exec(UI_HTML)?.[1] ?? "";
+    for (const token of ["--danger-bg", "--danger-line", "--danger-ink"]) {
+      const hits = style.match(new RegExp(token.replace("--", "--") + ":", "g")) ?? [];
+      expect(hits.length, `${token}이 ${hits.length}번 정의됐다 — 라이트·다크 둘이어야 한다`).toBe(2);
+    }
+  });
+
+  it("액션 실패가 주의 계열이 아니라 실패 계열 색을 쓴다 — '판정 중'과 '거부됨'을 가른다", () => {
+    const style = /<style>([\s\S]*?)<\/style>/.exec(UI_HTML)?.[1] ?? "";
+    const rule = /\.result\.fail\s*\{[^}]*\}/.exec(style)?.[0] ?? "";
+    expect(rule, ".result.fail 규칙을 찾지 못했다").not.toBe("");
+    expect(rule).toContain("var(--danger-");
+    expect(rule, "실패가 아직 주의 색을 재사용한다 — 두 사실이 같은 색으로 보인다").not.toContain("var(--warn-");
   });
 
   it("MCP 상태를 바꾸는 UI 요소가 없다 — v1에서 MCP 쓰기는 미지원이다", () => {

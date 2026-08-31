@@ -374,7 +374,7 @@ describe("B3 Step 3a — 설치 칸: 병합이지 융합이 아니다", () => {
     renderAssets();
     const installTd = rowByName(byId, "synth-repo-none").children[2]!;
     expect(installTd.children.length, "설치 칸이 두 노드가 아니다 — 두 축이 뭉개졌다").toBe(2);
-    expect(installTd.children[0]!.textContent).toBe("user");
+    expect(installTd.children[0]!.textContent).toBe("스코프: user");
     expect(installTd.children[1]!.textContent).toBe("활성: project");
   });
 
