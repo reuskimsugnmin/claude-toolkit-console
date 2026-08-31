@@ -44,3 +44,6 @@ view-model.json
 packages/*/test/**/*.js
 packages/*/test/**/*.d.ts
 packages/*/test/**/*.d.ts.map
+
+# B4-c: ctk workflow-doc --write의 백업본 (보안 심사 H-3)
+*.md.bak

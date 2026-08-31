@@ -107,11 +107,11 @@ function isSeparatorRow(line: string): boolean {
  */
 function assertReplaceable(line: string, lineIndex: number, pipes: readonly number[]): void {
   if (!/^\s*\|/.test(line)) {
-    throw parseFailed(`${lineIndex}번째 표 행이 \`|\`로 시작하지 않는다: ${line.slice(0, 60)}`);
+    throw parseFailed(`${lineIndex}번째 표 행이 \`|\`로 시작하지 않는다(파이프 ${pipes.length}개)`);
   }
   if (!/\|\s*$/.test(line)) {
     throw parseFailed(
-      `${lineIndex}번째 표 행이 \`|\`로 끝나지 않는다 — 말미 파이프 없는 GFM 행은 마지막 두 파이프 사이가 2열이 되어 손유지 내용을 지운다: ${line.slice(0, 60)}`,
+      `${lineIndex}번째 표 행이 \`|\`로 끝나지 않는다(파이프 ${pipes.length}개) — 말미 파이프 없는 GFM 행은 마지막 두 파이프 사이가 2열이 되어 손유지 내용을 지운다`,
     );
   }
   if (pipes.length < 4) {
@@ -158,7 +158,7 @@ export function locateTable(regionText: string, maxAssets: number = MAX_WHITELIS
     const assetRefs = extractAssetRefs(line);
     if (assetRefs.length === 0) {
       throw parseFailed(
-        `${lineIndex}번째 데이터 행에서 자산 참조를 하나도 찾지 못했다 — \`Skill(plugin:name)\` 형태의 백틱 스팬이 필요하다: ${line.slice(0, 80)}`,
+        `${lineIndex}번째 데이터 행에서 자산 참조를 하나도 찾지 못했다 — \`Skill(plugin:name)\` 형태의 백틱 스팬이 필요하다`,
       );
     }
     refCount += assetRefs.length;

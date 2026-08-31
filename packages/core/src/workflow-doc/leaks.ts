@@ -35,7 +35,12 @@ export type WorkflowDocLeakAxis = (typeof WORKFLOW_DOC_LEAK_AXES)[number];
 /**
  * **문서 전문**(`docs/*.md` · `README.md` · `ROADMAP.md`)이 보는 집합 — 설치 목록 축만.
  * 경로 축을 빼는 근거는 둘이다: ① `scripts/hygiene-check.mjs`가 `git ls-files` 전수를 열어
- * 경로 리터럴 축을 이미 본다 ② `~/`는 이 저장소의 **정상 표기**다(설정 경로 관습).
+ * **앵커된 형태의** 경로 리터럴을 CI에서 실제로 본다 ② `~/`는 이 저장소의 **정상 표기**다.
+ * ⚠️ **근거 ①은 부분적으로만 성립한다(보안 심사 L-3).** 두 스캐너의 정규식이 다르다 —
+ * `hygiene-check`에는 부정 lookbehind가 있고 `findRawPathLeaks`에는 없어, `at/Users/…`처럼
+ * 앞 문자에 붙은 형태는 이쪽만 잡는다. 또 그 스크립트의 "실행 머신의 홈·hostname 리터럴" 축은
+ * **검사를 돌리는 머신**에서 계산되므로 CI 러너에서는 아무것도 지키지 않는다.
+ * 생성 구간은 아래 `GENERATED_OUTPUT_AXES`(6축)가 따로 보므로 사각지대는 아니다.
  */
 export const INSTALL_INVENTORY_AXES: readonly WorkflowDocLeakAxis[] = [
   "marketplace_asset_id",
@@ -73,10 +78,19 @@ function pathAxisOf(patternSource: string): WorkflowDocLeakAxis | null {
   return null;
 }
 
+/**
+ * 허용 항목의 축은 **`AXIS_PATTERNS`가 가진 축으로 좁힌다** — 경로 축(`abs_home_*`)은
+ * `findRawPathLeaks` 합성이라 여기 패턴이 없다.
+ * ⚠️ **보안 심사 L-1**: 이전에는 축이 6축 전체였고 `findUnusedLeakAllowances`가
+ * `AXIS_PATTERNS[...]?.source ?? ""`로 빈 패턴을 만들어 **zero-length 매치 무한 루프**에 빠졌다
+ * (주입 실증: 200만 회 후에도 `lastIndex=0`). 그 함수는 `readme-cli-contract.test.ts`가 부르므로
+ * CI 잡이 타임아웃까지 매달린다. `?? ""`는 **"없음"을 "빈 패턴"으로 삼키는** 형태이기도 하다.
+ * 경로 축 허용 항목이 필요해지면 `?? ""`를 없애고 경로 축을 **정식 지원**하는 쪽으로 간다.
+ */
 export interface LeakAllowance {
   /** 정확 일치할 문자열. 부분 일치는 쓰지 않는다 — 통과 축은 완전 일치다(안전 원칙 6). */
   readonly match: string;
-  readonly axis: WorkflowDocLeakAxis;
+  readonly axis: keyof typeof AXIS_PATTERNS;
   readonly note: string;
 }
 
@@ -150,7 +164,12 @@ export function findWorkflowDocLeaks(
  */
 export function findUnusedLeakAllowances(corpus: readonly string[]): LeakAllowance[] {
   return LEAK_ALLOWANCES.filter((allowance) => {
-    const re = new RegExp(AXIS_PATTERNS[allowance.axis as keyof typeof AXIS_PATTERNS]?.source ?? "", "g");
+    const pattern = AXIS_PATTERNS[allowance.axis];
+    if (pattern === undefined) {
+      // "없음"을 빈 패턴으로 삼키지 않는다 — 빈 정규식은 무한 루프를 만든다(L-1).
+      throw new Error(`허용 항목의 축 ${allowance.axis}에 탐지 패턴이 없다`);
+    }
+    const re = new RegExp(pattern.source, "g");
     return !corpus.some((text) => {
       let m: RegExpExecArray | null;
       re.lastIndex = 0;

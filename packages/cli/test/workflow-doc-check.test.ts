@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,6 +67,9 @@ function makeCatalog(root: string, assets: readonly Asset[]): void {
 function makeDoc(dir: string, rows: readonly string[]): string {
   const docPath = path.join(dir, "docs", "workflow-assets.md");
   mkdirSync(path.dirname(docPath), { recursive: true });
+  // ⚠️ 저장소 앵커 — `findDocPath`가 앵커 없는 디렉터리를 후보로 보지 않는다(보안 심사 M-1).
+  // `git worktree`의 `.git`도 파일이므로 파일로 만든다.
+  writeFileSync(path.join(dir, ".git"), "gitdir: /synthetic\n", "utf8");
   writeFileSync(
     docPath,
     [
@@ -289,5 +292,114 @@ describe.skipIf(!existsSync(DIST_BIN))("빌드된 바이너리를 실제로 실�
     );
     makeDoc(dir, [ROW_EXECUTOR]);
     expect(runBin(dir, home, ["--check"])).toBe(3);
+  });
+});
+
+/**
+ * **보안 심사(BLOCK) 대응의 반대 축 테스트.** 각 처방이 실제로 막는지, 그리고 **정상을 위반으로
+ * 만들지 않는지**를 함께 본다 — 이 저장소는 "보안 수정이 기능을 죽이는 축은 리뷰가 잡지 않는다"에
+ * 데인 적이 있고, 이번 작업에서도 이미 한 번 일어났다.
+ */
+describe("보안 심사 대응 — 처방이 막는가, 그리고 무엇을 죽이는가", () => {
+  it("H-3 — 미측정이면 `--write`가 **쓰지 않는다**. 복구 경로를 함께 안내한다", () => {
+    const dir = tmp();
+    const docPath = makeDoc(dir, [ROW_EXECUTOR]);
+    const before = readFileSync(docPath, "utf8");
+    const report = runWorkflowDoc({ docPath, catalogRoot: null, write: true });
+    expect(report.wrote, "미측정인데 파일을 갈아엎었다").toBe(false);
+    expect(readFileSync(docPath, "utf8")).toBe(before);
+    expect(report.lines.join("\n")).toContain("ctk scan");
+  });
+
+  it("H-3 — **탈출구가 있다**: 의도한 것이면 `allowUnmeasured`로 쓸 수 있다 (fail-closed에 복구 경로)", () => {
+    const dir = tmp();
+    const docPath = makeDoc(dir, [ROW_EXECUTOR]);
+    expect(runWorkflowDoc({ docPath, catalogRoot: null, write: true, allowUnmeasured: true }).wrote).toBe(true);
+  });
+
+  it("H-3 — 쓰기 시 **백업이 남고** 임시 파일이 뒤에 남지 않는다(원자적 rename)", () => {
+    const dir = tmp();
+    makeCatalog(dir, FIXTURE_ASSETS.map(buildAsset));
+    const docPath = makeDoc(dir, [ROW_EXECUTOR]);
+    const before = readFileSync(docPath, "utf8");
+    runWorkflowDoc({ docPath, catalogRoot: dir, write: true });
+    expect(existsSync(`${docPath}.bak`)).toBe(true);
+    expect(readFileSync(`${docPath}.bak`, "utf8")).toBe(before);
+    expect(existsSync(`${docPath}.tmp-${process.pid}`)).toBe(false);
+  });
+
+  it("H-2 — **절단 경계에 걸친 UUID**가 원문 게이트에 막힌다 (산출물만 보면 조각이 통과했다)", () => {
+    const dir = tmp();
+    const uuid = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+    const leaky = parseAsset({
+      schema_version: 1,
+      _scope: "machine_independent",
+      id: "oh-my-claudecode@market:agent:executor",
+      kind: "agent",
+      name: "executor",
+      parent_asset_id: "oh-my-claudecode@market",
+      description: `${"가".repeat(180)} ${uuid}`,
+    });
+    makeCatalog(dir, [leaky]);
+    const docPath = makeDoc(dir, [ROW_EXECUTOR]);
+    const report = runWorkflowDoc({ docPath, catalogRoot: dir, write: true });
+    expect(report.wrote).toBe(false);
+    expect(report.exitCode).toBe(3);
+    // M-3 — 유출 차단이 표 파싱 오류로 **오분류되지 않는다.**
+    expect(report.failure?.failureClass).toBe("workflow_doc_leak_detected");
+    expect(readFileSync(docPath, "utf8")).not.toContain(uuid.slice(0, 20));
+  });
+
+  it("H-2 반대 축 — **정상 설명은 그대로 통과한다** (게이트가 기능을 죽이지 않는다)", () => {
+    const dir = tmp();
+    makeCatalog(dir, FIXTURE_ASSETS.map(buildAsset));
+    const docPath = makeDoc(dir, [ROW_EXECUTOR, ROW_CRITIC]);
+    const report = runWorkflowDoc({ docPath, catalogRoot: dir, write: true });
+    expect(report.wrote).toBe(true);
+    expect(report.failure).toBeNull();
+  });
+
+  it("M-1 — 심볼릭 링크 문서를 **관통해 쓰지 않는다**", () => {
+    const dir = tmp();
+    const real = path.join(dir, "real.md");
+    writeFileSync(real, "원본", "utf8");
+    mkdirSync(path.join(dir, "docs"), { recursive: true });
+    writeFileSync(path.join(dir, ".git"), "gitdir: /synthetic\n", "utf8");
+    symlinkSync(real, path.join(dir, "docs", "workflow-assets.md"));
+    const cwd = process.cwd();
+    try {
+      process.chdir(dir);
+      const report = runWorkflowDoc({ catalogRoot: null, write: true });
+      expect(report.exitCode).toBe(3);
+      expect(report.lines.join("\n")).toContain("심볼릭 링크");
+      expect(readFileSync(real, "utf8"), "링크를 관통해 원본이 수정됐다").toBe("원본");
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  it("M-1 — 저장소 앵커가 없으면 **찾지 않는다**. 탈출구를 안내한다", () => {
+    const dir = tmp();
+    mkdirSync(path.join(dir, "docs"), { recursive: true });
+    writeFileSync(path.join(dir, "docs", "workflow-assets.md"), "앵커 없는 문서", "utf8");
+    const cwd = process.cwd();
+    try {
+      process.chdir(dir);
+      const report = runWorkflowDoc({ catalogRoot: null });
+      expect(report.exitCode).toBe(3);
+      expect(report.lines.join("\n")).toContain("docPath");
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
+  it("M-2 — **조기 반환도 게이트를 탄다**. 표 파싱 실패 출력에 원문이 실리지 않는다", () => {
+    const dir = tmp();
+    const uuid = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
+    // 말미 파이프를 없애 `parse_failed`를 유발한다 — 그 메시지가 원문을 echo하던 자리다.
+    const docPath = makeDoc(dir, [`| 구현 | \`Agent(oh-my-claudecode:executor)\` | ${uuid}`]);
+    const report = runWorkflowDoc({ docPath, catalogRoot: dir });
+    expect(report.exitCode).toBe(3);
+    expect(report.lines.join("\n"), "진단 출력에 문서 원문이 echo됐다").not.toContain(uuid);
   });
 });

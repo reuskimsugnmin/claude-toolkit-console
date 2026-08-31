@@ -62,7 +62,8 @@ export const FAILURE_CLASSES = [
   "workflow_doc_marker_absent", // :start 또는 :end 마커가 없다
   "workflow_doc_marker_duplicated", // 마커가 2회 이상 나온다 — 조용히 첫 것을 고르지 않는다
   "workflow_doc_marker_out_of_order", // :end가 :start보다 앞에 있다
-  "workflow_doc_whitelist_overflow", // 표에서 뽑은 자산 참조 수가 상한을 넘었다 — 동적 화이트리스트의 상한(D-9)
+  "workflow_doc_whitelist_overflow",
+  "workflow_doc_leak_detected", // 자산 설명 원문 또는 산출물에 개인 환경 데이터가 있어 차단했다 — 표 파싱 오류로 오분류하지 않는다(보안 심사 M-3) // 표에서 뽑은 자산 참조 수가 상한을 넘었다 — 동적 화이트리스트의 상한(D-9)
   "unclassified",
 ] as const;
 

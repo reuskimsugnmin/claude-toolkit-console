@@ -153,3 +153,63 @@ describe("renderWorkflowAssetRow — 다중 자산 행 (D-6 · F-3)", () => {
     expect(() => renderWorkflowAssetRow([])).toThrow(/0건/);
   });
 });
+
+/**
+ * **보안 심사 H-1·M-4 대응.** 이스케이프가 보지 않던 축(제어문자·bidi)과 fail-open이던 상한.
+ * ⚠️ **처방이 무엇을 죽이는지 함께 본다** — 제어문자 제거가 ZWJ 이모지를 깨면 `truncateByGrapheme`가
+ * 지키려는 것을 이 규칙이 죽인다. 두 규칙이 서로를 죽이지 않는지가 이 절의 핵심이다.
+ */
+describe("H-1 — 터미널 제어문자·bidi는 이스케이프가 아니라 제거로 막는다", () => {
+  it("ESC·BEL(OSC 8 하이퍼링크 위장)이 셀에도 진단에도 남지 않는다", () => {
+    const osc8 = "\u001b]8;;https://evil.example\u0007click\u001b]8;;\u0007";
+    const cell = renderWorkflowAssetCell(syntheticAsset(`앞 ${osc8} 뒤`));
+    expect(cell).not.toContain("\u001b");
+    expect(cell).not.toContain("\u0007");
+    expect(cell).toContain("click"); // 표시 가능한 글자는 남는다
+  });
+
+  it("bidi 오버라이드(Trojan Source)와 제로폭 문자가 제거된다", () => {
+    const cell = renderWorkflowAssetCell(syntheticAsset("a\u202Eb\u200Bc\uFEFFd"));
+    expect(cell).toBe("abcd");
+  });
+
+  it("`\\s+`가 못 잡는 축이라는 것을 명시적으로 확인한다 — 이것이 결함의 원인이었다", () => {
+    expect(/\s/.test("\u001b"), "ESC가 \\s에 잡히면 이 방어는 불필요하다").toBe(false);
+  });
+
+  it("**반대 축 — ZWJ 이모지는 깨지지 않는다** (제거 규칙이 절단 규칙을 죽이지 않는다)", () => {
+    const family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+    expect(renderWorkflowAssetCell(syntheticAsset(`가족 ${family} 이모지`))).toContain(family);
+  });
+
+  it("반대 축 — 정상 설명은 한 글자도 잃지 않는다", () => {
+    const normal = "Strategic Architecture & Debugging Advisor (Opus, READ-ONLY)";
+    expect(renderWorkflowAssetCell(syntheticAsset(normal))).toBe(
+      "Strategic Architecture &amp; Debugging Advisor (Opus, READ-ONLY)",
+    );
+  });
+});
+
+describe("M-4 — 총합 상한이 fail-open이었다", () => {
+  it("하한까지 줄여도 상한을 못 지키면 **초과 문자열을 반환하지 않는다**", () => {
+    // 자소 하나가 결합문자로 임의 길이가 될 수 있어 자소 상한은 바이트 상한이 아니다.
+    const heavy = "a" + "\u0301".repeat(2000); // 자소 1개, 문자 2001개
+    const inputs: RowCellInput[] = [
+      { kind: "described", asset: syntheticAsset(heavy) },
+      { kind: "described", asset: syntheticAsset(heavy) },
+    ];
+    const cell = renderWorkflowAssetRow(inputs, 200, 400);
+    expect(cell.length).toBeLessThanOrEqual(400);
+    expect(cell).toContain("설명 과대");
+  });
+
+  it("반대 축 — 정상 범위(오늘 최대 행 329자)는 그대로 통과한다", () => {
+    const inputs: RowCellInput[] = [
+      { kind: "described", asset: syntheticAsset("가".repeat(120)) },
+      { kind: "described", asset: syntheticAsset("나".repeat(120)) },
+    ];
+    const cell = renderWorkflowAssetRow(inputs);
+    expect(cell).not.toContain("설명 과대");
+    expect(cell.length).toBeLessThanOrEqual(400);
+  });
+});

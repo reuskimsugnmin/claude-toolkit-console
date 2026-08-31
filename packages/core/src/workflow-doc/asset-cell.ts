@@ -1,4 +1,5 @@
 import type { Asset } from "../schema/asset.js";
+import { WorkflowDocError } from "./errors.js";
 
 /**
  * 문서로 나가는 **모든 문자열의 단일 관문** (B4-c · D-4).
@@ -37,8 +38,28 @@ export const ASSET_SEPARATOR = " · ";
  * (D-4 규칙 1. 이스케이프보다 **먼저** 한다.)
  */
 function foldToSingleLine(text: string): string {
-  return text.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+  return text
+    .replace(/[\r\n]+/g, " ")
+    .replace(CONTROL_AND_FORMAT, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
+
+/**
+ * ⚠️ **보안 심사 H-1 — 이스케이프가 보지 않던 축.** `escapeCell`은 `& \ | < >` 다섯 문자만
+ * 다루고 `\s+`는 JS 정의상 **ESC(U+001B)·BEL(U+0007)을 매치하지 않는다.** 그래서 서드파티
+ * `description`의 터미널 제어문자가 **문서와 사용자 터미널에 원문 그대로** 나갔다(주입 실증:
+ * OSC 8 하이퍼링크 위장 — 표시는 `click`, 링크는 공격자 URL). bidi 오버라이드(Trojan Source)와
+ * 제로폭 문자도 같은 구멍으로 통과했다.
+ *
+ * **치환이 아니라 제거**다 — 표시 가능한 대체 문자를 넣으면 셀 폭 계산이 또 어긋난다.
+ * ⚠️ **U+200D(ZWJ)는 일부러 뺐다.** 지우면 ZWJ 이모지가 반토막 나 `truncateByGrapheme`가
+ * 지키려는 것을 이 규칙이 죽인다 — **두 규칙이 서로를 죽이지 않는지 반대 축 테스트가 본다.**
+ * `asset-cell.ts`가 `-`/`#`/`-->`를 "축이 아니다"로 옳게 배제했으면서 **실제로 위험한 축인
+ * C0/C1·Cf를 열거하지 않은 것**이 이 결함의 형태다.
+ */
+const CONTROL_AND_FORMAT =
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u200B\u200C\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/g;
 
 /**
  * 자소(grapheme) 경계로 자른다 — `Array.from`(코드 포인트)은 서로게이트만 막고 **ZWJ 이모지·
@@ -90,13 +111,19 @@ export function renderWorkflowAssetCell(
 ): string {
   const description = input.description;
   if (description === undefined || description.length === 0) {
-    throw new Error(
+    // 맨 `Error`는 `bin/ctk.ts`의 마지막 fallback에 떨어져 **구조적 실패가 exit 1로 낮춰
+    // 보고된다**(보안 심사 M-5). `failureClass`를 달아 그 경로를 막는다.
+    throw new WorkflowDocError(
+      "workflow_doc_parse_failed",
       "renderWorkflowAssetCell에 빈 설명이 들어왔다 — 호출부가 no_description으로 갈랐어야 한다(D-2)",
     );
   }
   const folded = foldToSingleLine(description);
   if (folded.length === 0) {
-    throw new Error("설명이 공백만으로 이루어져 있다 — 호출부가 no_description으로 갈랐어야 한다(D-2)");
+    throw new WorkflowDocError(
+      "workflow_doc_parse_failed",
+      "설명이 공백만으로 이루어져 있다 — 호출부가 no_description으로 갈랐어야 한다(D-2)",
+    );
   }
   return escapeCell(truncateByGrapheme(folded, graphemeLimit));
 }

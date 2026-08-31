@@ -5,6 +5,7 @@ import {
   DEFAULT_ROW_CELL_LIMIT,
   renderWorkflowAssetCell,
 } from "./asset-cell.js";
+import { WorkflowDocError } from "./errors.js";
 
 /**
  * 다중 자산 행의 **두 번째 관문** (B4-c · D-6).
@@ -83,7 +84,11 @@ export function renderWorkflowAssetRow(
   rowLimit: number = DEFAULT_ROW_CELL_LIMIT,
 ): string {
   if (inputs.length === 0) {
-    throw new Error("renderWorkflowAssetRow에 자산이 0건 들어왔다 — 호출부가 행당 0건을 이미 걸렀어야 한다");
+    // 맨 `Error`는 exit 1로 낮춰 보고된다(보안 심사 M-5) — `failureClass`를 단다.
+    throw new WorkflowDocError(
+      "workflow_doc_parse_failed",
+      "renderWorkflowAssetRow에 자산이 0건 들어왔다 — 호출부가 행당 0건을 이미 걸렀어야 한다",
+    );
   }
 
   const described = inputs.filter(
@@ -111,6 +116,14 @@ export function renderWorkflowAssetRow(
   if (rendered.length === 0) {
     // 전부 생략된 경우 — **빈 셀을 내지 않는다.** 무엇이 일어났는지 셀에 남긴다.
     return `(설명 생략 · ${inputs.length}건)`;
+  }
+  if (rendered.length > rowLimit) {
+    // ⚠️ **보안 심사 M-4 — 상한이 fail-open이었다.** `while`이 하한(24자소)에 닿으면 `break`하고
+    // **초과한 문자열을 그대로 반환**했다. 자소 하나는 결합문자로 임의 길이가 될 수 있어
+    // 자소 상한은 바이트 상한이 아니다 — 주입 실증: `rowLimit=400`에 **480,025자**가 반환됐다.
+    // 48만 자 한 줄이 public 문서에 커밋되면 이후 모든 diff가 오염된다.
+    // **재는 것과 막는 것은 다른 축이다** — 재고 나서 넘으면 어떻게 할지를 정하지 않았었다.
+    return `(설명 과대 · ${inputs.length}건 · ${rendered.length}자)`;
   }
   return rendered;
 }

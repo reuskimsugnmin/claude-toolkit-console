@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   assetJsonPath,
@@ -44,6 +44,11 @@ export interface WorkflowDocOptions {
   readonly docPath?: string;
   /** 테스트용 주입. `undefined`면 로컬 config에서 찾는다. `null`이면 "카탈로그 없음"을 강제한다. */
   readonly catalogRoot?: string | null;
+  /**
+   * 미측정(카탈로그 없음·인덱스 손상)에서도 쓰기를 허용한다 — **기본은 거부**다.
+   * 표를 일부러 "미측정"으로 표기하려는 용법에만 쓴다(보안 심사 H-3).
+   */
+  readonly allowUnmeasured?: boolean;
 }
 
 export interface WorkflowDocRowReport {
@@ -60,14 +65,45 @@ export interface WorkflowDocReport {
   readonly wrote: boolean;
   /** 구조적 실패 — `null`이면 구조는 정상이다. */
   readonly failure: { readonly failureClass: FailureClass; readonly message: string } | null;
-  /** 화면에 찍을 줄들. **출력 전에 유출 게이트를 통과한 값이다.** */
+  /** 화면에 찍을 줄들. **`gated()`를 거친 값만 여기 들어온다.** */
   readonly lines: readonly string[];
 }
 
 const DEFAULT_DOC_RELATIVE = "docs/workflow-assets.md";
+/** 저장소 루트 앵커. `git worktree`의 `.git`은 파일이지만 `existsSync`는 true다. */
+const REPO_ANCHORS = [".git", "pnpm-workspace.yaml"] as const;
+const MAX_UPWARD_DEPTH = 32;
 
 /**
- * 문서를 찾는다 — **`import.meta.url` 기준으로 계산하지 않는다.**
+ * ⚠️ **모든 반환은 이 함수를 거친다 (보안 심사 M-2).**
+ *
+ * 이전에는 "`lines`는 출력 게이트를 통과한 값"이라고 **주석으로 약속**했는데 반환 지점 4개 중
+ * **3개가 게이트를 타지 않았다** — 조기 반환들이 `lines`를 직접 만들어 나갔고 그중 하나는
+ * `table-locate`가 만든 **문서 원문 60~80자를 그대로 echo**했다(주입 실증: UUID가 출력에 실렸다).
+ * 테스트는 `findWorkflowDocLeaks(` **호출 지점**을 셌지 **반환 지점**을 세지 않았다.
+ * **약속을 주석이 아니라 타입으로 고정한다** — `lines`를 뺀 형태만 받는다.
+ */
+function gated(report: Omit<WorkflowDocReport, "lines">, lines: readonly string[]): WorkflowDocReport {
+  const leaks = findWorkflowDocLeaks(lines.join("\n"), GENERATED_OUTPUT_AXES);
+  return {
+    ...report,
+    lines:
+      leaks.length > 0
+        ? [`FAIL 진단 출력에 개인 환경 데이터가 있다: ${[...new Set(leaks.map((l) => l.axis))].join(", ")}`]
+        : lines,
+  };
+}
+
+/**
+ * 문서를 찾는다 — **저장소 앵커 안에서만.**
+ *
+ * ⚠️ **보안 심사 M-1**: 이전에는 cwd에서 **상한 없이** 올라가며 첫 `docs/workflow-assets.md`를
+ * 잡았고 심볼릭 링크를 관통해 썼다. 주입 실증: 저장소 밖 다섯 단계 위 파일을 덮어썼고
+ * (`exit=2 wrote=true`), 링크를 걸면 링크는 그대로 두고 **대상 파일이 수정**됐다.
+ * ⚠️ **`lstat`로 조이는 것은 이 저장소에서 이미 한 번 기능을 죽였다**(링크 스킬 54건). 여기서는
+ * 대상이 자기 문서 1개뿐이라 안전하지만, **fail-closed에는 복구 경로를 함께 준다**(안전 원칙 6).
+ *
+ * (이전 결함도 남긴다) **`import.meta.url` 기준으로 계산하지 않는다.**
  * ⚠️ 처음에 소스 위치(`packages/cli/src/commands`)에서 네 단계를 올라가도록 짰더니 **빌드된
  * `dist/`에서 깊이가 달라 `packages/docs/...`를 열려다 ENOENT로 죽었다.** 타입체크도 단위
  * 테스트도 못 잡는 축이고 **실제로 실행해 본 첫 순간에 드러났다.**
@@ -75,17 +111,26 @@ const DEFAULT_DOC_RELATIVE = "docs/workflow-assets.md";
  */
 function findDocPath(): string {
   let dir = process.cwd();
-  for (;;) {
-    const candidate = path.join(dir, DEFAULT_DOC_RELATIVE);
-    if (existsSync(candidate)) return candidate;
-    const parent = path.dirname(dir);
-    if (parent === dir) {
-      throw new Error(
-        `${DEFAULT_DOC_RELATIVE}를 찾지 못했다 — 저장소 안에서 실행하거나 경로를 직접 넘긴다`,
-      );
+  for (let depth = 0; depth < MAX_UPWARD_DEPTH; depth += 1) {
+    if (REPO_ANCHORS.some((anchor) => existsSync(path.join(dir, anchor)))) {
+      const candidate = path.join(dir, DEFAULT_DOC_RELATIVE);
+      if (!existsSync(candidate)) break;
+      if (lstatSync(candidate).isSymbolicLink()) {
+        throw new WorkflowDocError(
+          "workflow_doc_parse_failed",
+          `${DEFAULT_DOC_RELATIVE}가 심볼릭 링크다 — 링크를 관통해 쓰지 않는다. 실제 파일을 docPath로 넘긴다`,
+        );
+      }
+      return candidate;
     }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
     dir = parent;
   }
+  throw new WorkflowDocError(
+    "workflow_doc_parse_failed",
+    `${DEFAULT_DOC_RELATIVE}를 저장소 안에서 찾지 못했다 — 저장소 루트에서 실행하거나 docPath로 경로를 넘긴다`,
+  );
 }
 
 /** 마커 판정 실패를 `failureClass`로 옮긴다 — 네 갈래를 하나로 뭉개지 않는다. */
@@ -135,7 +180,13 @@ function makeDescribe(root: string | null, rowsById: ReadonlyMap<string, IndexRo
       const raw = readFileSync(path.join(root, assetJsonPath(row.kind, row.name, row.id)), "utf8");
       const parsed = JSON.parse(raw) as { description?: unknown };
       if (typeof parsed.description !== "string") return { kind: "field_absent" };
-      return parsed.description.length === 0 ? { kind: "empty_string" } : { kind: "found", description: parsed.description };
+      // ⚠️ **공백만인 값도 `empty_string`이다 (보안 심사 M-5).** `length === 0`만 보면 `"   "`가
+      // `found`로 통과하고, 렌더러가 그것을 던져 **`failureClass` 없는 맨 `Error`**로 빠져나가
+      // `bin/ctk.ts`의 마지막 fallback에서 **exit 1로 낮춰 보고**된다 — D-3이 막으려던 형태다.
+      // **렌더러의 판정 규칙(`folded.length === 0`)과 같은 규칙을 입력 축에 건다.**
+      return parsed.description.trim().length === 0
+        ? { kind: "empty_string" }
+        : { kind: "found", description: parsed.description };
     } catch {
       // 읽지 못한 것은 "설명이 없다"가 아니다. 그러나 이 자리에서 낼 수 있는 가장 정직한 값은
       // 필드 부재이고, 상위 요약이 그 건수를 따로 낸다.
@@ -152,13 +203,26 @@ function toCellInput(outcome: AssetOutcome): RowCellInput {
 }
 
 export function runWorkflowDoc(options: WorkflowDocOptions = {}): WorkflowDocReport {
-  const docPath = options.docPath ?? findDocPath();
+  let docPath: string;
+  try {
+    docPath = options.docPath ?? findDocPath();
+  } catch (err) {
+    if (err instanceof WorkflowDocError) {
+      return gated(
+        { exitCode: 3, summary: null, rows: [], wrote: false, failure: { failureClass: err.failureClass, message: err.message } },
+        [`FAIL ${err.failureClass}: ${err.message}`],
+      );
+    }
+    throw err;
+  }
   const original = readFileSync(docPath, "utf8");
 
   const region = findGeneratedRegion(original);
   if (region.kind !== "ok") {
     const failure = markerFailure(region.kind);
-    return { exitCode: 3, summary: null, rows: [], wrote: false, failure, lines: [`FAIL ${failure.failureClass}: ${failure.message}`] };
+    return gated({ exitCode: 3, summary: null, rows: [], wrote: false, failure }, [
+      `FAIL ${failure.failureClass}: ${failure.message}`,
+    ]);
   }
 
   let located;
@@ -166,34 +230,49 @@ export function runWorkflowDoc(options: WorkflowDocOptions = {}): WorkflowDocRep
     located = locateTable(region.text);
   } catch (err) {
     if (err instanceof WorkflowDocError) {
-      return {
-        exitCode: 3,
-        summary: null,
-        rows: [],
-        wrote: false,
-        failure: { failureClass: err.failureClass, message: err.message },
-        lines: [`FAIL ${err.failureClass}: ${err.message}`],
-      };
+      return gated(
+        { exitCode: 3, summary: null, rows: [], wrote: false, failure: { failureClass: err.failureClass, message: err.message } },
+        [`FAIL ${err.failureClass}: ${err.message}`],
+      );
     }
     throw err;
   }
 
   const refs = located.rows.flatMap((r) => r.assetRefs);
-
-  // ⚠️ **미사용 예외 검사는 여기 두지 않는다.** 예외 맵의 신선도는 **정본 문서의 속성**이지
-  // 이 커맨드의 런타임 계약이 아니다 — 런타임에 걸면 예외를 쓰지 않는 **부분 표·픽스처가 전부
-  // exit 3**이 되어 가드가 기능을 죽인다(실제로 그렇게 짰다가 프로세스 테스트에서 걸렸다).
-  // 검사는 정본 문서를 대상으로 `cli/test/workflow-assets-doc.test.ts`가 하고, 그 테스트는
-  // `pnpm test`에 들어가 **CI가 실제로 부른다**(등재 = 도달). `findUnusedDocRefExceptions`는
-  // 그쪽에서 쓰인다 — 소비자가 0이면 미배선이므로 그 사실을 여기 적어 둔다.
-
   const { state, rowsById, root } = readCatalogState(options.catalogRoot);
   const result = resolveWorkflowAssets(refs, state, makeDescribe(root, rowsById));
   const summary = summarizeOutcomes(result);
 
+  /**
+   * ⚠️ **입력 축 게이트 (보안 심사 H-2).** 산출물만 검사하면 **절단 뒤의 조각**을 보게 된다 —
+   * 상한 경계에 걸친 UUID가 36자 중 30자만 남은 채 게이트를 통과해 `exit=0 wrote=true`가 됐다
+   * (주입 실증). `CLAUDE.md`가 이미 적어 둔 형태다: "상한에서 자른 버퍼의 마지막 원소는 줄이
+   * 아니라 조각인데 두 판정 함수가 그것을 똑같이 줄로 읽어 게이트가 뚫렸다."
+   * **원문에도 건다** — 산출물 게이트는 그대로 둔다(막는 것과 보이는 것은 다른 축).
+   * 실측: 오늘의 21건 모집단에 **유출 0건**이라 정상이 위반으로 바뀌지 않는다.
+   */
+  const rawDescriptions = result.outcomes
+    .filter((o): o is Extract<AssetOutcome, { tag: "resolved" }> => o.tag === "resolved")
+    .map((o) => o.description);
+  const inputLeaks = findWorkflowDocLeaks(rawDescriptions.join("\n"), GENERATED_OUTPUT_AXES);
+  if (inputLeaks.length > 0) {
+    const axes = [...new Set(inputLeaks.map((l) => l.axis))].join(", ");
+    return gated(
+      {
+        exitCode: 3,
+        summary,
+        rows: [],
+        wrote: false,
+        failure: { failureClass: "workflow_doc_leak_detected", message: `자산 설명 원문에 개인 환경 데이터가 있다: ${axes}` },
+      },
+      [`FAIL workflow_doc_leak_detected: 자산 설명 원문에 개인 환경 데이터가 있다 (${axes})`],
+    );
+  }
+
   // 자산 판정을 **행 단위로 다시 묶는다** — 판정은 자산 축, 조립만 행 축이다(D-6).
+  // L-4: `table-locate`와 **같은 분할 규칙**을 쓴다(CRLF 문서에서 줄바꿈이 섞이지 않게).
   let cursor = 0;
-  const regionLines = region.text.split("\n");
+  const regionLines = region.text.split(/\r?\n/);
   const rowReports: WorkflowDocRowReport[] = [];
   for (const row of located.rows) {
     const outcomes = result.outcomes.slice(cursor, cursor + row.assetRefs.length);
@@ -205,38 +284,53 @@ export function runWorkflowDoc(options: WorkflowDocOptions = {}): WorkflowDocRep
   }
 
   const drifted = rowReports.some((r) => r.drifted);
+  const unmeasured = summary.exitCode >= 2;
+  const notes: string[] = [];
   let wrote = false;
-  if (options.write === true && drifted) {
+
+  if (options.write === true && drifted && unmeasured && options.allowUnmeasured !== true) {
+    // ⚠️ **보안 심사 H-3** — 이전에는 카탈로그가 없어도 썼다(주입 실증: `exit=2 wrote=true`).
+    // "미측정"이라 말하면서 16행을 자리표시자로 갈아엎었다. **판정할 수 없음으로 파일을
+    // 갈아엎지 않는다.** fail-closed에는 **복구 경로를 함께** 준다(안전 원칙 6).
+    notes.push("미측정이라 쓰지 않았다 — `ctk scan`을 먼저 돌린다(의도한 것이면 allowUnmeasured)");
+  } else if (options.write === true && drifted) {
     const newRegion = regionLines.join("\n");
     // **출력 축 게이트 — 쓰기 전에 통과한다** (D-8).
     const leaks = findWorkflowDocLeaks(newRegion, GENERATED_OUTPUT_AXES);
     if (leaks.length > 0) {
-      const message = `생성 구간에 개인 환경 데이터가 있다: ${leaks.map((l) => l.axis).join(", ")}`;
-      return {
-        exitCode: 3,
-        summary,
-        rows: rowReports,
-        wrote: false,
-        failure: { failureClass: "workflow_doc_parse_failed", message },
-        lines: [`FAIL ${message}`],
-      };
+      const axes = [...new Set(leaks.map((l) => l.axis))].join(", ");
+      return gated(
+        {
+          exitCode: 3,
+          summary,
+          rows: rowReports,
+          wrote: false,
+          failure: { failureClass: "workflow_doc_leak_detected", message: `생성 구간에 개인 환경 데이터가 있다: ${axes}` },
+        },
+        [`FAIL workflow_doc_leak_detected: 생성 구간에 개인 환경 데이터가 있다 (${axes})`],
+      );
     }
-    writeFileSync(docPath, original.slice(0, region.start) + newRegion + original.slice(region.end), "utf8");
+    // **백업 → 원자적 쓰기** (보안 심사 H-3). `actuator`가 아니라는 이유로 안전 원칙 1을
+    // 건너뛰었으나 **파괴성은 계층 이름이 아니라 쓰기 여부가 정한다.** `writeFileSync`는
+    // truncate 후 write라 중간에 죽으면 문서가 잘린 채 남는다 — 같은 디렉터리 rename은 원자적이다.
+    const next = original.slice(0, region.start) + newRegion + original.slice(region.end);
+    writeFileSync(`${docPath}.bak`, original, "utf8");
+    const tmpPath = `${docPath}.tmp-${process.pid}`;
+    writeFileSync(tmpPath, next, "utf8");
+    renameSync(tmpPath, docPath);
     wrote = true;
+    notes.push(`백업: ${path.basename(docPath)}.bak`);
   }
 
   const lines = [
     formatSummary(summary),
+    ...notes,
     ...rowReports.filter((r) => r.drifted).map((r) => `  드리프트 ${r.lineIndex}행: "${r.current}" → "${r.expected}"`),
   ];
-  // **화면에 찍기 전에도 같은 게이트를 통과한다** — 막는 것과 보이는 것은 다른 축이고,
-  // 진단 출력도 서드파티 `description`을 담는다.
-  const outputLeaks = findWorkflowDocLeaks(lines.join("\n"), GENERATED_OUTPUT_AXES);
-  const safeLines = outputLeaks.length > 0 ? [`FAIL 진단 출력에 개인 환경 데이터가 있다: ${outputLeaks.map((l) => l.axis).join(", ")}`] : lines;
 
   // 종료 코드는 **자산 전체의 max**에 드리프트를 얹는다. 실패(3)를 드리프트(1)로 낮추지 않는다.
   const driftCode: 0 | 1 = drifted && !wrote ? 1 : 0;
   const exitCode = (summary.exitCode > driftCode ? summary.exitCode : driftCode) as 0 | 1 | 2 | 3;
 
-  return { exitCode, summary, rows: rowReports, wrote, failure: null, lines: safeLines };
+  return gated({ exitCode, summary, rows: rowReports, wrote, failure: null }, lines);
 }
