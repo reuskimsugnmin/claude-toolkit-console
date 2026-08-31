@@ -117,6 +117,7 @@ async function evalInBootedScript(expression: string): Promise<unknown> {
  */
 async function bootAndShowDetail(
   docState: DocStateEnvelope | null,
+  docText: string | null = null,
 ): Promise<{ docs: El; byId: Map<string, El> }> {
   const byId = new Map<string, El>();
   const el = (id: string): El => {
@@ -130,8 +131,10 @@ async function bootAndShowDetail(
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(docState) });
     }
     if (url.includes("/doc/")) {
-      // 문서 본문은 없다 — 배너가 사유를 말해야 하는 상황을 만든다.
-      return Promise.resolve({ ok: false, status: 404, text: () => Promise.resolve("") });
+      // 기본은 **없음**(404) — 배너가 사유를 말해야 하는 상황을 만든다. `docText`를 주면
+      // 그 원문이 내려와 frontmatter 분리(D-3) 경로를 태운다.
+      if (docText === null) return Promise.resolve({ ok: false, status: 404, text: () => Promise.resolve("") });
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(docText) });
     }
     return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(VIEW_MODEL) });
   };
@@ -300,5 +303,67 @@ describe("자산 상세 — 메타 그리드 (D-5)", () => {
   it("마켓플레이스가 없으면 그 행도 없다 — 빈 값을 행으로 만들지 않는다", async () => {
     const meta = await metaOf();
     expect(meta.has("마켓플레이스")).toBe(false);
+  });
+});
+
+/**
+ * B3 Step 4b — D-3. 생성 문서의 맨 위 여덟 줄이 기계용 메타(frontmatter)라 정작 읽어야 할
+ * 내용이 스크롤 아래에 있었다. **지우지 않고 접는다** — `gen_source_trust`처럼 신뢰 판단에
+ * 필요한 값이 들어 있어 없애면 확인할 길이 사라진다.
+ *
+ * 세 갈래를 다 태운다: 정상 2구획 · 여는 것만 있음(fail-safe) · 아예 없음.
+ */
+describe("자산 상세 — frontmatter 접기 (D-3)", () => {
+  const FM = '---\nschema_version: "1"\ngen_source_trust: "unknown"\n---\n## Role\n\n합성 본문이다.';
+
+  /** `detail-docs`에서 첫 `<details>`와 첫 `.doc` 본문을 찾는다. */
+  function partsOf(docs: El) {
+    const details = docs.children.filter((c) => c.tag === "details");
+    const bodies = docs.children.filter((c) => c.tag === "div" && c.className === "doc");
+    return { details, bodies };
+  }
+
+  it("정상 2구획 — frontmatter가 접힌 채로 분리되고 본문이 그 밖에 온다", async () => {
+    const { docs } = await bootAndShowDetail(null, FM);
+    const { details, bodies } = partsOf(docs);
+    expect(details.length, "frontmatter가 분리되지 않았다").toBeGreaterThan(0);
+
+    const det = details[0]!;
+    expect(det.getAttribute("open"), "기본으로 열려 있으면 D-3이 그대로 재발한다").toBe(null);
+    expect(det.children[0]!.tag).toBe("summary");
+    expect(det.children[0]!.textContent).toBe("생성 메타데이터 (frontmatter)");
+    expect(det.children[1]!.textContent).toContain("schema_version");
+    expect(det.children[1]!.textContent).toContain("gen_source_trust");
+
+    expect(bodies.length).toBeGreaterThan(0);
+    const body = bodies[0]!.textContent;
+    expect(body.startsWith("## Role"), `본문이 frontmatter로 시작한다: ${body.slice(0, 30)}`).toBe(true);
+    expect(body, "메타가 본문에 남았다").not.toContain("schema_version");
+  });
+
+  it("여는 구획자만 있으면 **자르지 않는다** — 원문 전체가 본문으로 간다 (fail-safe)", async () => {
+    // ⚠️ 조용히 자르면 문서 전체가 frontmatter로 삼켜져 화면이 비고, 사용자는 그것을
+    // "본문이 없다"로 읽는다. 파싱 실패를 빈 결과로 삼키지 않는다(안전 원칙 7).
+    const broken = '---\nschema_version: "1"\n## Role\n\n합성 본문이다.';
+    const { docs } = await bootAndShowDetail(null, broken);
+    const { details, bodies } = partsOf(docs);
+    expect(details.length, "닫는 구획자가 없는데 frontmatter를 잘라냈다").toBe(0);
+    const body = bodies[0]!.textContent;
+    expect(body, "원문이 통째로 보존돼야 한다").toContain("schema_version");
+    expect(body).toContain("## Role");
+  });
+
+  it("frontmatter가 아예 없으면 details를 만들지 않는다", async () => {
+    const { docs } = await bootAndShowDetail(null, "## Role\n\n합성 본문이다.");
+    const { details, bodies } = partsOf(docs);
+    expect(details.length).toBe(0);
+    expect(bodies[0]!.textContent.startsWith("## Role")).toBe(true);
+  });
+
+  it("문서가 없으면(404) details도 본문도 만들지 않고 '없다'고 말한다 — 대조군", async () => {
+    const { docs } = await bootAndShowDetail(null);
+    const { details } = partsOf(docs);
+    expect(details.length).toBe(0);
+    expect(docs.textContent).toContain("이 문서는 아직 없다");
   });
 });

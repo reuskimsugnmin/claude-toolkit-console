@@ -93,6 +93,13 @@ function renderUiHtml(nonce: string): string {
   .meta-grid dt { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em;
     color: var(--muted); margin: 0 0 2px; }
   .meta-grid dd { margin: 0; font-size: 13px; }
+  /* frontmatter 접기(D-3). 기본 닫힘이고, 열어야 기계용 메타가 보인다. */
+  details { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px;
+    margin: 0 0 12px; background: var(--panel); }
+  summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+  pre.fm { margin: 12px 0 0; font-size: 12.5px; color: var(--muted);
+    white-space: pre-wrap; overflow-x: auto;
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, Menlo, monospace; }
   .kidcount { color: var(--muted); font-size: 12px; margin-inline-start: 6px;
     font-variant-numeric: tabular-nums; }
   .badge { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 12px; border: 1px solid var(--line); }
@@ -817,6 +824,29 @@ function renderDetailMeta(asset) {
   applyRepoTo(add("출처"), asset.repo);
 }
 
+/**
+ * 문서 원문을 frontmatter와 본문으로 가른다 — **D-3**(B3 Step 4b).
+ *
+ * 생성 문서는 \`---\` 두 줄 사이에 기계용 메타(\`schema_version\`·\`gen_source_trust\` 등)를
+ * 담는다. 그것이 본문 맨 위 여덟 줄을 차지해, 정작 읽어야 할 내용은 스크롤 아래에 있었다.
+ * 지우지 않고 접는다 — \`gen_source_trust\`처럼 신뢰 판단에 필요한 값이 들어 있어 없애면
+ * 확인할 길이 사라진다.
+ *
+ * ⚠️ **fail-safe.** 여는 \`---\`만 있고 닫는 것이 없으면 \`null\`을 돌려 **원문 전체를 본문으로**
+ * 보내게 한다. 조용히 자르면 문서 전체가 frontmatter로 삼켜져 화면이 비고, 사용자는 그것을
+ * "본문이 없다"로 읽는다 — 파싱 실패를 빈 결과로 삼키지 않는다(안전 원칙 7).
+ *
+ * 실측 근거: 생성된 문서 전부가 \`^---$\`를 **정확히 두 줄** 가지며 본문에 \`---\`가 나오는
+ * 문서는 0건이다. **다만 그것은 오늘의 표본이므로** 규칙이 어긋나는 문서를 만나도 안전한
+ * 쪽으로 떨어지게 해 둔다.
+ */
+function splitFrontmatter(text) {
+  if (!text.startsWith("---\\n")) return { frontmatter: null, body: text };
+  const end = text.indexOf("\\n---\\n", 3);
+  if (end === -1) return { frontmatter: null, body: text };
+  return { frontmatter: text.slice(4, end + 1), body: text.slice(end + 5) };
+}
+
 async function showDetail(asset) {
   CURRENT_ASSET = asset;
   $("view-assets").hidden = true;
@@ -865,13 +895,34 @@ async function showDetail(asset) {
     title.style.fontSize = "14px";
     title.textContent = which === "annotation" ? "언제 쓰는가" : "사용법";
     host.appendChild(title);
-    const pre = document.createElement("div");
-    pre.className = "doc";
     const res = await fetch("/api/assets/" + encodeURIComponent(asset.id) + "/doc/" + which);
+    if (res.ok) {
+      const parts = splitFrontmatter(await res.text());
+      if (parts.frontmatter !== null) {
+        // **기본 닫힘이다** — \`open\`을 붙이지 않는다. 붙이는 순간 D-3이 그대로 재발한다.
+        const det = document.createElement("details");
+        const sum = document.createElement("summary");
+        sum.textContent = "생성 메타데이터 (frontmatter)";
+        det.appendChild(sum);
+        const fm = document.createElement("pre");
+        fm.className = "fm";
+        // frontmatter를 키:값으로 **해석하지 않는다.** 원문 그대로 보여준다 —
+        // 해석하면 형식이 조금만 달라도 조용히 다른 것을 보여주게 된다.
+        fm.textContent = parts.frontmatter;
+        det.appendChild(fm);
+        host.appendChild(det);
+      }
+      const body = document.createElement("div");
+      body.className = "doc";
+      body.textContent = parts.body;
+      host.appendChild(body);
+      continue;
+    }
     // 404를 빈 문서로 렌더하지 않는다 — "없다"와 "비어 있다"는 다른 사실이다.
     // 사유는 위 배너가 말한다. 여기서는 "이 문서가 없다"는 사실만 적는다.
-    pre.textContent = res.ok ? await res.text() : "이 문서는 아직 없다 (사유는 위 상태 참조)";
-    if (!res.ok) pre.className = "doc muted";
+    const pre = document.createElement("div");
+    pre.className = "doc muted";
+    pre.textContent = "이 문서는 아직 없다 (사유는 위 상태 참조)";
     host.appendChild(pre);
   }
 }
