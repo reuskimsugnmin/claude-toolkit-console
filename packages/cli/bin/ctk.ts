@@ -38,6 +38,7 @@ import { runMove, AssetNotFoundError, NoOpMoveError, ProjectIndexOutOfRangeError
 import { runRollback, NoRollbackTargetError } from "../src/commands/rollback.js";
 import { measurementFailureHint, runMeasure } from "../src/commands/measure.js";
 import { runUsage, NoMeasurementError } from "../src/commands/usage.js";
+import { runWorkflowDoc } from "../src/commands/workflow-doc.js";
 import { browserOpenTokenNotice, runExportViewModel, runWebServe } from "../src/commands/web.js";
 import { openInBrowser } from "../src/open-browser.js";
 import { LockContendedError } from "@ctk/sync";
@@ -522,6 +523,23 @@ async function main(): Promise<void> {
         console.error(`알 수 없는 명령: ${command ?? "(없음)"}`);
         console.error("사용법: ctk <init|scan|measure|usage|doctor|verify|move|rollback> [...args]");
         process.exitCode = 1;
+        return;
+      }
+
+      case "workflow-doc": {
+        // ⚠️ **던지지 않고 반환받아 종료 코드를 여기서 정한다 (D-3).** 아래 catch의 포괄
+        // `failureClass` 분기는 그 필드를 가진 모든 오류를 **exit 1(드리프트)**로 만든다 —
+        // 구조적 실패를 드리프트로 낮춰 보고하게 되므로 이 커맨드는 그 경로를 타지 않는다.
+        // ⚠️ 플래그 문자열(`--check`·`--write`)이 **이 파일 안에** 있어야 한다 —
+        // `readme-cli-contract.test.ts`가 README의 플래그를 뽑아 `bin/ctk.ts` 소스에서 찾는다.
+        const write = rest.includes("--write");
+        const checkOnly = rest.includes("--check") || !write;
+        const report = runWorkflowDoc({ write: !checkOnly });
+        for (const line of report.lines) console.log(line);
+        if (report.wrote) console.log("docs/workflow-assets.md의 마지막 열을 갱신했다");
+        // 0=일치 · 1=드리프트 · 2=미측정(카탈로그 없음/손상) · 3=구조적 실패.
+        // **미측정을 통과로, 실패를 드리프트로 낮추지 않는다.**
+        process.exitCode = report.exitCode;
         return;
       }
     }

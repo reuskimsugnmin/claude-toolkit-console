@@ -11,22 +11,22 @@
      고친다 — 생성기는 각 행의 마지막 두 `|` 사이만 치환하고 그 앞 바이트는 다시 쓰지 않는다. -->
 | 단계 | 스폰할 것 | 설명 |
 |---|---|---|
-| 요구사항 분석 | `Skill(oh-my-claudecode:deep-interview)` 또는 `Agent(oh-my-claudecode:analyst)` |  |
-| 설계·구조 결정 | `Agent(oh-my-claudecode:architect)` — READ-ONLY |  |
-| 계획 수립 | `Skill(oh-my-claudecode:plan)` 또는 `Agent(oh-my-claudecode:planner)` |  |
-| 계획 검토 | `Agent(oh-my-claudecode:critic)` |  |
-| 코드 탐색 | `Agent(oh-my-claudecode:explore)` |  |
-| 구현 | `Agent(oh-my-claudecode:executor)` |  |
-| 테스트 설계·작성 | `Agent(oh-my-claudecode:test-engineer)` |  |
-| 디버깅 | `Skill(oh-my-claudecode:debug)` · `Agent(oh-my-claudecode:debugger)` · `Agent(oh-my-claudecode:tracer)` |  |
-| 코드 리뷰 | `Agent(oh-my-claudecode:code-reviewer)` |  |
-| 단순화 | `Agent(oh-my-claudecode:code-simplifier)` |  |
-| 보안 검토 | `Agent(oh-my-claudecode:security-reviewer)` — `actuator` 변경 시 **필수** |  |
-| 완료 검증 | `Skill(oh-my-claudecode:verify)` 또는 `Agent(oh-my-claudecode:verifier)` |  |
-| 커밋 | `Agent(oh-my-claudecode:git-master)` |  |
-| 문서 작성 | `Agent(oh-my-claudecode:writer)` |  |
-| UI 설계 | `Agent(oh-my-claudecode:designer)` |  |
-| PR 전 회고 | `Skill(claude-md-management:revise-claude-md)` |  |
+| 요구사항 분석 | `Skill(oh-my-claudecode:deep-interview)` 또는 `Agent(oh-my-claudecode:analyst)` | Socratic deep interview with mathematical ambiguity gating before explicit execution approval · Pre-planning consultant for requirements analysis (Opus) |
+| 설계·구조 결정 | `Agent(oh-my-claudecode:architect)` — READ-ONLY | Strategic Architecture &amp; Debugging Advisor (Opus, READ-ONLY) |
+| 계획 수립 | `Skill(oh-my-claudecode:plan)` 또는 `Agent(oh-my-claudecode:planner)` | Strategic planning with optional interview workflow · Strategic planning consultant with interview workflow (Opus) |
+| 계획 검토 | `Agent(oh-my-claudecode:critic)` | Work plan and code review expert — thorough, structured, multi-perspective (Opus) |
+| 코드 탐색 | `Agent(oh-my-claudecode:explore)` | Codebase search specialist for finding files and code patterns |
+| 구현 | `Agent(oh-my-claudecode:executor)` | Focused task executor for implementation work (Sonnet) |
+| 테스트 설계·작성 | `Agent(oh-my-claudecode:test-engineer)` | Test strategy, integration/e2e coverage, flaky test hardening, TDD workflows |
+| 디버깅 | `Skill(oh-my-claudecode:debug)` · `Agent(oh-my-claudecode:debugger)` · `Agent(oh-my-claudecode:tracer)` | Diagnose the current OMC session or repo state using logs, traces, state, and focused reproduction · Root-cause analysis, regression isolation, stack trace analysis, build/compilation error resolution · Evidence-driven causal tracing with competing hypotheses, evidence for/against, uncertainty tracking, and next-probe recommendations |
+| 코드 리뷰 | `Agent(oh-my-claudecode:code-reviewer)` | Expert code review specialist with severity-rated feedback, logic defect detection, SOLID principle checks, style, performance, and quality strategy |
+| 단순화 | `Agent(oh-my-claudecode:code-simplifier)` | Simplifies and refines code for clarity, consistency, and maintainability while preserving all functionality. Focuses on recently modified code unless instructed otherwise. |
+| 보안 검토 | `Agent(oh-my-claudecode:security-reviewer)` — `actuator` 변경 시 **필수** | Security vulnerability detection specialist (OWASP Top 10, secrets, unsafe patterns) |
+| 완료 검증 | `Skill(oh-my-claudecode:verify)` 또는 `Agent(oh-my-claudecode:verifier)` | Verify that a change really works before you claim completion · Verification strategy, evidence-based completion checks, test adequacy |
+| 커밋 | `Agent(oh-my-claudecode:git-master)` | Git expert for atomic commits, rebasing, and history management with style detection |
+| 문서 작성 | `Agent(oh-my-claudecode:writer)` | Technical documentation writer for README, API docs, and comments (Haiku) |
+| UI 설계 | `Agent(oh-my-claudecode:designer)` | UI/UX Designer-Developer for stunning interfaces (Sonnet) |
+| PR 전 회고 | `Skill(claude-md-management:revise-claude-md)` | Update CLAUDE.md with learnings from this session |
 <!-- ctk:generated:workflow-assets:end -->
 
 ## 세션 간 컨텍스트

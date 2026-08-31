@@ -7,6 +7,7 @@ import {
   GENERATED_OUTPUT_AXES,
   GENERATED_REGION_END,
   GENERATED_REGION_START,
+  findUnusedDocRefExceptions,
   locateTable,
   outsideGeneratedRegion,
 } from "@ctk/core";
@@ -171,5 +172,22 @@ describe("docs/workflow-assets.md — 정본 파서(locateTable)로 본 구조",
     for (const row of locateTable(region.text).rows) {
       expect(row.lastCellEnd, `${row.lineIndex}행: 치환 구간이 비었다`).toBeGreaterThan(row.lastCellStart);
     }
+  });
+});
+
+/**
+ * **표기 예외 맵의 신선도는 정본 문서의 속성이다** — 커맨드 런타임이 아니라 여기서 검사한다.
+ * 런타임에 걸면 예외를 쓰지 않는 부분 표·픽스처가 전부 구조적 실패가 되어 **가드가 기능을 죽인다.**
+ */
+describe("docs/workflow-assets.md — 표기 예외 맵", () => {
+  it("**미사용 예외가 없다** — 상류가 바뀌었으면 예외도 지운다", () => {
+    const region = findGeneratedRegion(DOC);
+    if (region.kind !== "ok") throw new Error("마커 판정 실패");
+    const refs = locateTable(region.text).rows.flatMap((r) => r.assetRefs);
+    const unused = findUnusedDocRefExceptions(refs);
+    expect(
+      unused.map((u) => `${u.from.kindLabel}(${u.from.plugin}:${u.from.name})`),
+      "예외 맵이 조용히 썩었다 — 경고가 아니라 실패로 낸다",
+    ).toEqual([]);
   });
 });
