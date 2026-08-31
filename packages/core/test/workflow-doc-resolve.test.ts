@@ -182,7 +182,8 @@ describe("요약 — 값을 갈라 놓고 요약이 뭉개지 않는다", () => 
       summary.indexCorrupted +
       summary.notInstalled +
       summary.noDescription +
-      summary.ambiguous;
+      summary.ambiguous +
+      summary.descriptionUnreadable;
     expect(sum).toBe(summary.total);
   });
 
@@ -220,5 +221,53 @@ describe("계층 경계", () => {
   it("resolve는 `buildBundledAgentIndex`를 import하지 않는다 — 입력 축이 다르다", async () => {
     const mod = await import("../src/workflow-doc/index-3tuple.js");
     expect(Object.keys(mod)).not.toContain("buildBundledAgentIndex");
+  });
+});
+
+/**
+ * **보안 심사 L-2 대응** — 읽지 못한 것은 "설명이 없다"가 아니다.
+ * 이전에는 `asset.json` 읽기 실패와 경로 가드 트립을 전부 `field_absent`로 삼켜 **관측이 끊겼다.**
+ */
+describe("L-2 — `read_failed`를 `no_description`과 갈랐다", () => {
+  const rows = [row("agent", "executor", "omc")];
+  const refs = [ref("Agent", "omc", "executor")];
+  const resolveWith = (reason: "path_rejected" | "io_error") =>
+    resolveWorkflowAssets(refs, { kind: "available", rows }, always({ kind: "read_failed", reason }));
+
+  it("읽기 실패가 `description_unreadable`이 된다 — `no_description`이 아니다", () => {
+    const out = resolveWith("io_error").outcomes[0];
+    expect(out).toMatchObject({ tag: "description_unreadable", reason: "io_error" });
+  });
+
+  it("**경로 거부는 구조적 실패(3), 그 외 읽기 실패는 미측정(2)** — 뭉개지 않는다", () => {
+    expect(summarizeOutcomes(resolveWith("path_rejected")).exitCode).toBe(3);
+    expect(summarizeOutcomes(resolveWith("io_error")).exitCode).toBe(2);
+  });
+
+  it("셀 문구가 갈린다 — 카탈로그 오염 신호를 단순 읽기 실패로 보이게 하지 않는다", () => {
+    const pathRejected = describeOutcome(resolveWith("path_rejected").outcomes[0]!);
+    const ioError = describeOutcome(resolveWith("io_error").outcomes[0]!);
+    expect(pathRejected).not.toBe(ioError);
+    expect(pathRejected).toContain("오염");
+    // "설명 없음"과도 달라야 한다 — 부재와 판정 불가는 다른 사건이다.
+    const absent = describeOutcome({ tag: "no_description", ref: refs[0]!, assetId: "i", reason: "field_absent" });
+    expect(pathRejected).not.toBe(absent);
+    expect(ioError).not.toBe(absent);
+  });
+
+  it("요약이 읽기 실패를 **따로** 세고 경로 거부를 하위축으로 낸다", () => {
+    const summary = summarizeOutcomes(resolveWith("path_rejected"));
+    expect(summary.descriptionUnreadable).toBe(1);
+    expect(summary.descriptionUnreadablePathRejected).toBe(1);
+    expect(summary.noDescription, "읽기 실패가 '설명 없음'으로 새면 안 된다").toBe(0);
+    expect(formatSummary(summary)).toContain("읽기실패 1(경로거부 1)");
+  });
+
+  it("합이 여전히 입력 건수와 같다 — 새 갈래가 어디에도 안 잡히는 일이 없다", () => {
+    const summary = summarizeOutcomes(resolveWith("io_error"));
+    const sum =
+      summary.resolved + summary.noCatalog + summary.indexCorrupted + summary.notInstalled +
+      summary.noDescription + summary.ambiguous + summary.descriptionUnreadable;
+    expect(sum).toBe(summary.total);
   });
 });

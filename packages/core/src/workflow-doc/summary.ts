@@ -22,6 +22,10 @@ export interface OutcomeSummary {
   readonly noDescriptionEmptyString: number;
   readonly noDescriptionFieldAbsent: number;
   readonly ambiguous: number;
+  /** 읽지 못한 건수 — **"설명 없음"과 다른 축이다**(보안 심사 L-2). */
+  readonly descriptionUnreadable: number;
+  /** 그중 경로 거부(공격 신호). `io_error`와 뭉개면 카탈로그 오염이 단순 읽기 실패로 보인다. */
+  readonly descriptionUnreadablePathRejected: number;
   /** 색인에 못 들어간 무부모 행 수. 카탈로그가 없으면 `null` — **0이 아니다.** */
   readonly parentlessRows: number | null;
   /** 자산 전체의 max로 접은 종료 코드. */
@@ -37,6 +41,8 @@ export function summarizeOutcomes(result: ResolveResult): OutcomeSummary {
     noDescriptionEmptyString: 0,
     noDescriptionFieldAbsent: 0,
     ambiguous: 0,
+    descriptionUnreadableIo: 0,
+    descriptionUnreadablePathRejected: 0,
   };
 
   let exitCode: 0 | 1 | 2 | 3 = 0;
@@ -57,6 +63,8 @@ export function summarizeOutcomes(result: ResolveResult): OutcomeSummary {
     noDescriptionEmptyString: counts.noDescriptionEmptyString,
     noDescriptionFieldAbsent: counts.noDescriptionFieldAbsent,
     ambiguous: counts.ambiguous,
+    descriptionUnreadable: counts.descriptionUnreadableIo + counts.descriptionUnreadablePathRejected,
+    descriptionUnreadablePathRejected: counts.descriptionUnreadablePathRejected,
     parentlessRows: result.parentlessRows,
     exitCode,
   };
@@ -87,6 +95,13 @@ function bump(counts: Record<string, number>, outcome: AssetOutcome): void {
     case "ambiguous":
       counts.ambiguous = (counts.ambiguous ?? 0) + 1;
       return;
+    case "description_unreadable":
+      if (outcome.reason === "path_rejected") {
+        counts.descriptionUnreadablePathRejected = (counts.descriptionUnreadablePathRejected ?? 0) + 1;
+      } else {
+        counts.descriptionUnreadableIo = (counts.descriptionUnreadableIo ?? 0) + 1;
+      }
+      return;
     default: {
       const exhaustive: never = outcome;
       void exhaustive;
@@ -113,6 +128,12 @@ export function formatSummary(summary: OutcomeSummary): string {
     `설명없음 ${summary.noDescription}(빈문자열 ${summary.noDescriptionEmptyString} · 필드부재 ${summary.noDescriptionFieldAbsent})`,
     `판정불가 ${summary.ambiguous}`,
   ];
+  if (summary.descriptionUnreadable > 0) {
+    // **"설명 없음"과 같은 줄에 섞지 않는다** — 읽지 못한 것은 판정 불가이지 부재가 아니다.
+    parts.push(
+      `읽기실패 ${summary.descriptionUnreadable}(경로거부 ${summary.descriptionUnreadablePathRejected})`,
+    );
+  }
   if (summary.noCatalog > 0) parts.push(`카탈로그없음 ${summary.noCatalog}`);
   if (summary.indexCorrupted > 0) parts.push(`인덱스손상 ${summary.indexCorrupted}`);
   parts.push(
