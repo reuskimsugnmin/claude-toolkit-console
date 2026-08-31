@@ -1,6 +1,6 @@
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
-import { buildConsoleViewModel } from "@ctk/core";
+import { buildConsoleViewModel, parseAsset } from "@ctk/core";
 import { buildUiPage } from "../server/ui-page.js";
 import { createElClass } from "./helpers/dom-stub.js";
 
@@ -41,8 +41,31 @@ const VIEW_MODEL = JSON.parse(
       machineId: "synthetic-machine",
       projects: [],
       projectsUnavailable: null,
-      assets: [],
-      installations: [],
+      // ⚠️ 자산을 **실제로 하나 담는다.** 이전에는 빈 배열이었고 `showDetail`에는 손으로 줄인
+      // 객체를 넘겼는데, 그러면 상세가 읽는 필드가 늘어날 때마다 픽스처가 조용히 뒤처진다.
+      // 여기서 만든 행을 그대로 `showDetail`에 넘겨 **프로덕션과 같은 모양**을 태운다.
+      assets: [
+        parseAsset({
+          schema_version: 1,
+          _scope: "machine_independent",
+          id: "synthetic-asset",
+          kind: "skill",
+          name: "synthetic-asset",
+        }),
+      ],
+      installations: [
+        {
+          schema_version: 1,
+          _scope: "machine_dependent",
+          machine_id: "synthetic-machine",
+          asset_id: "synthetic-asset",
+          install_scope: "user",
+          enabled_at: "project",
+          project_path_hash: null,
+          mcp_enabled_state: null,
+          mcp_state_source: null,
+        },
+      ],
       occupancy: [],
       usage: [],
       lastScanAt: null,
@@ -87,7 +110,14 @@ async function evalInBootedScript(expression: string): Promise<unknown> {
   return new vm.Script(expression).runInContext(ctx);
 }
 
-async function bootAndShowDetail(docState: DocStateEnvelope | null): Promise<El> {
+/**
+ * 상세를 띄우고 **id 맵 전체**를 돌려준다. `detail-docs` 하나만 돌려주던 것을 넓혔다 —
+ * B3 Step 4a가 `detail-meta-grid`도 검사해야 하는데, 그것 때문에 하네스를 한 벌 더 만들면
+ * 이 저장소가 방금 없앤 사본 문제가 되살아난다.
+ */
+async function bootAndShowDetail(
+  docState: DocStateEnvelope | null,
+): Promise<{ docs: El; byId: Map<string, El> }> {
   const byId = new Map<string, El>();
   const el = (id: string): El => {
     if (!byId.has(id)) byId.set(id, new El(id));
@@ -125,10 +155,16 @@ async function bootAndShowDetail(docState: DocStateEnvelope | null): Promise<El>
 
   const showDetail = ctx["showDetail"] as (asset: unknown) => Promise<void>;
   expect(showDetail, "showDetail이 스크립트에서 노출돼야 이 경로를 실행할 수 있다").toBeTypeOf("function");
-  await showDetail({ id: "synthetic-asset", kind: "skill", name: "synthetic-asset", marketplace: null });
+  // ⚠️ **뷰모델이 실제로 내는 행을 그대로 넘긴다.** 이전에는 `{id, kind, name, marketplace}`만
+  // 넘겼는데, 프로덕션 경로(`renderAssets` → `showDetail`)는 **항상 완전한 `AssetRowView`**를
+  // 넘긴다. 손으로 줄인 픽스처는 그 차이를 숨기다가, 상세가 `installations`를 읽기 시작한
+  // 순간(B3 Step 4a) 한꺼번에 터졌다 — 픽스처는 판정이 낼 수 있는 값 전체를 담아야 한다.
+  const row = (VIEW_MODEL as { assets: unknown[] }).assets[0];
+  expect(row, "뷰모델에 자산 행이 없다 — 픽스처가 비었다").toBeTruthy();
+  await showDetail(row);
   for (let i = 0; i < 20; i++) await Promise.resolve();
 
-  return el("detail-docs");
+  return { docs: el("detail-docs"), byId };
 }
 
 describe("자산 상세 — 문서가 없는 사유를 구분해 보여준다", () => {
@@ -185,7 +221,7 @@ describe("자산 상세 — 문서가 없는 사유를 구분해 보여준다", 
 
   for (const c of CASES) {
     it(`${c.name} — 사유와 할 일이 화면에 나온다`, async () => {
-      const host = await bootAndShowDetail(c.envelope);
+      const { docs: host } = await bootAndShowDetail(c.envelope);
       const text = host.textContent;
       for (const needle of c.mustContain) expect(text, `"${needle}"가 화면에 없다`).toContain(needle);
       expect(text, "할 일이 반드시 붙는다 — 진단만 있고 빠져나갈 길이 없으면 안 된다").toContain("할 일:");
@@ -194,7 +230,7 @@ describe("자산 상세 — 문서가 없는 사유를 구분해 보여준다", 
 
   it("다섯 사유가 서로 다른 화면을 만든다 (이전 결함: 전부 같은 한 문장이었다)", async () => {
     const texts: string[] = [];
-    for (const c of CASES) texts.push((await bootAndShowDetail(c.envelope)).textContent);
+    for (const c of CASES) texts.push((await bootAndShowDetail(c.envelope)).docs.textContent);
     expect(new Set(texts).size, "사유가 달라도 화면이 같으면 분할이 되지 않은 것이다").toBe(CASES.length);
   });
 
@@ -216,9 +252,53 @@ describe("자산 상세 — 문서가 없는 사유를 구분해 보여준다", 
   });
 
   it("상태 조회가 실패하면 '문서 없음'으로 뭉개지 않고 확인 실패라고 말한다", async () => {
-    const text = (await bootAndShowDetail(null)).textContent;
+    const text = (await bootAndShowDetail(null)).docs.textContent;
     expect(text).toContain("문서 상태를 확인하지 못했다");
     // "없다"로 단정하지 않는다 — 못 읽은 것과 없는 것은 다르다(안전 원칙 7).
     expect(text).not.toContain("생성 대기");
+  });
+});
+
+/**
+ * B3 Step 4a — D-5. 설치 스코프·활성·출처가 **목록에만** 있어서, 자산 하나를 보다가 그 값을
+ * 알려면 목록으로 되돌아가야 했다. 상세 머리에 메타 그리드를 두어 한 화면에서 끝낸다.
+ */
+describe("자산 상세 — 메타 그리드 (D-5)", () => {
+  /** 그리드를 `라벨 → 값` 맵으로 편다. 쌍은 `<div>`로 감싸여 있다. */
+  async function metaOf(): Promise<Map<string, El>> {
+    const { byId } = await bootAndShowDetail(null);
+    const grid = byId.get("detail-meta-grid")!;
+    const out = new Map<string, El>();
+    for (const cell of grid.children) {
+      expect(cell.children.length, "메타 칸은 dt·dd 두 자식이어야 한다").toBe(2);
+      out.set(cell.children[0]!.textContent, cell.children[1]!);
+    }
+    return out;
+  }
+
+  it("종류·id·설치 스코프·활성·출처를 한 화면에서 보여준다", async () => {
+    const meta = await metaOf();
+    expect(meta.get("종류")!.textContent).toBe("skill");
+    expect(meta.get("id")!.textContent).toBe("synthetic-asset");
+    expect(meta.get("설치 스코프")!.textContent).toBe("user");
+    expect(meta.get("활성")!.textContent).toBe("project");
+    expect(meta.get("출처")!.textContent).toBe("—");
+  });
+
+  it("설치 스코프와 활성이 **다른 행**이다 — 한 칸에 뭉개지 않는다", async () => {
+    const meta = await metaOf();
+    expect(meta.has("설치 스코프")).toBe(true);
+    expect(meta.has("활성")).toBe(true);
+    expect(meta.get("설치 스코프")!.textContent).not.toBe(meta.get("활성")!.textContent);
+  });
+
+  it("mcp가 아닌 자산에는 MCP 상태 행이 **없다** — 대조군", async () => {
+    const meta = await metaOf();
+    expect(meta.has("MCP 상태"), "skill 자산에 MCP 행이 붙었다 — 흡수한 열이 되살아난 것이다").toBe(false);
+  });
+
+  it("마켓플레이스가 없으면 그 행도 없다 — 빈 값을 행으로 만들지 않는다", async () => {
+    const meta = await metaOf();
+    expect(meta.has("마켓플레이스")).toBe(false);
   });
 });

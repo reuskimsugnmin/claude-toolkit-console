@@ -86,6 +86,13 @@ function renderUiHtml(nonce: string): string {
   .install-enabled { display: block; color: var(--muted); font-size: 12.5px; }
   /* D-10 — 토글과 이름이 붙어 보이던 문제. \`.row-link\`의 padding:0은 유지하고 여백만 준다. */
   .twisty { margin-inline-end: 6px; }
+  /* 상세 머리의 메타 그리드 — 목록에만 있던 설치·활성·출처를 상세에서도 보여준다(D-5). */
+  .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px 16px; margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--panel); }
+  .meta-grid dt { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--muted); margin: 0 0 2px; }
+  .meta-grid dd { margin: 0; font-size: 13px; }
   .kidcount { color: var(--muted); font-size: 12px; margin-inline-start: 6px;
     font-variant-numeric: tabular-nums; }
   .badge { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 12px; border: 1px solid var(--line); }
@@ -174,7 +181,7 @@ function renderUiHtml(nonce: string): string {
   <section id="view-detail" hidden>
     <p><button class="row-link" id="back">← 목록으로</button></p>
     <h2 id="detail-name" style="font-size:16px;margin:.2em 0"></h2>
-    <p class="meta" id="detail-meta"></p>
+    <dl class="meta-grid" id="detail-meta-grid"></dl>
     <div id="detail-actions"></div>
     <div id="detail-docs"></div>
   </section>
@@ -500,8 +507,15 @@ function mcpBadge(states) {
   return span;
 }
 
-function repoCell(row, repo) {
-  const td = document.createElement("td");
+/**
+ * 출처를 주어진 요소에 채운다 — **스킴 검증의 단일 관문**(B3 Step 4a).
+ *
+ * 목록의 \`<td>\`와 상세의 \`<dd>\`가 같은 함수를 부른다. 각자 검증하면 한쪽이 뒤처지고,
+ * **뒤처진 쪽이 \`javascript:\`를 링크로 만든다** — 이 저장소가 반복해서 만난 사본 문제다.
+ * 요소를 만들어 돌려주지 않고 **받아서 채우는** 이유는 호출부의 DOM 모양을 바꾸지 않기
+ * 위해서다(목록 셀에 래퍼가 하나 끼면 기존 테스트의 자식 수 단언이 의미를 잃는다).
+ */
+function applyRepoTo(td, repo) {
   if (repo === null) { td.className = "muted"; td.textContent = "—"; }
   else if (repo.url === null) {
     // 로컬 디렉터리 출처 — 원격 URL이 없다. 죽은 링크를 만들지 않는다.
@@ -524,6 +538,11 @@ function repoCell(row, repo) {
       td.appendChild(a);
     }
   }
+}
+
+function repoCell(row, repo) {
+  const td = document.createElement("td");
+  applyRepoTo(td, repo);
   row.appendChild(td);
 }
 
@@ -744,15 +763,67 @@ function renderAssets() {
   expandBtn.textContent = allParentsExpanded() ? "전체 접기" : "전체 펼치기";
 }
 
+/**
+ * 상세 머리의 메타 그리드 — **D-5**(B3 Step 4a).
+ *
+ * 이전에는 \`종류 · id · marketplace\` 한 줄이 전부였다. 설치 스코프·활성·출처는 **목록에만
+ * 있어서**, 자산 하나를 보다가 그 값을 알려면 목록으로 되돌아가야 했다. 새 데이터 조회는
+ * 없다 — 이미 뷰모델이 들고 있는 값이다.
+ */
+function renderDetailMeta(asset) {
+  const dl = $("detail-meta-grid");
+  dl.textContent = "";
+
+  // 쌍을 \`<div>\`로 감싼다 — \`<dl>\`에 grid를 걸고 \`dt\`/\`dd\`를 직접 자식으로 두면 둘이
+  // **각각 별도 셀**이 되어 라벨과 값이 어긋난다. 감싸면 한 칸 안에서 라벨이 값 위에 온다.
+  const add = (label) => {
+    const cell = document.createElement("div");
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    cell.appendChild(dt);
+    const dd = document.createElement("dd");
+    cell.appendChild(dd);
+    dl.appendChild(cell);
+    return dd;
+  };
+
+  add("종류").textContent = asset.kind;
+  add("id").textContent = asset.id;
+  if (asset.marketplace) add("마켓플레이스").textContent = asset.marketplace;
+
+  const list = installationsOf(asset);
+  if (list === null) {
+    // ⚠️ 설치와 활성을 **두 행으로 벌리지 않는다** — 둘 다 "부모를 해석하지 못했다"는 **한
+    // 사실**의 결과다. 두 행에 같은 배지를 넣으면 서로 다른 두 판정처럼 보인다.
+    const dd = add("설치");
+    const badge = document.createElement("span");
+    badge.className = "badge b-unknown";
+    badge.textContent = "상속 정보 확인 불가";
+    dd.appendChild(badge);
+  } else {
+    const inherited = asset.installations.source === "inherited_from_parent";
+    const scopeText = uniqueJoin(list.map((i) => i.install_scope));
+    add("설치 스코프").textContent = inherited
+      ? (scopeText === "—" ? "부모 상속" : scopeText + " (부모 상속)")
+      : scopeText;
+    add("활성").textContent = uniqueJoin(list.map((i) => i.enabled_at));
+  }
+
+  // mcp면 **항상** 한 행을 낸다 — 목록의 칩과 같은 규칙을 쓴다(판정 주체를 둘로 만들지 않는다).
+  if (asset.kind === "mcp") {
+    add("MCP 상태").appendChild(mcpBadge(list === null ? [] : list.map((i) => i.mcp_state)));
+  }
+
+  applyRepoTo(add("출처"), asset.repo);
+}
+
 async function showDetail(asset) {
   CURRENT_ASSET = asset;
   $("view-assets").hidden = true;
   $("view-usage").hidden = true;
   $("view-detail").hidden = false;
   $("detail-name").textContent = asset.name;
-  const bits = [asset.kind, asset.id];
-  if (asset.marketplace) bits.push("marketplace: " + asset.marketplace);
-  $("detail-meta").textContent = bits.join(" · ");
+  renderDetailMeta(asset);
 
   renderDetailActions(asset);
 
