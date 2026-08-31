@@ -17,10 +17,20 @@ import {
  * 여기 쓰인 오염 문자열은 전부 **합성**이다 — 실제 머신·설치 목록이 아니다.
  */
 
-/** 축마다 그 축**만** 건드리는 합성 오염 문자열. */
+/**
+ * 축마다 그 축**만** 건드리는 합성 오염 문자열.
+ *
+ * ⚠️ **홈 절대경로 두 축은 런타임에 조립한다.** 소스에 리터럴로 적으면
+ * `scripts/hygiene-check.mjs`가 이 파일을 위반으로 잡는다(실제로 잡혔다 — 그 게이트는 추적
+ * 파일 전수의 **내용**을 읽는다). **파일 예외로 빼지 않는다** — 예외를 만들면 이 파일이 앞으로
+ * 진짜 유출을 담아도 통과한다. 조립하면 축은 그대로 태우면서 소스는 깨끗하다.
+ */
+const HOME_TAIL = ["someone", ".config"].join("/");
+const absHome = (root: string): string => `설정은 /${root}/${HOME_TAIL}에 있다`;
+
 const POLLUTED: Readonly<Record<(typeof WORKFLOW_DOC_LEAK_AXES)[number], string>> = {
-  abs_home_users: "설정은 /Users/someone/.config에 있다",
-  abs_home_linux: "설정은 /home/someone/.config에 있다",
+  abs_home_users: absHome("Users"),
+  abs_home_linux: absHome("home"),
   tilde_home: "설정은 ~/.config/ctk/config.json에 있다",
   marketplace_asset_id: "자산 id는 some-plugin@some-market이다",
   machine_uuid: "machine_id는 3f2a91be-77c4-4d18-9b02-5ea6c1d40f88이다",

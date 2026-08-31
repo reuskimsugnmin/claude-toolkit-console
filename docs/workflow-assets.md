@@ -9,24 +9,24 @@
 <!-- ctk:generated:workflow-assets:start -->
 <!-- 이 구간의 마지막 열은 `ctk workflow-doc`이 카탈로그에서 채운다(B4-c). 1·2열은 손으로
      고친다 — 생성기는 각 행의 마지막 두 `|` 사이만 치환하고 그 앞 바이트는 다시 쓰지 않는다. -->
-| 단계 | 스폰할 것 |
-|---|---|
-| 요구사항 분석 | `Skill(oh-my-claudecode:deep-interview)` 또는 `Agent(oh-my-claudecode:analyst)` |
-| 설계·구조 결정 | `Agent(oh-my-claudecode:architect)` — READ-ONLY |
-| 계획 수립 | `Skill(oh-my-claudecode:plan)` 또는 `Agent(oh-my-claudecode:planner)` |
-| 계획 검토 | `Agent(oh-my-claudecode:critic)` |
-| 코드 탐색 | `Agent(oh-my-claudecode:explore)` |
-| 구현 | `Agent(oh-my-claudecode:executor)` |
-| 테스트 설계·작성 | `Agent(oh-my-claudecode:test-engineer)` |
-| 디버깅 | `Skill(oh-my-claudecode:debug)` · `Agent(oh-my-claudecode:debugger)` · `Agent(oh-my-claudecode:tracer)` |
-| 코드 리뷰 | `Agent(oh-my-claudecode:code-reviewer)` |
-| 단순화 | `Agent(oh-my-claudecode:code-simplifier)` |
-| 보안 검토 | `Agent(oh-my-claudecode:security-reviewer)` — `actuator` 변경 시 **필수** |
-| 완료 검증 | `Skill(oh-my-claudecode:verify)` 또는 `Agent(oh-my-claudecode:verifier)` |
-| 커밋 | `Agent(oh-my-claudecode:git-master)` |
-| 문서 작성 | `Agent(oh-my-claudecode:writer)` |
-| UI 설계 | `Agent(oh-my-claudecode:designer)` |
-| PR 전 회고 | `Skill(claude-md-management:revise-claude-md)` |
+| 단계 | 스폰할 것 | 설명 |
+|---|---|---|
+| 요구사항 분석 | `Skill(oh-my-claudecode:deep-interview)` 또는 `Agent(oh-my-claudecode:analyst)` |  |
+| 설계·구조 결정 | `Agent(oh-my-claudecode:architect)` — READ-ONLY |  |
+| 계획 수립 | `Skill(oh-my-claudecode:plan)` 또는 `Agent(oh-my-claudecode:planner)` |  |
+| 계획 검토 | `Agent(oh-my-claudecode:critic)` |  |
+| 코드 탐색 | `Agent(oh-my-claudecode:explore)` |  |
+| 구현 | `Agent(oh-my-claudecode:executor)` |  |
+| 테스트 설계·작성 | `Agent(oh-my-claudecode:test-engineer)` |  |
+| 디버깅 | `Skill(oh-my-claudecode:debug)` · `Agent(oh-my-claudecode:debugger)` · `Agent(oh-my-claudecode:tracer)` |  |
+| 코드 리뷰 | `Agent(oh-my-claudecode:code-reviewer)` |  |
+| 단순화 | `Agent(oh-my-claudecode:code-simplifier)` |  |
+| 보안 검토 | `Agent(oh-my-claudecode:security-reviewer)` — `actuator` 변경 시 **필수** |  |
+| 완료 검증 | `Skill(oh-my-claudecode:verify)` 또는 `Agent(oh-my-claudecode:verifier)` |  |
+| 커밋 | `Agent(oh-my-claudecode:git-master)` |  |
+| 문서 작성 | `Agent(oh-my-claudecode:writer)` |  |
+| UI 설계 | `Agent(oh-my-claudecode:designer)` |  |
+| PR 전 회고 | `Skill(claude-md-management:revise-claude-md)` |  |
 <!-- ctk:generated:workflow-assets:end -->
 
 ## 세션 간 컨텍스트

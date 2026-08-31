@@ -55,6 +55,14 @@ export const FAILURE_CLASSES = [
   // 조사이고 이것은 설정 파일 오염 신호다(gen이 임의 경로 README를 카탈로그로 내보낼 수 있었다).
   "install_path_rejected",
 
+  // ── B4-c(2026-08-31) — `ctk workflow-doc`. **등재가 곧 배선이다**(L-D의 교훈): 미등재
+  // 클래스를 던지면 `extractFailureClass`가 `FAILURE_CLASS_SET.has()`로 걸러 run-log의
+  // `failure_class`가 조용히 `null`이 된다 — "실패"가 "분류 없음"으로 삼켜진다.
+  "workflow_doc_parse_failed", // 생성 구간에서 표 행을 0개 찾았거나 행 구조가 전제 가드를 벗어났다 — "0건 일치"로 삼키지 않는다
+  "workflow_doc_marker_absent", // :start 또는 :end 마커가 없다
+  "workflow_doc_marker_duplicated", // 마커가 2회 이상 나온다 — 조용히 첫 것을 고르지 않는다
+  "workflow_doc_marker_out_of_order", // :end가 :start보다 앞에 있다
+  "workflow_doc_whitelist_overflow", // 표에서 뽑은 자산 참조 수가 상한을 넘었다 — 동적 화이트리스트의 상한(D-9)
   "unclassified",
 ] as const;
 

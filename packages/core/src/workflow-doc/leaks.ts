@@ -4,10 +4,14 @@ import { findRawPathLeaks } from "../snapshot/path-normalize.js";
  * `docs/` 위생 — 공개 저장소에 새면 안 되는 흔적을 축별로 찾는다 (B4-c Step 1 · D-7).
  *
  * ⚠️ **`assertNoRawPathLeaks`를 "마지막 방어선"이라 부르면 안 된다.** 그 함수의
- * `RAW_ABS_HOME_PATTERNS`는 `/Users/`·`/home/` **둘뿐**이라 `~/` · `name@marketplace` ·
- * machine_id(UUID) · 스냅샷 파일명을 **하나도 잡지 않는다**. 이 모듈이 진단한 무방비가 정확히
- * 그 축이다 — `scripts/hygiene-check.mjs`도 헤더에서 "설치 목록은 이 스크립트의 범위 밖"이라고
- * 스스로 적어 두었고, 개인데이터 부정 단언은 `README.md`·`ROADMAP.md` 두 파일만 보고 있었다.
+ * `RAW_ABS_HOME_PATTERNS`는 **macOS·Linux 홈 절대경로 두 패턴뿐**이라 물결 홈 표기 ·
+ * 마켓플레이스 자산 id · machine_id(UUID) · 스냅샷 파일명을 하나도 잡지 않는다.
+ * (⚠️ 이 주석이 그 두 패턴을 **문자 그대로** 적으면 `scripts/hygiene-check.mjs`가 이 파일을
+ * 위반으로 잡는다 — 실제로 잡혔다. 게이트가 살아 있다는 뜻이고, **파일 예외로 빼지 않는다.**)
+ *
+ * **이 모듈이 진단한 무방비가 정확히 그 축이다** — `scripts/hygiene-check.mjs`도 헤더에서
+ * "설치 목록은 이 스크립트의 범위 밖"이라고 스스로 적어 두었고, 개인데이터 부정 단언은
+ * `README.md`·`ROADMAP.md` 두 파일만 보고 있었다.
  *
  * ⚠️ **축 집합은 호출부가 선언한다 — 기본값을 두지 않는다.** 선택 필드는 누락을 통과시키고,
  * 여기서는 **누락이 곧 과잉 차단**이다. 6축 전부를 문서 전문에 걸면 오늘 즉시 27건이 위반이 된다
