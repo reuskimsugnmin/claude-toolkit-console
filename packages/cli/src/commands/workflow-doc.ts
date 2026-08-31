@@ -117,7 +117,9 @@ function findDocPath(): string {
       if (!existsSync(candidate)) break;
       if (lstatSync(candidate).isSymbolicLink()) {
         throw new WorkflowDocError(
-          "workflow_doc_parse_failed",
+          // **경로 통제이지 파싱이 아니다**(재심 경미 7). run-log에서 링크 공격 차단이
+          // 표 서식 오류로 보이면 안 된다 — M-3에서 유출 축을 갈라낸 것과 같은 규율이다.
+          "workflow_doc_path_rejected",
           `${DEFAULT_DOC_RELATIVE}가 심볼릭 링크다 — 링크를 관통해 쓰지 않는다. 실제 파일을 docPath로 넘긴다`,
         );
       }
@@ -128,7 +130,7 @@ function findDocPath(): string {
     dir = parent;
   }
   throw new WorkflowDocError(
-    "workflow_doc_parse_failed",
+    "workflow_doc_path_rejected",
     `${DEFAULT_DOC_RELATIVE}를 저장소 안에서 찾지 못했다 — 저장소 루트에서 실행하거나 docPath로 경로를 넘긴다`,
   );
 }
@@ -284,15 +286,28 @@ export function runWorkflowDoc(options: WorkflowDocOptions = {}): WorkflowDocRep
   }
 
   const drifted = rowReports.some((r) => r.drifted);
-  const unmeasured = summary.exitCode >= 2;
+  // **두 축을 가른다** — 미측정(2)과 구조적 실패(3)는 처방이 다르다(재심 경미 1).
+  const unmeasured = summary.exitCode === 2;
+  const structuralFailure = summary.exitCode === 3;
   const notes: string[] = [];
   let wrote = false;
 
-  if (options.write === true && drifted && unmeasured && options.allowUnmeasured !== true) {
+  if (options.write === true && drifted && structuralFailure) {
+    // ⚠️ **재심 경미 1 — 두 축을 뭉개면 화면이 엉뚱한 처방을 준다.** 이전에는 `exitCode >= 2`
+    // 하나로 묶어 `ambiguous`(3, 구조적 실패)에도 "`ctk scan`을 먼저 돌린다"고 말했다.
+    // **`ctk scan`은 동명 충돌을 해소하지 못한다.** 차단은 옳았고 어긋난 것은 진단이다 —
+    // 이 저장소의 R12("루프를 끊고도 화면이 재시도를 권했다")와 같은 형태다.
+    notes.push(
+      "판정 불가 자산이 있어 쓰지 않았다 — 같은 (kind, 플러그인, 이름)에 자산이 둘 이상이다. " +
+        "`ctk scan`으로는 풀리지 않는다(표의 참조를 좁히거나 상류에서 이름을 갈라야 한다)",
+    );
+  } else if (options.write === true && drifted && unmeasured && options.allowUnmeasured !== true) {
     // ⚠️ **보안 심사 H-3** — 이전에는 카탈로그가 없어도 썼다(주입 실증: `exit=2 wrote=true`).
     // "미측정"이라 말하면서 16행을 자리표시자로 갈아엎었다. **판정할 수 없음으로 파일을
     // 갈아엎지 않는다.** fail-closed에는 **복구 경로를 함께** 준다(안전 원칙 6).
-    notes.push("미측정이라 쓰지 않았다 — `ctk scan`을 먼저 돌린다(의도한 것이면 allowUnmeasured)");
+    // ⚠️ **실재하는 경로만 가리킨다**(재심 경미 2) — `--allow-unmeasured` CLI 플래그는 **없다.**
+    // 노출하지 않는 것이 의도이므로 안내는 `ctk scan`만 말한다.
+    notes.push("미측정이라 쓰지 않았다 — `ctk scan`을 먼저 돌린다");
   } else if (options.write === true && drifted) {
     const newRegion = regionLines.join("\n");
     // **출력 축 게이트 — 쓰기 전에 통과한다** (D-8).
@@ -312,14 +327,20 @@ export function runWorkflowDoc(options: WorkflowDocOptions = {}): WorkflowDocRep
     }
     // **백업 → 원자적 쓰기** (보안 심사 H-3). `actuator`가 아니라는 이유로 안전 원칙 1을
     // 건너뛰었으나 **파괴성은 계층 이름이 아니라 쓰기 여부가 정한다.** `writeFileSync`는
-    // truncate 후 write라 중간에 죽으면 문서가 잘린 채 남는다 — 같은 디렉터리 rename은 원자적이다.
+    // truncate 후 write라 중간에 죽으면 문서가 잘린 채 남는다 — 같은 디렉터리 rename은 원자적이다
+    // (임시파일이 같은 디렉터리라 EXDEV도 불가능하다).
     const next = original.slice(0, region.start) + newRegion + original.slice(region.end);
-    writeFileSync(`${docPath}.bak`, original, "utf8");
+    const backupPath = `${docPath}.bak`;
+    // ⚠️ **백업을 덮어쓰지 않는다**(재심 경미 6). 두 번 돌리면 두 번째 백업이 첫 번째 산출물이
+    // 되어 **생성 이전 원본이 사라진다** — 첫 실행이 잘못 썼는데 확인 전에 다시 돌리면 복구 불가다.
+    if (!existsSync(backupPath)) writeFileSync(backupPath, original, "utf8");
     const tmpPath = `${docPath}.tmp-${process.pid}`;
     writeFileSync(tmpPath, next, "utf8");
     renameSync(tmpPath, docPath);
     wrote = true;
-    notes.push(`백업: ${path.basename(docPath)}.bak`);
+    // 백업을 방금 썼거나 이미 있었으므로 여기서 존재는 확정이다 — **도달할 수 없는 분기를
+    // 남기지 않는다.**
+    notes.push(`백업: ${path.basename(backupPath)} (직전 1회분 — 이미 있으면 덮어쓰지 않는다)`);
   }
 
   const lines = [

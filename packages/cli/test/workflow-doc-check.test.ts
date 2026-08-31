@@ -403,3 +403,73 @@ describe("보안 심사 대응 — 처방이 막는가, 그리고 무엇을 죽�
     expect(report.lines.join("\n"), "진단 출력에 문서 원문이 echo됐다").not.toContain(uuid);
   });
 });
+
+/** **재심(PASS WITH FIXES) 경미 대응.** 차단은 옳았고 어긋난 것이 진단이던 축들. */
+describe("재심 경미 대응 — 차단이 맞아도 진단이 틀리면 사용자는 엉뚱한 처방을 받는다", () => {
+  function dupAsset(): Asset {
+    return parseAsset({
+      schema_version: 1,
+      _scope: "machine_independent",
+      id: "oh-my-claudecode@market:agent:executor#2",
+      kind: "agent",
+      name: "executor",
+      parent_asset_id: "oh-my-claudecode@market",
+      description: "합성 중복",
+    });
+  }
+
+  it("경미 1 — `ambiguous`(구조적 실패)에 **`ctk scan`을 권하지 않는다**", () => {
+    const dir = tmp();
+    makeCatalog(dir, [...FIXTURE_ASSETS.map(buildAsset), dupAsset()]);
+    const docPath = makeDoc(dir, [ROW_EXECUTOR]);
+    const report = runWorkflowDoc({ docPath, catalogRoot: dir, write: true });
+    expect(report.wrote).toBe(false);
+    expect(report.exitCode).toBe(3);
+    const text = report.lines.join("\n");
+    // `ctk scan`은 동명 충돌을 해소하지 못한다 — R12("루프를 끊고도 화면이 재시도를 권했다")와 같은 형태.
+    // ⚠️ 문자열 포함만 보면 안 된다 — 올바른 메시지는 "`ctk scan`으로는 **풀리지 않는다**"라고
+    // 그 이름을 **부정문으로** 언급한다. **권유 문구**를 봐야 한다(테스트가 처음에 이 축을 틀렸다).
+    expect(text, "구조적 실패에 미측정 처방을 권했다").not.toContain("`ctk scan`을 먼저 돌린다");
+    expect(text).toContain("풀리지 않는다");
+    expect(text).toContain("판정 불가");
+  });
+
+  it("경미 1 반대 축 — **미측정에는 여전히 `ctk scan`을 권한다** (두 축이 갈렸다)", () => {
+    const dir = tmp();
+    const report = runWorkflowDoc({ docPath: makeDoc(dir, [ROW_EXECUTOR]), catalogRoot: null, write: true });
+    expect(report.lines.join("\n")).toContain("ctk scan");
+  });
+
+  it("경미 2 — 안내가 **실재하지 않는 CLI 플래그**를 가리키지 않는다", () => {
+    const dir = tmp();
+    const report = runWorkflowDoc({ docPath: makeDoc(dir, [ROW_EXECUTOR]), catalogRoot: null, write: true });
+    expect(report.lines.join("\n")).not.toContain("--allow-unmeasured");
+    // bin에도 그 플래그가 없다는 것을 함께 못박는다(노출하지 않는 것이 의도다).
+    expect(readFileSync(path.join(repoRoot, "packages/cli/bin/ctk.ts"), "utf8")).not.toContain("--allow-unmeasured");
+  });
+
+  it("경미 6 — **백업을 덮어쓰지 않는다**. 두 번 돌려도 생성 이전 원본이 남는다", () => {
+    const dir = tmp();
+    makeCatalog(dir, FIXTURE_ASSETS.map(buildAsset));
+    const docPath = makeDoc(dir, [ROW_EXECUTOR]);
+    const pristine = readFileSync(docPath, "utf8");
+    runWorkflowDoc({ docPath, catalogRoot: dir, write: true });
+    // 두 번째 실행이 백업을 첫 산출물로 갈아치우면 원본이 사라진다.
+    writeFileSync(docPath, `${readFileSync(docPath, "utf8")}\n변경\n`, "utf8");
+    runWorkflowDoc({ docPath, catalogRoot: dir, write: true });
+    expect(readFileSync(`${docPath}.bak`, "utf8")).toBe(pristine);
+  });
+
+  it("경미 7 — 경로 거부는 **경로 통제 클래스**로 분류된다 (표 파싱 오류가 아니다)", () => {
+    const dir = tmp();
+    mkdirSync(path.join(dir, "docs"), { recursive: true });
+    writeFileSync(path.join(dir, "docs", "workflow-assets.md"), "앵커 없음", "utf8");
+    const cwd = process.cwd();
+    try {
+      process.chdir(dir);
+      expect(runWorkflowDoc({ catalogRoot: null }).failure?.failureClass).toBe("workflow_doc_path_rejected");
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+});
