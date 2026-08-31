@@ -94,14 +94,21 @@ function renderUiHtml(nonce: string): string {
     white-space: pre-wrap; font-size: 13.5px; overflow-x: auto; }
   .row-link { background: none; border: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer;
     text-align: left; }
-  .hidden { display: none; }
-  .actions { display: flex; gap: 8px; align-items: center; padding: 10px 24px; border-bottom: 1px solid var(--line);
+  /* 가시성은 클래스가 아니라 속성이다 — 이 파일에서 요소를 숨기는 유일한 규칙.
+     이전에는 \`.hidden{display:none}\`이 \`.actions{display:flex}\` **바로 앞**에 있었고, 둘 다
+     클래스 선택자 하나라 명시도가 동률이라 소스 순서상 뒤가 이겼다. 그래서
+     \`<div class="actions hidden">\`은 계산된 \`display\`가 flex였다 — 조회 모드인데 액션 바가
+     보였다(실측 높이 54.6px). 부주의가 아니라 **규약이 구조를 못 이긴 것**이다.
+     \`!important\`는 여기서만 쓴다: 가시성은 어떤 레이아웃 유틸리티와도 명시도 경쟁을 하면
+     안 되는 유일한 축이라, 앞으로 규칙이 몇 개가 더 생기든 이길 수 없어야 한다. */
+  [hidden] { display: none !important; }
+  .action-bar { display: flex; gap: 8px; align-items: center; padding: 10px 24px; border-bottom: 1px solid var(--line);
     flex-wrap: wrap; background: var(--panel); }
-  .actions button { padding: 5px 12px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg);
+  .action-bar button { padding: 5px 12px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg);
     color: var(--ink); font: inherit; font-size: 13.5px; cursor: pointer; }
-  .actions button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-  .actions button:disabled { opacity: .45; cursor: default; }
-  .actions .sep { color: var(--muted); font-size: 12px; }
+  .action-bar button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .action-bar button:disabled { opacity: .45; cursor: default; }
+  .action-bar .sep { color: var(--muted); font-size: 12px; }
   .confirm { border: 1px solid var(--warn-line); background: var(--warn-bg); color: var(--warn-ink);
     border-radius: 6px; padding: 14px 16px; margin: 14px 0; font-size: 14px; }
   .confirm h3 { margin: 0 0 8px; font-size: 14px; }
@@ -124,7 +131,7 @@ function renderUiHtml(nonce: string): string {
   <button id="tab-assets" aria-selected="true">자산</button>
   <button id="tab-usage" aria-selected="false">사용량</button>
 </nav>
-<div class="actions hidden" id="action-bar">
+<div class="action-bar" id="action-bar" hidden>
   <strong style="font-size:13px">액션</strong>
   <button id="btn-scan" disabled>스캔</button>
   <button id="btn-gen" disabled>문서 생성…</button>
@@ -150,7 +157,7 @@ function renderUiHtml(nonce: string): string {
     </table>
   </section>
 
-  <section id="view-detail" class="hidden">
+  <section id="view-detail" hidden>
     <p><button class="row-link" id="back">← 목록으로</button></p>
     <h2 id="detail-name" style="font-size:16px;margin:.2em 0"></h2>
     <p class="meta" id="detail-meta"></p>
@@ -158,7 +165,7 @@ function renderUiHtml(nonce: string): string {
     <div id="detail-docs"></div>
   </section>
 
-  <section id="view-usage" class="hidden">
+  <section id="view-usage" hidden>
     <div id="usage-banner"></div>
     <h2 style="font-size:15px">안 쓰는데 비싼 툴</h2>
     <table>
@@ -455,7 +462,7 @@ async function refreshViewModel() {
   renderUsage();
   // 상세가 열려 있으면 선택지도 다시 만든다. 안 그리면 드롭다운만 옛 목록을 가리켜
   // **드롭다운·확인문구·실행 대상 셋이 서로 다른 목록을 본다**(재심 M1 갈래 2).
-  if (!$("view-detail").classList.contains("hidden") && CURRENT_ASSET !== null) renderDetailActions(CURRENT_ASSET);
+  if (!$("view-detail").hidden && CURRENT_ASSET !== null) renderDetailActions(CURRENT_ASSET);
 }
 
 function cell(row, text, className) {
@@ -625,9 +632,9 @@ function renderAssets() {
 
 async function showDetail(asset) {
   CURRENT_ASSET = asset;
-  $("view-assets").classList.add("hidden");
-  $("view-usage").classList.add("hidden");
-  $("view-detail").classList.remove("hidden");
+  $("view-assets").hidden = true;
+  $("view-usage").hidden = true;
+  $("view-detail").hidden = false;
   $("detail-name").textContent = asset.name;
   const bits = [asset.kind, asset.id];
   if (asset.marketplace) bits.push("marketplace: " + asset.marketplace);
@@ -842,9 +849,9 @@ function renderUsage() {
 
 function showTab(which) {
   CURRENT_ASSET = null;
-  $("view-detail").classList.add("hidden");
-  $("view-assets").classList.toggle("hidden", which !== "assets");
-  $("view-usage").classList.toggle("hidden", which !== "usage");
+  $("view-detail").hidden = true;
+  $("view-assets").hidden = which !== "assets";
+  $("view-usage").hidden = which !== "usage";
   $("tab-assets").setAttribute("aria-selected", String(which === "assets"));
   $("tab-usage").setAttribute("aria-selected", String(which === "usage"));
 }
@@ -873,7 +880,7 @@ async function boot() {
   if (SESSION_TOKEN !== null) {
     // 버튼은 HTML에서 disabled로 시작해 여기서 푼다 — boot()가 끝나기 전에 누르면 리스너가
     // 아직 없어 아무 일도 일어나지 않는데, 사용자에게는 "눌렀는데 반응이 없다"로 보인다.
-    $("action-bar").classList.remove("hidden");
+    $("action-bar").hidden = false;
     $("btn-scan").addEventListener("click", () => runSimpleAction("스캔", { action: "scan" }));
     $("btn-gen").addEventListener("click", runGenTwoPhase);
     $("btn-rollback").addEventListener("click", () =>
