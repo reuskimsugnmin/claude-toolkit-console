@@ -2,6 +2,7 @@ import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 import { buildConsoleViewModel, parseAsset } from "@ctk/core";
 import { buildUiPage } from "../server/ui-page.js";
+import { createElClass } from "./helpers/dom-stub.js";
 
 /**
  * web/test/ui-hierarchy.test.ts — B1 Step 6 (결정 4 · 결정 7): 번들 자식을 부모 아래 접어
@@ -16,67 +17,8 @@ import { buildUiPage } from "../server/ui-page.js";
  */
 
 /** `ui-doc-state.test.ts`와 같은 계약의 DOM 스텁 — `children` 배열로 트리 구조를 그대로 들여다본다. */
-class El {
-  children: El[] = [];
-  listeners = new Map<string, ((...args: unknown[]) => void)[]>();
-  classes = new Set<string>();
-  className = "";
-  disabled = false;
-  value = "";
-  style: Record<string, string> = {};
-  attrs = new Map<string, string>();
-  #text = "";
-
-  constructor(readonly tag: string) {}
-
-  get textContent(): string {
-    return this.#text || this.children.map((c) => c.textContent).join("\n");
-  }
-  set textContent(value: string) {
-    this.#text = value;
-    this.children = [];
-  }
-
-  appendChild(child: El): El {
-    this.#text = "";
-    this.children.push(child);
-    return child;
-  }
-  addEventListener(type: string, fn: (...args: unknown[]) => void): void {
-    const existing = this.listeners.get(type) ?? [];
-    existing.push(fn);
-    this.listeners.set(type, existing);
-  }
-  setAttribute(name: string, value: string): void {
-    this.attrs.set(name, value);
-  }
-  getAttribute(name: string): string | null {
-    return this.attrs.get(name) ?? null;
-  }
-  removeAttribute(): void {}
-  click(): void {
-    for (const fn of this.listeners.get("click") ?? []) fn();
-  }
-  querySelectorAll(): El[] {
-    return [];
-  }
-  classList = {
-    add: (c: string) => this.classes.add(c),
-    remove: (c: string) => this.classes.delete(c),
-    contains: (c: string) => this.classes.has(c),
-    toggle: (c: string) => (this.classes.has(c) ? this.classes.delete(c) : this.classes.add(c)),
-  };
-
-  /** `tag==="button"`이고 보이는 글자가 정확히 일치하는 첫 버튼을 하위 트리에서 찾는다. */
-  findButtonByText(text: string): El | null {
-    if (this.tag === "button" && this.#text === text) return this;
-    for (const child of this.children) {
-      const hit = child.findButtonByText(text);
-      if (hit !== null) return hit;
-    }
-    return null;
-  }
-}
+const El = createElClass({ textJoin: "\n" });
+type El = InstanceType<typeof El>;
 
 function extractScript(html: string): string {
   const match = /<script nonce="[^"]+">([\s\S]*?)<\/script>/.exec(html);
