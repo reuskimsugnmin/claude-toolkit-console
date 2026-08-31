@@ -79,7 +79,11 @@ function renderUiHtml(nonce: string): string {
   th { color: var(--muted); font-weight: 500; font-size: 12.5px; text-transform: uppercase; letter-spacing: .04em; }
   tbody tr:hover { background: var(--panel); }
   .kind { display: inline-block; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line);
-    font-size: 12px; color: var(--muted); }
+    font-size: 12px; color: var(--muted); margin-inline-end: 4px; }
+  /* 설치 칸은 한 열이지만 **두 줄**이다 — 스코프와 활성은 다른 축이라 노드를 나눠 둔다.
+     한 문자열로 이어붙이면 두 축이 뭉개진다(B3 Step 3a). */
+  .install-scope { display: block; }
+  .install-enabled { display: block; color: var(--muted); font-size: 12.5px; }
   .badge { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 12px; border: 1px solid var(--line); }
   .b-enabled { color: var(--accent); border-color: var(--accent); }
   .b-disabled { color: var(--muted); }
@@ -151,7 +155,7 @@ function renderUiHtml(nonce: string): string {
     </div>
     <table>
       <thead><tr>
-        <th>이름</th><th>종류</th><th>설치 스코프</th><th>활성</th><th>MCP 상태</th><th>출처</th><th>문서</th>
+        <th>이름</th><th>종류</th><th>설치</th><th>출처</th><th>문서</th>
       </tr></thead>
       <tbody id="assets-body"></tbody>
     </table>
@@ -530,13 +534,43 @@ function installationsOf(a) {
   return v.installations;
 }
 
-/** 자식 행이 부모에게서 설치 정보를 상속했음을 **명시**한다 — 빈 값으로 두면 자기 것처럼 보인다. */
-function installCellText(a, pick) {
+/**
+ * 설치 칸을 만든다 — **병합이지 융합이 아니다**(B3 Step 3a).
+ *
+ * 이전에는 \`설치 스코프\`와 \`활성\`이 각각 한 열이었다. 열을 하나로 합치되 **DOM 노드는 둘로
+ * 나눈다** — CLAUDE.md의 「설치 스코프와 활성 여부는 다른 축이다」를 화면에서 지키는 자리다.
+ * 한 문자열로 이어붙이면 두 축이 시각적으로 뭉개지고, 나중에 어느 쪽이 무엇이었는지 되짚을 수 없다.
+ *
+ * ⚠️ \`inherited_unavailable\`은 **한 노드 + 배지**다. 빈 값이나 대시로 그리면 "미설치"로 읽히는데,
+ * 부모를 해석하지 못한 것은 "없음"이 아니라 "판정 불가"다(안전 원칙 7). 그래서 MCP \`unknown\`과
+ * **같은 시각 계열**(\`b-unknown\`)을 공유한다 — 사용자가 할 일이 같다(더 재야 한다).
+ */
+function installCellNodes(a) {
+  const td = document.createElement("td");
   const list = installationsOf(a);
-  if (list === null) return "상속 정보 확인 불가";
-  const joined = uniqueJoin(list.map(pick));
-  if (a.installations.source === "inherited_from_parent") return joined === "—" ? "부모 상속" : joined + " (부모 상속)";
-  return joined;
+
+  if (list === null) {
+    const badge = document.createElement("span");
+    badge.className = "badge b-unknown";
+    badge.textContent = "상속 정보 확인 불가";
+    td.appendChild(badge);
+    return td;
+  }
+
+  const inherited = a.installations.source === "inherited_from_parent";
+  const scope = document.createElement("span");
+  scope.className = "install-scope";
+  const scopeText = uniqueJoin(list.map((i) => i.install_scope));
+  // 상속 표시는 **스코프 줄에만** 붙인다. 두 줄에 다 붙이면 같은 사실이 두 번 나오고,
+  // 어느 줄도 안 붙이면 자식이 자기 설치를 가진 것처럼 보인다.
+  scope.textContent = inherited ? (scopeText === "—" ? "부모 상속" : scopeText + " (부모 상속)") : scopeText;
+  td.appendChild(scope);
+
+  const enabled = document.createElement("span");
+  enabled.className = "install-enabled";
+  enabled.textContent = "활성: " + uniqueJoin(list.map((i) => i.enabled_at));
+  td.appendChild(enabled);
+  return td;
 }
 
 function assetRow(a, depth) {
@@ -567,15 +601,22 @@ function assetRow(a, depth) {
   const kindTd = document.createElement("td");
   const kindSpan = document.createElement("span");
   kindSpan.className = "kind"; kindSpan.textContent = a.kind;
-  kindTd.appendChild(kindSpan); tr.appendChild(kindTd);
+  kindTd.appendChild(kindSpan);
 
-  cell(tr, installCellText(a, (i) => i.install_scope));
-  cell(tr, installCellText(a, (i) => i.enabled_at));
+  // D-8 — MCP 상태를 **별도 열 대신 종류 칸에 흡수**한다.
+  //
+  // 이전에는 모든 행이 \`MCP 상태\` 칸을 가졌고, mcp가 아닌 자산은 전부 빈 배지였다
+  // (\`toMcpStateView\`가 mcp 외 전 유형에 \`not_applicable\`을 준다 — 실측상 그 열이 의미를
+  // 갖는 행은 카탈로그의 0.3%다). 열 자체를 없애면 "빈 배지가 반복된다"는 문제가 **구조적으로**
+  // 사라진다. \`a.kind === "mcp"\` 게이트는 \`not_applicable\` 판정과 정확히 같은 축이고, 유형으로
+  // 묻는 편이 읽는 사람에게 더 분명하다.
+  if (a.kind === "mcp") {
+    const own = installationsOf(a);
+    kindTd.appendChild(mcpBadge(own === null ? [] : own.map((i) => i.mcp_state)));
+  }
+  tr.appendChild(kindTd);
 
-  const mcpTd = document.createElement("td");
-  const list = installationsOf(a);
-  mcpTd.appendChild(mcpBadge(list === null ? [] : list.map((i) => i.mcp_state)));
-  tr.appendChild(mcpTd);
+  tr.appendChild(installCellNodes(a));
 
   repoCell(tr, a.repo);
   cell(tr, [a.has_annotation ? "주석" : null, a.has_usage_doc ? "사용법" : null].filter(Boolean).join(" · ") || "—",

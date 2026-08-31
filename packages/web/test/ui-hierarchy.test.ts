@@ -131,6 +131,14 @@ async function bootWithViewModel(viewModel: unknown): Promise<{
     location: { hash: "", pathname: "/" },
     history: { replaceState: () => {} },
     URLSearchParams,
+    /**
+     * ⚠️ **`URL`이 없으면 하네스가 거짓말한다.** `repoCell`은 `new URL(repo.url)`로 스킴을
+     * 검증하고 실패를 `catch`로 잡아 "링크 형식 아님"으로 떨어뜨린다. 컨텍스트에 `URL`이
+     * 없으면 그 `catch`가 **`ReferenceError`를 삼켜** 정상 https 출처까지 거부된 것처럼 보인다.
+     * `javascript:` 케이스만 단언했다면 **엉뚱한 이유로 통과**했을 것이다 — 반대 축(https가
+     * 링크가 되는가)을 함께 태워야 이 결함이 드러난다.
+     */
+    URL,
     fetch: () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(viewModel) }),
     console,
   };
@@ -245,5 +253,193 @@ describe("자산 목록 — 번들 자식을 부모 아래 접어 보여주고 �
     expect(text, "고아 자식 C1이 화면에 없다").toContain("needle-one");
     expect(text, "고아 자식이 '미설치'로 읽히면 안 된다").not.toContain("미설치");
     expect(text, "부모를 못 찾았다는 사실이 문구로 나와야 한다").toContain("상속 정보 확인 불가");
+  });
+});
+
+/**
+ * ─────────────────────────────────────────────────────────────────────────
+ * B3 Step 3a — 목록 열 구조 (7열 → 5열)
+ *
+ * ⚠️ **이 절이 생기기 전, 열을 7개에서 5개로 줄여도 159개 테스트가 하나도 깨지지 않았다.**
+ * 열 구조·설치 칸·MCP 칩·출처 칸을 태우는 테스트가 **하나도 없었다**는 뜻이다. 여기서 채운다.
+ *
+ * 아래 픽스처는 기존 계층 픽스처와 **모집단이 다르다** — `mcp_enabled_state`와 `repo_*`를
+ * 실제로 담는다. 기존 픽스처는 그 필드가 전부 `null`이라 `mcpBadge`의 비어있지 않은 분기와
+ * `repoCell`의 링크 분기가 **한 번도 실행된 적이 없었다**(미실행 경로).
+ * ─────────────────────────────────────────────────────────────────────────
+ */
+function buildCellFixtureViewModel() {
+  const mk = (over: Record<string, unknown>) =>
+    parseAsset({ schema_version: 1, _scope: "machine_independent", ...over });
+
+  const assets = [
+    // MCP — 상태가 `unknown`(원본이 null)
+    mk({ id: "synth-mcp-unknown", kind: "mcp", name: "synth-mcp-unknown" }),
+    // MCP — 상태가 `unset`(설정 안 됨). ⚠️ 위와 **다른 배지**여야 한다
+    mk({ id: "synth-mcp-unset", kind: "mcp", name: "synth-mcp-unset" }),
+    // 출처 4갈래
+    mk({ id: "synth-repo-none", kind: "skill", name: "synth-repo-none" }),
+    mk({ id: "synth-repo-local", kind: "skill", name: "synth-repo-local", repo_source: "directory" }),
+    mk({
+      id: "synth-repo-https",
+      kind: "skill",
+      name: "synth-repo-https",
+      repo_source: "github",
+      repo_url: "https://example.invalid/synthetic/repo",
+    }),
+    mk({
+      id: "synth-repo-bad",
+      kind: "skill",
+      name: "synth-repo-bad",
+      repo_source: "git",
+      repo_url: "javascript:alert(1)",
+    }),
+    // 부모 없는 자식 → inherited_unavailable
+    // ⚠️ id는 `<parent_asset_id>:<suffix>` 형태여야 한다(zod가 강제한다 — `as Asset` 캐스팅
+    // 금지 규칙이 이 픽스처를 처음 쓸 때 바로 잡아냈다). 부모는 카탈로그에 **없다**.
+    mk({
+      id: "synth-absent-parent:orphan-child",
+      kind: "agent",
+      name: "synth-orphan-child",
+      parent_asset_id: "synth-absent-parent",
+    }),
+  ];
+
+  const inst = (assetId: string, over: Record<string, unknown> = {}) => ({
+    schema_version: 1 as const,
+    _scope: "machine_dependent" as const,
+    machine_id: "synthetic-machine",
+    asset_id: assetId,
+    install_scope: "user" as const,
+    enabled_at: "project" as const,
+    project_path_hash: null,
+    mcp_enabled_state: null,
+    mcp_state_source: null,
+    ...over,
+  });
+
+  return JSON.parse(
+    JSON.stringify(
+      buildConsoleViewModel({
+        machineId: "synthetic-machine",
+        projects: [],
+        projectsUnavailable: null,
+        assets,
+        installations: [
+          inst("synth-mcp-unknown"), // mcp_enabled_state: null → 뷰에서 "unknown"
+          inst("synth-mcp-unset", { mcp_enabled_state: "unset", mcp_state_source: "none" }),
+          inst("synth-repo-none"),
+          inst("synth-repo-local"),
+          inst("synth-repo-https"),
+          inst("synth-repo-bad"),
+        ],
+        occupancy: [],
+        usage: [],
+        lastScanAt: null,
+        docPresence: new Map(),
+        unusedExpensiveLimit: 5,
+        now: new Date("2026-08-22T00:00:00.000Z"),
+      }),
+    ),
+  ) as unknown;
+}
+
+/** 이름으로 행을 집는다 — 정렬 순서에 기대지 않는다. */
+function rowByName(byId: Map<string, El>, name: string): El {
+  const hit = byId.get("assets-body")!.children.find((tr) => tr.children[0]!.textContent.includes(name));
+  if (hit === undefined) throw new Error(`행을 찾지 못했다: ${name}`);
+  return hit;
+}
+
+describe("B3 Step 3a — 목록 열 구조", () => {
+  it("thead가 5열이고 이름·종류·설치·출처·문서다", () => {
+    const head = /<thead><tr>\s*([\s\S]*?)<\/tr><\/thead>/.exec(UI_HTML);
+    expect(head, "thead를 찾지 못했다").toBeTruthy();
+    const ths = [...(head![1] ?? "").matchAll(/<th>([^<]*)<\/th>/g)].map((m) => m[1]);
+    expect(ths).toEqual(["이름", "종류", "설치", "출처", "문서"]);
+  });
+
+  it("데이터 행의 td 수가 thead와 같다 — 열이 어긋나면 표가 밀린다", async () => {
+    const { byId, renderAssets } = await bootWithViewModel(buildCellFixtureViewModel());
+    renderAssets();
+    for (const tr of byId.get("assets-body")!.children) {
+      expect(tr.children.length, `행 "${tr.children[0]!.textContent}"의 칸 수가 5가 아니다`).toBe(5);
+    }
+  });
+});
+
+describe("B3 Step 3a — 설치 칸: 병합이지 융합이 아니다", () => {
+  it("스코프와 활성이 **각각 다른 노드**로 들어간다 — 한 문자열로 이어붙이지 않는다", async () => {
+    const { byId, renderAssets } = await bootWithViewModel(buildCellFixtureViewModel());
+    renderAssets();
+    const installTd = rowByName(byId, "synth-repo-none").children[2]!;
+    expect(installTd.children.length, "설치 칸이 두 노드가 아니다 — 두 축이 뭉개졌다").toBe(2);
+    expect(installTd.children[0]!.textContent).toBe("user");
+    expect(installTd.children[1]!.textContent).toBe("활성: project");
+  });
+
+  it("상속 판정 불가는 한 노드 + 판정불가 배지다 — '미설치'로 읽히면 안 된다", async () => {
+    const { byId, renderAssets } = await bootWithViewModel(buildCellFixtureViewModel());
+    // 부모가 카탈로그에 없는 자식은 접힘 기본에서 안 보인다(부모 행이 없어 펼칠 수단이 없다).
+    // 검색으로 끌어낸다 — 이 경로가 "조용히 사라지게 두지 않는다"의 자리다.
+    byId.get("q")!.value = "orphan";
+    renderAssets();
+    const installTd = rowByName(byId, "synth-orphan-child").children[2]!;
+    expect(installTd.children.length).toBe(1);
+    expect(installTd.children[0]!.className).toContain("b-unknown");
+    expect(installTd.textContent).toBe("상속 정보 확인 불가");
+    expect(installTd.textContent, "'미설치'라고 쓰면 '없음'과 '판정 불가'가 뭉개진다").not.toContain("미설치");
+  });
+});
+
+describe("B3 Step 3a — MCP 칩은 종류 칸에 흡수됐다 (D-8)", () => {
+  it("mcp가 아닌 행에는 칩이 없다 — 빈 배지가 반복되던 열이 사라졌다", async () => {
+    const { byId, renderAssets } = await bootWithViewModel(buildCellFixtureViewModel());
+    renderAssets();
+    const kindTd = rowByName(byId, "synth-repo-none").children[1]!;
+    expect(kindTd.children.length, "mcp가 아닌데 칩이 붙었다").toBe(1);
+    expect(kindTd.textContent).toBe("skill");
+  });
+
+  it("unknown과 unset을 **다른 배지**로 칠한다 — 이 분기는 지금까지 실행된 적이 없었다", async () => {
+    const { byId, renderAssets } = await bootWithViewModel(buildCellFixtureViewModel());
+    renderAssets();
+    const unknown = rowByName(byId, "synth-mcp-unknown").children[1]!;
+    const unset = rowByName(byId, "synth-mcp-unset").children[1]!;
+
+    expect(unknown.children.length, "mcp 행에 상태 칩이 없다").toBe(2);
+    expect(unset.children.length).toBe(2);
+
+    const chipU = unknown.children[1]!;
+    const chipS = unset.children[1]!;
+    expect(chipU.textContent).toBe("모름");
+    expect(chipS.textContent).toBe("설정 안 됨");
+    expect(chipU.className, "모름과 설정 안 됨이 같은 클래스다 — 두 사실이 뭉개졌다").not.toBe(chipS.className);
+    expect(chipU.className).toContain("b-unknown");
+    expect(chipS.className).toContain("b-unset");
+  });
+});
+
+describe("B3 Step 3a — 출처 칸 4갈래 (지금까지 링크 분기는 미실행이었다)", () => {
+  it("출처가 없으면 대시, 로컬이면 링크가 아니라 '로컬'이라고 적는다", async () => {
+    const { byId, renderAssets } = await bootWithViewModel(buildCellFixtureViewModel());
+    renderAssets();
+    expect(rowByName(byId, "synth-repo-none").children[3]!.textContent).toBe("—");
+    const local = rowByName(byId, "synth-repo-local").children[3]!;
+    expect(local.textContent).toBe("로컬(directory)");
+    expect(local.children.length, "로컬 출처에 링크를 만들면 죽은 링크가 된다").toBe(0);
+  });
+
+  it("https는 링크가 되고 javascript: 는 링크가 되지 않는다 (심사 H3 회귀)", async () => {
+    const { byId, renderAssets } = await bootWithViewModel(buildCellFixtureViewModel());
+    renderAssets();
+    const ok = rowByName(byId, "synth-repo-https").children[3]!;
+    expect(ok.children.length, "https 출처가 링크로 렌더되지 않았다").toBe(1);
+    expect(ok.children[0]!.tag).toBe("a");
+    expect(ok.textContent).toBe("GitHub");
+
+    const bad = rowByName(byId, "synth-repo-bad").children[3]!;
+    expect(bad.children.length, "javascript: URI가 링크로 렌더됐다 — 클릭 한 번에 실행된다").toBe(0);
+    expect(bad.textContent).toBe("링크 형식 아님(git)");
   });
 });
