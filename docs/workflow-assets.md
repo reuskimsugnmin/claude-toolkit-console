@@ -6,6 +6,9 @@
 
 **작업을 시작하기 전에 해당 단계의 자산을 먼저 스폰한다. 단계를 건너뛰고 바로 손대지 않는다.**
 
+<!-- ctk:generated:workflow-assets:start -->
+<!-- 이 구간의 마지막 열은 `ctk workflow-doc`이 카탈로그에서 채운다(B4-c). 1·2열은 손으로
+     고친다 — 생성기는 각 행의 마지막 두 `|` 사이만 치환하고 그 앞 바이트는 다시 쓰지 않는다. -->
 | 단계 | 스폰할 것 |
 |---|---|
 | 요구사항 분석 | `Skill(oh-my-claudecode:deep-interview)` 또는 `Agent(oh-my-claudecode:analyst)` |
@@ -24,6 +27,7 @@
 | 문서 작성 | `Agent(oh-my-claudecode:writer)` |
 | UI 설계 | `Agent(oh-my-claudecode:designer)` |
 | PR 전 회고 | `Skill(claude-md-management:revise-claude-md)` |
+<!-- ctk:generated:workflow-assets:end -->
 
 ## 세션 간 컨텍스트
 
