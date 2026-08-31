@@ -627,7 +627,21 @@ function renderAssets() {
     for (const c of shown) body.appendChild(assetRow(c, 1));
   }
 
-  $("filter-count").textContent = matched.length + " / " + VM.assets.length + "건";
+  // 세 수가 실재한다 — **각각에 자기 이름을 붙인다**(B3 D-2).
+  //
+  // 이전에는 \`matched.length + " / " + VM.assets.length\`였고, 필터가 없으면 두 값이 같아
+  // 화면에 "1349 / 1349건"이 떴다. 그런데 그 아래 그려진 행은 183개였다 — 어느 숫자도 화면과
+  // 맞지 않는데 슬래시 표기가 그 사실을 감췄다. \`matched.length\` **집계는 옳았다.**
+  // 틀린 것은 이름표였으므로 집계식은 건드리지 않고 라벨만 나눈다.
+  //
+  // ⚠️ **렌더된 행 수를 세지 않는다** — 펼친 자식이 섞이면 그것은 또 다른 축이다.
+  // \`visibleTops\`는 깊이 0 컨테이너의 수이고, 그것이 "접힌 기본 상태에서 보이는 행"이다.
+  //
+  // ⚠️ **"필터가 걸렸다"에 종류 선택도 포함된다.** \`q\`만 보면 종류만 고른 화면에서
+  // 매치 수가 사라져 그 화면에서만 두 수가 다시 뭉개진다.
+  const filtered = q !== "" || kind !== "";
+  const tail = "최상위 " + visibleTops.size + "건 · 전체 " + VM.assets.length + "건";
+  $("filter-count").textContent = filtered ? "매치 " + matched.length + "건 · " + tail : tail;
 }
 
 async function showDetail(asset) {

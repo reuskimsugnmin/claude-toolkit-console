@@ -175,12 +175,36 @@ describe("자산 목록 — 번들 자식을 부모 아래 접어 보여주고 �
     expect(text, "검색어를 비웠는데도 자식 C3이 펼쳐진 채 남았다").not.toContain("unrelated-sub");
   });
 
-  it("#3 filter-count는 매치 건수(2)를 말한다 — 렌더된 행 수(부모+자식2=3)가 아니다", async () => {
+  /**
+   * #3 카운트 축 — B3 D-2. 이전 형식은 `matched.length + " / " + VM.assets.length`였고,
+   * 필터가 없으면 두 값이 같아 화면에 "5 / 5건"이 뜨는데 그려진 행은 2개였다. **어느 숫자도
+   * 화면과 맞지 않는데 슬래시가 그 사실을 감췄다.**
+   *
+   * 이제 세 수에 각자 이름이 붙는다. 픽스처(부모 P + 자식 C1·C2·C3 + 독립 A):
+   *   - `q="needle"` → 매치 2(C1·C2) · 최상위 1(P) · 전체 5
+   *   - 필터 없음     → 최상위 2(P·A) · 전체 5   ← 매치는 표시하지 않는다
+   */
+  it("#3a 필터가 걸리면 매치·최상위·전체 셋을 각자 이름과 함께 말한다", async () => {
     const { byId, renderAssets } = await bootWithViewModel(buildFixtureViewModel());
     byId.get("q")!.value = "needle";
     renderAssets();
-    const count = byId.get("filter-count")!.textContent;
-    expect(count.startsWith("2 "), `"2 / N건"으로 시작해야 하는데 "${count}"였다`).toBe(true);
+    expect(byId.get("filter-count")!.textContent).toBe("매치 2건 · 최상위 1건 · 전체 5건");
+  });
+
+  it("#3b 필터가 없으면 매치를 빼고 둘만 말한다 — 매치는 전체와 같아 아무것도 알려주지 않는다", async () => {
+    const { byId, renderAssets } = await bootWithViewModel(buildFixtureViewModel());
+    renderAssets();
+    expect(byId.get("filter-count")!.textContent).toBe("최상위 2건 · 전체 5건");
+  });
+
+  it("#3c 종류 필터만 걸어도 '필터가 걸린' 형식이다 — 필터는 검색어만이 아니다", async () => {
+    // ⚠️ `q`만 보고 갈랐다면 이 화면에서만 매치 수가 사라져 두 수가 다시 뭉개진다.
+    // 픽스처에서 kind="agent"인 것은 C1(needle-one)·C3(unrelated-sub) 둘이고 둘 다 자식이라
+    // 컨테이너로 끌려온 부모 P 하나가 최상위가 된다.
+    const { byId, renderAssets } = await bootWithViewModel(buildFixtureViewModel());
+    byId.get("kind")!.value = "agent";
+    renderAssets();
+    expect(byId.get("filter-count")!.textContent).toBe("매치 2건 · 최상위 1건 · 전체 5건");
   });
 
   it("#4 부모 행의 펼치기 버튼을 클릭하면 자식(C1·C2·C3)이 전부 보인다 — 펼침이 실제로 동작한다", async () => {
