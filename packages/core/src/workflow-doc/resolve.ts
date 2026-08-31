@@ -19,11 +19,25 @@ export type CatalogState =
   | { readonly kind: "absent" }
   | { readonly kind: "corrupted" };
 
-/** 설명 조회 결과. `""`(값이 비었다)와 필드 부재는 **다른 사건**이다(D-2). */
+/**
+ * 설명 조회 결과. `""`(값이 비었다)와 필드 부재는 **다른 사건**이다(D-2).
+ *
+ * ⚠️ **읽지 못한 것은 "설명이 없다"가 아니다 (보안 심사 L-2).** 이전에는 `asset.json` 읽기 실패와
+ * 경로 가드 트립을 전부 `field_absent`로 삼켰다 — 기밀성 축으로는 fail-safe지만 **관측이 끊긴다.**
+ * 특히 `assertCatalogSegment`의 경로 순회 거부가 **아무 신호 없이** "설명 없음"이 됐다.
+ * `read_failed`는 그 둘을 갈라 `reason`으로 싣는다.
+ */
 export type DescriptionLookup =
   | { readonly kind: "found"; readonly description: string }
   | { readonly kind: "empty_string" }
-  | { readonly kind: "field_absent" };
+  | { readonly kind: "field_absent" }
+  | { readonly kind: "read_failed"; readonly reason: DescriptionReadFailure };
+
+/**
+ * `path_rejected`는 **공격 신호**이고(경로 순회 거부) `io_error`는 판정 불가다 — 종료 코드가 갈린다.
+ * 뭉개면 "설정 파일이 오염됐다"와 "파일을 못 읽었다"가 같은 값이 된다.
+ */
+export type DescriptionReadFailure = "path_rejected" | "io_error";
 
 export type AssetOutcome =
   | { readonly tag: "resolved"; readonly ref: AssetRef; readonly assetId: string; readonly description: string }
@@ -37,7 +51,13 @@ export type AssetOutcome =
       /** **두 하위축을 뭉개지 않는다** — "설명이 사라진 회귀"와 "원래 없던 자산"은 다른 사건이다. */
       readonly reason: "empty_string" | "field_absent";
     }
-  | { readonly tag: "ambiguous"; readonly ref: AssetRef; readonly candidates: readonly string[] };
+  | { readonly tag: "ambiguous"; readonly ref: AssetRef; readonly candidates: readonly string[] }
+  | {
+      readonly tag: "description_unreadable";
+      readonly ref: AssetRef;
+      readonly assetId: string;
+      readonly reason: DescriptionReadFailure;
+    };
 
 export interface ResolveResult {
   readonly outcomes: readonly AssetOutcome[];
@@ -65,6 +85,11 @@ export function describeOutcome(outcome: AssetOutcome): string {
       return "(원문에 설명 없음)";
     case "ambiguous":
       return "(동명 자산 여럿 — 판정 불가)";
+    case "description_unreadable":
+      // **"설명 없음"과 다른 문구를 낸다** — 표시가 값을 다시 뭉개지 않는다.
+      return outcome.reason === "path_rejected"
+        ? "(원문 경로가 거부됐다 — 카탈로그 오염 신호)"
+        : "(설명을 읽지 못했다 · 미측정)";
     default: {
       const exhaustive: never = outcome;
       return exhaustive;
@@ -89,6 +114,9 @@ export function exitCodeContribution(outcome: AssetOutcome): 0 | 1 | 2 | 3 {
       return 2;
     case "ambiguous":
       return 3;
+    case "description_unreadable":
+      // 경로 거부는 **구조적 실패**(공격 신호), 그 외 읽기 실패는 **미측정**이다.
+      return outcome.reason === "path_rejected" ? 3 : 2;
     default: {
       const exhaustive: never = outcome;
       return exhaustive;
@@ -131,6 +159,8 @@ export function resolveWorkflowAssets(
         return { tag: "no_description", ref, assetId, reason: "empty_string" };
       case "field_absent":
         return { tag: "no_description", ref, assetId, reason: "field_absent" };
+      case "read_failed":
+        return { tag: "description_unreadable", ref, assetId, reason: lookup.reason };
       default: {
         const exhaustive: never = lookup;
         return exhaustive;

@@ -7,6 +7,7 @@ import {
   findWorkflowDocLeaks,
   GENERATED_OUTPUT_AXES,
   locateTable,
+  PathTraversalDetectedError,
   replaceLastCell,
   renderWorkflowAssetRow,
   resolveWorkflowAssets,
@@ -61,6 +62,12 @@ export interface WorkflowDocRowReport {
 export interface WorkflowDocReport {
   readonly exitCode: 0 | 1 | 2 | 3;
   readonly summary: OutcomeSummary | null;
+  /**
+   * ⚠️ **`rows[].current`는 문서 원문 그대로이고 `gated()`를 거치지 않는다.**
+   * 오늘 `bin/ctk.ts`는 `lines`만 찍으므로 살아 있는 유출은 아니다(보안 재심에서 확인).
+   * **이 배열을 화면·파일·로그에 내보내는 소비자가 생기면 그때 `gated()` 범위에 넣는다** —
+   * 소비자가 0인 동안은 축이 닫혀 있고, 하나라도 생기면 즉시 열린다.
+   */
   readonly rows: readonly WorkflowDocRowReport[];
   readonly wrote: boolean;
   /** 구조적 실패 — `null`이면 구조는 정상이다. */
@@ -189,10 +196,15 @@ function makeDescribe(root: string | null, rowsById: ReadonlyMap<string, IndexRo
       return parsed.description.trim().length === 0
         ? { kind: "empty_string" }
         : { kind: "found", description: parsed.description };
-    } catch {
-      // 읽지 못한 것은 "설명이 없다"가 아니다. 그러나 이 자리에서 낼 수 있는 가장 정직한 값은
-      // 필드 부재이고, 상위 요약이 그 건수를 따로 낸다.
-      return { kind: "field_absent" };
+    } catch (err) {
+      // ⚠️ **읽지 못한 것은 "설명이 없다"가 아니다 (보안 심사 L-2).** 이전에는 둘을 `field_absent`로
+      // 삼켰고, 특히 `assertCatalogSegment`의 경로 순회 거부가 **아무 신호 없이** "설명 없음"이 됐다 —
+      // 기밀성 축으로는 fail-safe지만 **관측이 끊긴다.** 경로 거부는 **카탈로그 오염 신호**이므로
+      // 단순 읽기 실패와 종료 코드까지 갈린다(3 vs 2).
+      return {
+        kind: "read_failed",
+        reason: err instanceof PathTraversalDetectedError ? "path_rejected" : "io_error",
+      };
     }
   };
 }

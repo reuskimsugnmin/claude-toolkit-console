@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseAsset, type Asset } from "../src/schema/asset.js";
 import {
   ASSET_SEPARATOR,
+  escapeWorkflowCellText,
   DEFAULT_ASSET_CELL_LIMIT,
   renderWorkflowAssetCell,
 } from "../src/workflow-doc/asset-cell.js";
@@ -211,5 +212,20 @@ describe("M-4 — 총합 상한이 fail-open이었다", () => {
     const cell = renderWorkflowAssetRow(inputs);
     expect(cell).not.toContain("설명 과대");
     expect(cell.length).toBeLessThanOrEqual(400);
+  });
+});
+
+/** **보안 심사 구조적 관찰 대응** — "모든 문자열의 단일 관문"이 행 계층에서 참이 되게 했다. */
+describe("placeholder도 이스케이프 관문을 탄다", () => {
+  it("오늘의 고정 문구는 **출력이 바뀌지 않는다** (반대 축 — 관문 추가가 표시를 망가뜨리지 않는다)", () => {
+    const text = "(이 머신에 없음 · 마지막 스캔 시점 기준)";
+    expect(escapeWorkflowCellText(text)).toBe(text);
+    expect(renderWorkflowAssetRow([{ kind: "placeholder", text }])).toBe(text);
+  });
+
+  it("자유 문자열을 넘기는 호출자가 생겨도 표가 깨지지 않는다 — 옆문을 남기지 않았다", () => {
+    const cell = renderWorkflowAssetRow([{ kind: "placeholder", text: "a | b <c>" }]);
+    expect(cell).toBe("a \\| b &lt;c&gt;");
+    expect(roundTripThroughTable(cell).columns).toBe(4);
   });
 });

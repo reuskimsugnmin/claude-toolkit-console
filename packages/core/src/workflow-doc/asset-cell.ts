@@ -88,11 +88,16 @@ function truncateByGrapheme(text: string, limit: number): string {
  * 3. `|` → `\|`.
  * 4. `<`·`>` → 엔티티.
  *
+ * ⚠️ **export하는 이유**: 행 계층(`asset-row.ts`)의 `placeholder` 갈래가 이 함수를 거치지 않아
+ * "문서로 나가는 **모든** 문자열의 단일 관문"이라는 이 파일의 선언이 **행 계층에서는 거짓**이었다
+ * (보안 심사 구조적 관찰). 오늘 생산자가 고정 리터럴뿐이라 살아 있는 취약점은 아니었으나,
+ * **선언과 사실을 일치시킨다** — 단일 관문을 선언해 놓고 옆문을 남기지 않는다.
+ *
  * 백틱은 이스케이프하지 않고 **셀을 코드 스팬으로 감싸지도 않는다** — 감싸면 홀수 백틱이 표를 깬다.
  * 셀 선두 `-`/`#`와 `-->`는 **축이 아니다**: 표 셀은 인라인 문맥이라 목록·제목이 되지 않고,
  * `-->`는 규칙 4가 `>`를 잡으므로 HTML 주석 마커를 깨지 못한다. **과잉 방어를 넣지 않는다.**
  */
-function escapeCell(text: string): string {
+export function escapeWorkflowCellText(text: string): string {
   return text
     .replace(/&/g, "&amp;")
     .replace(/\\/g, "\\\\")
@@ -131,5 +136,5 @@ export function renderWorkflowAssetCell(
       "설명이 공백만으로 이루어져 있다 — 호출부가 no_description으로 갈랐어야 한다(D-2)",
     );
   }
-  return escapeCell(truncateByGrapheme(folded, graphemeLimit));
+  return escapeWorkflowCellText(truncateByGrapheme(folded, graphemeLimit));
 }

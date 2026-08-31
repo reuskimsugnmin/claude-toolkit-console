@@ -3,6 +3,7 @@ import {
   ASSET_SEPARATOR,
   DEFAULT_ASSET_CELL_LIMIT,
   DEFAULT_ROW_CELL_LIMIT,
+  escapeWorkflowCellText,
   renderWorkflowAssetCell,
 } from "./asset-cell.js";
 import { WorkflowDocError } from "./errors.js";
@@ -18,8 +19,9 @@ import { WorkflowDocError } from "./errors.js";
 /**
  * 셀 한 칸에 들어갈 자산 하나의 입력.
  *
- * `described`만 렌더러를 타고, 나머지 갈래(미설치·설명 없음·카탈로그 없음 …)는 호출부가
+ * `described`만 절단·상한을 타고, 나머지 갈래(미설치·설명 없음·카탈로그 없음 …)는 호출부가
  * **이미 문구로 바꿔서** 넘긴다 — 렌더러가 "비었다"를 만들어 내지 않게 하는 D-2의 배선이다.
+ * ⚠️ 다만 **이스케이프 관문은 둘 다 탄다**(보안 심사 구조적 관찰 — 옆문을 남기지 않는다).
  */
 export type RowCellInput =
   | { readonly kind: "described"; readonly asset: Pick<Asset, "description"> }
@@ -61,7 +63,10 @@ function renderAt(inputs: readonly RowCellInput[], limit: number): string {
   return inputs
     .map((input) =>
       input.kind === "placeholder"
-        ? input.text
+        ? // **placeholder도 같은 관문을 탄다** — 오늘 생산자는 `describeOutcome`의 고정 리터럴뿐이라
+          // 출력은 바뀌지 않지만(테스트가 못박는다), 옆문을 남기면 나중에 자유 문자열을 넘기는
+          // 호출자가 생겼을 때 아무도 모른다.
+          escapeWorkflowCellText(input.text)
         : limit < MIN_ASSET_CELL_GRAPHEMES
           ? ""
           : renderWorkflowAssetCell(input.asset, limit),
