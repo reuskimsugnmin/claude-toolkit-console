@@ -530,3 +530,99 @@ describe("B3 Step 3b — 계층 편의 (자식 수 · 전체 펼치기 · 토글
     expect(byId.get("btn-expand-all")!.hidden).toBe(false);
   });
 });
+
+/**
+ * B3 Step 6b — D-6 빈 상태. 0건일 때 표 머리만 남으면 "불러오지 못했다"처럼 보인다.
+ * **각 케이스에 대조군을 붙인다** — 한쪽만 보면 "항상 비었다"·"항상 찼다"와 구별되지 않는다.
+ */
+describe("B3 Step 6b — 빈 상태 (D-6)", () => {
+  /** 점유가 측정되지 않은 자산을 담은 뷰모델 — `unrankable` 행을 만든다. */
+  function vmWithOccupancy(measured: boolean) {
+    const asset = parseAsset({
+      schema_version: 1,
+      _scope: "machine_independent",
+      id: "synth-occ",
+      kind: "skill",
+      name: "synth-occ",
+    });
+    const idle = measured
+      ? { state: "measured" as const, value_tokens: 120, tokenizer_model: "synthetic", measured_at: "2026-08-22T00:00:00.000Z" }
+      : { state: "unmeasured" as const, value_tokens: null, reason: "credential_missing" as const };
+    return JSON.parse(
+      JSON.stringify(
+        buildConsoleViewModel({
+          machineId: "synthetic-machine",
+          projects: [],
+          projectsUnavailable: null,
+          assets: [asset],
+          installations: [],
+          occupancy: [
+            {
+              schema_version: 1,
+              _scope: "machine_independent",
+              asset_id: "synth-occ",
+              idle,
+              loaded: idle,
+              idle_definition: "ctk-v1-mcp-included",
+              harness_alwayson: { state: "unmeasured", value_tokens: null, reason: "not_a_plugin" },
+              occupancy_divergence: false,
+              occupancy_divergence_ratio: null,
+            },
+          ],
+          usage: [],
+          lastScanAt: null,
+          docPresence: new Map(),
+          unusedExpensiveLimit: 5,
+          now: new Date("2026-08-22T00:00:00.000Z"),
+        }),
+      ),
+    ) as unknown;
+  }
+
+  it("자산 필터가 0건이면 빈 상태가 뜨고 **표는 숨는다**", async () => {
+    const { byId, renderAssets } = await bootWithViewModel(buildFixtureViewModel());
+    byId.get("q")!.value = "이런-이름은-없다";
+    renderAssets();
+    expect(byId.get("assets-empty")!.hidden).toBe(false);
+    expect(byId.get("assets-table")!.hidden, "머리만 남은 표는 '내용이 없어졌다'로 읽힌다").toBe(true);
+    expect(byId.get("assets-empty")!.textContent).toContain("맞는 자산이 없다");
+  });
+
+  it("자산이 있으면 표가 보이고 빈 상태는 숨는다 — 대조군", async () => {
+    const { byId, renderAssets } = await bootWithViewModel(buildFixtureViewModel());
+    renderAssets();
+    expect(byId.get("assets-empty")!.hidden).toBe(true);
+    expect(byId.get("assets-table")!.hidden).toBe(false);
+  });
+
+  it("순위 불가가 0건이면 **왜 정상인지까지** 말한다 — '해당 없음'만으로는 빈 표와 같다", async () => {
+    const { byId } = await bootWithViewModel(vmWithOccupancy(true));
+    expect(byId.get("unrankable-empty")!.hidden).toBe(false);
+    expect(byId.get("unrankable-table")!.hidden).toBe(true);
+    const text = byId.get("unrankable-empty")!.textContent;
+    expect(text).toContain("해당 없음");
+    expect(text, "0건이 정상이라는 판단이 빠졌다").toContain("모든 자산의 점유가 측정됐다");
+  });
+
+  it("순위 불가가 있으면 표가 보이고 빈 상태는 숨는다 — 대조군", async () => {
+    const { byId } = await bootWithViewModel(vmWithOccupancy(false));
+    expect(byId.get("unrankable-empty")!.hidden, "미측정 자산이 있는데 '해당 없음'이 떴다").toBe(true);
+    expect(byId.get("unrankable-table")!.hidden).toBe(false);
+    expect(byId.get("unrankable-body")!.textContent, "미측정을 0으로 쓰지 않는다").toContain("미측정");
+  });
+});
+
+describe("B3 Step 6b — 접근성 시맨틱", () => {
+  it("탭에 role과 aria-controls가 있고 각 화면이 tabpanel이다", () => {
+    expect(UI_HTML).toContain('role="tablist"');
+    expect(UI_HTML).toMatch(/id="tab-assets"[^>]*role="tab"[^>]*aria-controls="view-assets"/);
+    expect(UI_HTML).toMatch(/id="tab-usage"[^>]*role="tab"[^>]*aria-controls="view-usage"/);
+    expect(UI_HTML).toMatch(/id="view-assets"[^>]*role="tabpanel"/);
+    expect(UI_HTML).toMatch(/id="view-usage"[^>]*role="tabpanel"/);
+  });
+
+  it("본문으로 건너뛰는 링크가 있고 main을 가리킨다 — 183행짜리 표를 지나가야 한다", () => {
+    expect(UI_HTML).toContain('class="skip-link" href="#main"');
+    expect(UI_HTML).toContain('<main id="main">');
+  });
+});

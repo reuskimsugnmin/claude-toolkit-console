@@ -93,20 +93,49 @@ function renderUiHtml(nonce: string): string {
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink);
     font: var(--fs-6)/1.6 var(--font-sans); }
-  header { padding: 18px 24px; border-bottom: 1px solid var(--line); display: flex;
-    align-items: baseline; gap: 16px; flex-wrap: wrap; }
-  h1 { font-size: 17px; margin: 0; letter-spacing: -0.01em; }
-  .meta { color: var(--muted); font-size: 13px; }
-  nav { display: flex; gap: 4px; padding: 0 24px; border-bottom: 1px solid var(--line); }
-  nav button { background: none; border: none; border-bottom: 2px solid transparent; color: var(--muted);
-    padding: 10px 12px; font: inherit; font-size: 14px; cursor: pointer; }
-  nav button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
-  main { padding: 20px 24px 60px; max-width: 1100px; }
+  /* 화면을 못 보는 사용자가 183행짜리 표를 지나 본문으로 바로 갈 수 있어야 한다. */
+  .skip-link { position: absolute; left: -9999px; top: 0; background: var(--panel); color: var(--ink);
+    padding: var(--space-2) var(--space-3); border: 1px solid var(--accent);
+    border-radius: var(--radius-md); z-index: 10; }
+  .skip-link:focus { left: var(--space-3); top: var(--space-3); }
+  /* D-7 — header+nav 통합. 한 줄 안에서 제목·탭·메타가 나란히 온다. */
+  .app-bar { display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap;
+    padding: var(--space-2) var(--space-6); border-bottom: 1px solid var(--line);
+    background: var(--panel); }
+  h1 { font-size: var(--fs-7); margin: 0; letter-spacing: -0.012em; font-weight: 600; }
+  .meta { color: var(--muted); font-size: var(--fs-2); }
+  .tabs { display: flex; gap: var(--space-1); }
+  .tabs button { background: none; border: none; border-bottom: 2px solid transparent;
+    color: var(--muted); padding: var(--space-1) var(--space-3); font: inherit;
+    font-size: var(--fs-5); line-height: 1.7; cursor: pointer; }
+  .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent);
+    font-weight: 500; }
+  main { padding: var(--space-3) var(--space-6) 60px; max-width: 1100px; }
   .banner { background: var(--warn-bg); border: 1px solid var(--warn-line); color: var(--warn-ink);
-    padding: 10px 14px; border-radius: 6px; margin-bottom: 18px; font-size: 14px; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { color: var(--muted); font-weight: 500; font-size: 12.5px; text-transform: uppercase; letter-spacing: .04em; }
+    padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
+    margin-bottom: var(--space-5); font-size: var(--fs-5); }
+  /* D-6 — 0건일 때 표 머리만 덩그러니 남으면 "불러오지 못했다"처럼 보인다. 빈 상태는
+     **0건이라는 사실**과 **그것이 정상이라는 판단**을 함께 말한다. */
+  .empty-state { border: 1px dashed var(--line); border-radius: var(--radius-md);
+    padding: var(--space-5) var(--space-4); text-align: center; color: var(--muted);
+    font-size: var(--fs-4); }
+  .empty-state b { display: block; color: var(--ink); font-size: var(--fs-5);
+    margin-bottom: var(--space-1); font-weight: 600; }
+  #view-usage h2 { font-size: var(--fs-6); margin: 0 0 var(--space-3); font-weight: 600; }
+  #view-usage h2.later { margin-top: var(--space-7); }
+  /* ⚠️ **가로 스크롤은 회귀가 아니라 교체다.** 이전에는 좁은 화면에서 넘침이 0인 대신 셀이
+     줄바꿈되어 행 높이가 폭에 따라 요동쳤다. 표를 자기 컨테이너 안에서 스크롤하게 두면
+     행 높이가 일정해지고, 페이지 본문은 절대 옆으로 밀리지 않는다. */
+  .table-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: var(--fs-5); }
+  th, td { text-align: left; padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--line); vertical-align: top; }
+  /* 183행을 훑는 동안 열 이름이 계속 보여야 한다. */
+  th { color: var(--muted); font-weight: 500; font-size: var(--fs-1); text-transform: uppercase;
+    letter-spacing: .05em; position: sticky; top: 0; background: var(--bg); white-space: nowrap; }
+  td { white-space: nowrap; }
+  /* 이름만 늘어날 수 있게 두고 넘치면 말줄임 — 나머지 칸은 짧은 값들이다. */
+  td:first-child { max-width: 34ch; overflow: hidden; text-overflow: ellipsis; }
   tbody tr:hover { background: var(--panel); }
   .kind { display: inline-block; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line);
     font-size: 12px; color: var(--muted); margin-inline-end: 4px; }
@@ -126,7 +155,8 @@ function renderUiHtml(nonce: string): string {
     border-radius: 6px; background: var(--panel); }
   .meta-grid dt { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em;
     color: var(--muted); margin: 0 0 2px; }
-  .meta-grid dd { margin: 0; font-size: 13px; }
+  .meta-grid dd { margin: 0; font-size: var(--fs-3); }
+  #detail-name { font-size: var(--fs-8); margin: var(--space-2) 0 var(--space-3); font-weight: 600; }
   /* frontmatter 접기(D-3). 기본 닫힘이고, 열어야 기계용 메타가 보인다. */
   details { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px;
     margin: 0 0 12px; background: var(--panel); }
@@ -143,9 +173,12 @@ function renderUiHtml(nonce: string): string {
   .b-unset { color: var(--muted); border-style: dashed; }
   .muted { color: var(--muted); }
   a { color: var(--accent); }
-  .filters { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
-  .filters input, .filters select { padding: 6px 9px; border: 1px solid var(--line); border-radius: 5px;
-    background: var(--panel); color: var(--ink); font: inherit; font-size: 14px; }
+  .toolbar { display: flex; gap: var(--space-3); align-items: center; margin-bottom: var(--space-2);
+    flex-wrap: wrap; }
+  .toolbar input, .toolbar select { padding: 5px 9px; border: 1px solid var(--line);
+    border-radius: var(--radius-sm); background: var(--panel); color: var(--ink);
+    font: inherit; font-size: var(--fs-4); }
+  .toolbar .meta { margin-inline-start: auto; font-variant-numeric: tabular-nums; }
   .doc { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px;
     white-space: pre-wrap; font-size: 13.5px; overflow-x: auto; }
   /* 마크다운 최소 렌더(D-4). 블록이 노드가 되었으므로 문단 안에서만 개행을 보존한다 —
@@ -201,15 +234,18 @@ function renderUiHtml(nonce: string): string {
 </style>
 </head>
 <body>
-<header>
-  <h1>ctk — 툴 콘솔</h1>
+<a class="skip-link" href="#main">본문으로 건너뛰기</a>
+<!-- D-7 — header와 nav를 한 줄로 합친다. 이전에는 둘이 각각 한 층을 차지해 첫 데이터 행
+     앞에 다섯 층(header · nav · 액션바 · 필터 · thead)이 쌓였다. -->
+<header class="app-bar">
+  <h1>ctk</h1>
+  <nav class="tabs" role="tablist" aria-label="화면">
+    <button id="tab-assets" role="tab" aria-selected="true" aria-controls="view-assets">자산</button>
+    <button id="tab-usage" role="tab" aria-selected="false" aria-controls="view-usage">사용량</button>
+  </nav>
   <span class="meta" id="freshness"></span>
   <span class="meta" id="counts"></span>
 </header>
-<nav>
-  <button id="tab-assets" aria-selected="true">자산</button>
-  <button id="tab-usage" aria-selected="false">사용량</button>
-</nav>
 <div class="action-bar" id="action-bar" hidden>
   <strong style="font-size:13px">액션</strong>
   <button id="btn-scan" disabled>스캔</button>
@@ -217,10 +253,10 @@ function renderUiHtml(nonce: string): string {
   <button id="btn-rollback" disabled>마지막 조치 되돌리기</button>
   <span class="sep" id="action-note"></span>
 </div>
-<main>
+<main id="main">
   <div id="action-area"></div>
-  <section id="view-assets">
-    <div class="filters">
+  <section id="view-assets" role="tabpanel" aria-labelledby="tab-assets">
+    <div class="toolbar">
       <input id="q" type="search" placeholder="이름·id로 거르기" autocomplete="off">
       <select id="kind">
         <option value="">모든 종류</option>
@@ -234,35 +270,45 @@ function renderUiHtml(nonce: string): string {
       <button class="row-link" id="btn-expand-all">전체 펼치기</button>
       <span class="meta" id="filter-count"></span>
     </div>
-    <table>
-      <thead><tr>
-        <th>이름</th><th>종류</th><th>설치</th><th>출처</th><th>문서</th>
-      </tr></thead>
-      <tbody id="assets-body"></tbody>
-    </table>
+    <div class="table-scroll" id="assets-table">
+      <table>
+        <thead><tr>
+          <th>이름</th><th>종류</th><th>설치</th><th>출처</th><th>문서</th>
+        </tr></thead>
+        <tbody id="assets-body"></tbody>
+      </table>
+    </div>
+    <div class="empty-state" id="assets-empty" hidden></div>
   </section>
 
-  <section id="view-detail" hidden>
+  <section id="view-detail" role="tabpanel" aria-labelledby="tab-assets" hidden>
     <p><button class="row-link" id="back">← 목록으로</button></p>
-    <h2 id="detail-name" style="font-size:16px;margin:.2em 0"></h2>
+    <h2 id="detail-name"></h2>
     <dl class="meta-grid" id="detail-meta-grid"></dl>
     <div id="detail-actions"></div>
     <div id="detail-docs"></div>
   </section>
 
-  <section id="view-usage" hidden>
+  <section id="view-usage" role="tabpanel" aria-labelledby="tab-usage" hidden>
+    <!-- 순위 자격 경고는 **표보다 먼저** 온다 — 믿어도 되는지를 먼저 말해야 한다. -->
     <div id="usage-banner"></div>
-    <h2 style="font-size:15px">안 쓰는데 비싼 툴</h2>
-    <table>
-      <thead><tr><th>자산</th><th>상시 점유(idle)</th><th>호출</th><th>마지막 사용</th></tr></thead>
-      <tbody id="ranked-body"></tbody>
-    </table>
-    <h2 style="font-size:15px;margin-top:28px">순위에 넣을 수 없는 자산</h2>
+    <h2>안 쓰는데 비싼 툴</h2>
+    <div class="table-scroll" id="ranked-table">
+      <table>
+        <thead><tr><th>자산</th><th>상시 점유(idle)</th><th>호출</th><th>마지막 사용</th></tr></thead>
+        <tbody id="ranked-body"></tbody>
+      </table>
+    </div>
+    <div class="empty-state" id="ranked-empty" hidden></div>
+    <h2 class="later">순위에 넣을 수 없는 자산</h2>
     <p class="meta">점유가 측정되지 않아 비교할 수 없다. 추정치로 채우지 않는다.</p>
-    <table>
-      <thead><tr><th>자산</th><th>상태</th><th>이유</th></tr></thead>
-      <tbody id="unrankable-body"></tbody>
-    </table>
+    <div class="table-scroll" id="unrankable-table">
+      <table>
+        <thead><tr><th>자산</th><th>상태</th><th>이유</th></tr></thead>
+        <tbody id="unrankable-body"></tbody>
+      </table>
+    </div>
+    <div class="empty-state" id="unrankable-empty" hidden></div>
   </section>
 </main>
 
@@ -735,6 +781,29 @@ function assetRow(a, depth) {
 }
 
 /**
+ * 빈 상태를 채운다 — **D-6**(B3 Step 6b).
+ *
+ * 0건일 때 표 머리만 덩그러니 남으면 "불러오지 못했다"처럼 보인다. 빈 상태는 **0건이라는
+ * 사실**과 **그것이 정상이라는 판단**을 함께 말한다 — 시안에서 문구를 실제로 써 보고서야
+ * "해당 없음"만으로는 빈 표와 구별되지 않는다는 것이 분명해졌다.
+ *
+ * 표 자체를 함께 숨긴다. 머리만 남은 표는 그 자체로 "내용이 있어야 하는데 없다"로 읽힌다.
+ */
+function setEmptyState(tableId, emptyId, isEmpty, title, detail) {
+  $(tableId).hidden = isEmpty;
+  const host = $(emptyId);
+  host.hidden = !isEmpty;
+  if (!isEmpty) return;
+  host.textContent = "";
+  const b = document.createElement("b");
+  b.textContent = title;
+  host.appendChild(b);
+  const span = document.createElement("span");
+  span.textContent = detail;
+  host.appendChild(span);
+}
+
+/**
  * 부모 id 집합 — \`CHILDREN\`은 매 렌더에 다시 만들어지므로 여기서는 **뷰모델에서 직접** 센다.
  * 렌더 시점 자료구조에 기대면 아직 한 번도 렌더하지 않은 상태에서 버튼이 틀린 말을 한다.
  */
@@ -824,6 +893,12 @@ function renderAssets() {
   const filtered = q !== "" || kind !== "";
   const tail = "최상위 " + visibleTops.size + "건 · 전체 " + VM.assets.length + "건";
   $("filter-count").textContent = filtered ? "매치 " + matched.length + "건 · " + tail : tail;
+
+  setEmptyState(
+    "assets-table", "assets-empty", matched.length === 0,
+    "맞는 자산이 없다",
+    "검색어나 종류 필터를 지우면 전체가 다시 보인다.",
+  );
 
   // 접을 것이 없으면 버튼을 숨긴다 — 눌러도 아무 일이 없는 버튼은 사용자가 고장으로 읽는다.
   const expandBtn = $("btn-expand-all");
@@ -1299,6 +1374,18 @@ function renderUsage() {
     cell(tr, x.occupancy_idle.reason || "—", "muted");
     un.appendChild(tr);
   }
+
+  setEmptyState(
+    "ranked-table", "ranked-empty", u.ranked.length === 0,
+    "순위에 올릴 자산이 없다",
+    "점유가 측정된 자산이 아직 없다. ctk measure를 돌리면 채워진다.",
+  );
+  // ⚠️ 이 문구는 **0건이 정상이라는 판단**까지 말한다 — "해당 없음"만으로는 빈 표와 구별되지 않는다.
+  setEmptyState(
+    "unrankable-table", "unrankable-empty", u.unrankable.length === 0,
+    "해당 없음",
+    "모든 자산의 점유가 측정됐다. 추정치로 채우지 않는다.",
+  );
 }
 
 function showTab(which) {
