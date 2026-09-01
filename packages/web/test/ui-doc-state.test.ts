@@ -2,6 +2,7 @@ import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 import { buildConsoleViewModel } from "@ctk/core";
 import { buildUiPage } from "../server/ui-page.js";
+import { createElClass } from "./helpers/dom-stub.js";
 
 /**
  * web/test/ui-doc-state.test.ts — 자산 상세의 **문서 상태 배너**를 최소 스텁 위에서 **실행해**
@@ -23,51 +24,8 @@ import { buildUiPage } from "../server/ui-page.js";
  * `renderAssets`가 미처리 거부로 죽는다(테스트는 통과하는데 오류가 섞이는 상태가 되고,
  * 그 잡음에 진짜 오류가 숨는다).
  */
-class El {
-  children: El[] = [];
-  listeners = new Map<string, ((...args: unknown[]) => void)[]>();
-  classes = new Set<string>();
-  className = "";
-  disabled = false;
-  value = "";
-  style: Record<string, string> = {};
-  #text = "";
-
-  constructor(readonly tag: string) {}
-
-  get textContent(): string {
-    return this.#text || this.children.map((c) => c.textContent).join("\n");
-  }
-  set textContent(value: string) {
-    this.#text = value;
-    this.children = [];
-  }
-
-  appendChild(child: El): El {
-    this.#text = "";
-    this.children.push(child);
-    return child;
-  }
-  addEventListener(type: string, fn: (...args: unknown[]) => void): void {
-    const existing = this.listeners.get(type) ?? [];
-    existing.push(fn);
-    this.listeners.set(type, existing);
-  }
-  setAttribute(): void {}
-  removeAttribute(): void {}
-  click(): void {
-    for (const fn of this.listeners.get("click") ?? []) fn();
-  }
-  querySelectorAll(): El[] {
-    return [];
-  }
-  classList = {
-    add: (c: string) => this.classes.add(c),
-    remove: (c: string) => this.classes.delete(c),
-    contains: (c: string) => this.classes.has(c),
-    toggle: (c: string) => (this.classes.has(c) ? this.classes.delete(c) : this.classes.add(c)),
-  };
-}
+const El = createElClass({ textJoin: "\n" });
+type El = InstanceType<typeof El>;
 
 function extractScript(html: string): string {
   const match = /<script nonce="[^"]+">([\s\S]*?)<\/script>/.exec(html);

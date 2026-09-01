@@ -336,10 +336,16 @@ describe("액션 UI — 토큰 취급 (심사 L6)", () => {
     expect(UI_HTML).toContain('"x-ctk-session": SESSION_TOKEN');
   });
 
-  it("토큰이 없으면 액션 바가 숨겨진 채로 남는다 — 조회 모드에서 버튼이 보이지 않는다", () => {
-    expect(UI_HTML).toContain('<div class="actions hidden" id="action-bar">');
-    expect(UI_HTML).toContain("if (SESSION_TOKEN !== null)");
-  });
+  // ⚠️ **"토큰이 없으면 액션 바가 숨겨진 채로 남는다"는 `ui-visibility.test.ts`로 옮겼다(B3 Step 1).**
+  //
+  // 여기 있던 단언은 `<div class="actions hidden" id="action-bar">`라는 **문자열이 있는지**만
+  // 봤고, 그래서 그 클래스가 실제로 요소를 숨기는지는 보지 못했다 — `.hidden{display:none}`이
+  // `.actions{display:flex}`에 명시도 동률로 져서 조회 모드에서도 액션 바가 보이는 동안
+  // **이 테스트는 초록이었다**(CLAUDE.md: 규칙 존재 ≠ 규칙이 막음).
+  //
+  // 지금은 같은 축을 셋으로 나눠 지킨다: ①마크업이 `hidden` 속성으로 시작하는가 ②토큰 없이
+  // 부팅하면 그대로 남는가 ③토큰이 있으면 드러나는가(대조군). **먼저 새 테스트가 초록인 것을
+  // 확인한 뒤에** 이 단언을 지웠다 — 순서를 뒤집으면 "승격했다"가 "없앴다"가 된다.
 });
 
 describe("액션 UI — 승인 없이는 유료 호출이 없다 (F6)", () => {

@@ -2,6 +2,7 @@ import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 import { buildConsoleViewModel } from "@ctk/core";
 import { UI_HTML } from "../server/ui-page.js";
+import { createElClass } from "./helpers/dom-stub.js";
 
 /**
  * 확인 패널의 **동작** 회귀 (심사 L6).
@@ -17,69 +18,8 @@ import { UI_HTML } from "../server/ui-page.js";
  * 10분 동안 문서 생성이 막힌다. 조용히 사라지는 것이 아니라 **나중에 엉뚱한 곳에서** 터진다.
  */
 
-class El {
-  children: El[] = [];
-  listeners = new Map<string, ((...args: unknown[]) => void)[]>();
-  classes = new Set<string>();
-  className = "";
-  disabled = false;
-  value = "";
-  style: Record<string, string> = {};
-  #text = "";
-
-  constructor(readonly tag: string) {}
-
-  get textContent(): string {
-    return this.#text || this.children.map((c) => c.textContent).join("");
-  }
-  /** 핵심 의미 — 텍스트를 넣으면 자식이 **떨어져 나간다.** 결함의 발생 지점이 정확히 여기다. */
-  set textContent(value: string) {
-    this.#text = value;
-    this.children = [];
-  }
-
-  appendChild(child: El): El {
-    this.#text = "";
-    this.children.push(child);
-    return child;
-  }
-  addEventListener(type: string, fn: (...args: unknown[]) => void): void {
-    const existing = this.listeners.get(type) ?? [];
-    existing.push(fn);
-    this.listeners.set(type, existing);
-  }
-  setAttribute(): void {}
-  click(): void {
-    for (const fn of this.listeners.get("click") ?? []) fn();
-  }
-  querySelectorAll(): El[] {
-    return [];
-  }
-
-  classList = {
-    add: (c: string) => this.classes.add(c),
-    remove: (c: string) => this.classes.delete(c),
-    contains: (c: string) => this.classes.has(c),
-  };
-
-  /** 하위 트리에서 텍스트로 버튼을 찾는다 — 사용자가 화면에서 찾는 방식과 같다. */
-  findButton(text: string): El | null {
-    if (this.tag === "button" && this.textContent === text) return this;
-    for (const child of this.children) {
-      const hit = child.findButton(text);
-      if (hit !== null) return hit;
-    }
-    return null;
-  }
-  find(className: string): El | null {
-    if (this.className === className) return this;
-    for (const child of this.children) {
-      const hit = child.find(className);
-      if (hit !== null) return hit;
-    }
-    return null;
-  }
-}
+const El = createElClass({ textJoin: "" });
+type El = InstanceType<typeof El>;
 
 function extractScript(html: string): string {
   const match = /<script nonce="[^"]+">([\s\S]*?)<\/script>/.exec(html);
