@@ -50,36 +50,122 @@ function renderUiHtml(nonce: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ctk — 툴 콘솔</title>
 <style>
+  /* ── 토큰 (B3 Step 6a) ───────────────────────────────────────────────────
+     웹폰트도 외부 이미지도 못 불러온다(CSP에 font-src·img-src가 없어 default-src 'none'으로
+     떨어진다). 그래서 개성은 서체가 아니라 **정보 밀도와 상태 체계**가 만든다.
+
+     ⚠️ 대비는 실측했다 — 텍스트/배경 16개 조합(8쌍 × 라이트/다크)이 전부 본문 기준 4.5:1을
+     넘는다. **가장 빠듯한 곳은 라이트의 accent on bg로 4.90**이라 여유가 0.4뿐이다.
+     \`--accent\`를 밝게 조정하면 그 조합이 가장 먼저 깨진다 — 색을 손대면 다시 잰다. */
   :root {
-    --bg: #fbfbfa; --panel: #fff; --ink: #1b1b1a; --muted: #6b6b66; --line: #e4e4e0;
-    --accent: #2f6f4f; --warn-bg: #fdf6e3; --warn-line: #e0cd94; --warn-ink: #6b5518;
+    --bg: #f6f7f8; --panel: #ffffff; --ink: #14181c; --muted: #626b74; --line: #e2e6ea;
+    --accent: #1f7a5c;
+    --warn-bg: #fdf3d9; --warn-line: #e3c976; --warn-ink: #7a5b0f;
+    /* ⚠️ danger는 **신설**이다. 이전에는 액션 실패(.result.fail)가 warn을 재사용해
+       "아직 판정 중"(MCP 모름 · 순위 무의미)과 "확실히 실패"(액션 거부)가 같은 색이었다 —
+       색 축에서 「없음과 실패를 구분한다」가 깨져 있었다. */
+    --danger-bg: #fbe9e7; --danger-line: #e2a49a; --danger-ink: #8a2f1f;
+
+    --fs-1: 11.5px; --fs-2: 12.5px; --fs-3: 13px; --fs-4: 13.5px;
+    --fs-5: 14px; --fs-6: 15px; --fs-7: 17px; --fs-8: 20px;
+    --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+    --space-5: 20px; --space-6: 24px; --space-7: 28px; --space-8: 32px;
+    --radius-sm: 4px; --radius-md: 6px; --radius-pill: 999px;
+
+    /* ⚠️ **크로스 플랫폼 스택이다.** 이전 스택은 macOS 계열 셋과 로컬 설치가 필요한 한글
+       폰트 하나뿐이라 Windows·Linux·ChromeOS 사용자는 전부 브라우저 기본값으로 떨어졌다.
+       이 저장소는 public이고 다른 사람이 클론해 자기 머신에서 띄운다. 웹폰트로는 못 고친다. */
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Noto Sans KR",
+      "Malgun Gothic", "Apple SD Gothic Neo", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Segoe UI Mono", Consolas,
+      "Liberation Mono", Menlo, Monaco, monospace;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #16171a; --panel: #1e2024; --ink: #e8e8e6; --muted: #9a9a95; --line: #2e3138;
-      --accent: #7fc0a0; --warn-bg: #2a2416; --warn-line: #5c4d24; --warn-ink: #e0cd94;
+      --bg: #12151a; --panel: #1a1e24; --ink: #e7e9ec; --muted: #8b93a0; --line: #2b313a;
+      --accent: #4fd8a6;
+      --warn-bg: #2a2416; --warn-line: #5c4d24; --warn-ink: #e0cd94;
+      --danger-bg: #2e1a17; --danger-line: #6b3128; --danger-ink: #f0a898;
     }
   }
+  /* 키보드 사용자가 지금 어디에 있는지 보여야 한다 — 이전에는 명시적 포커스 스타일이 없었다. */
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink);
-    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Pretendard", "Apple SD Gothic Neo", sans-serif; }
-  header { padding: 18px 24px; border-bottom: 1px solid var(--line); display: flex;
-    align-items: baseline; gap: 16px; flex-wrap: wrap; }
-  h1 { font-size: 17px; margin: 0; letter-spacing: -0.01em; }
-  .meta { color: var(--muted); font-size: 13px; }
-  nav { display: flex; gap: 4px; padding: 0 24px; border-bottom: 1px solid var(--line); }
-  nav button { background: none; border: none; border-bottom: 2px solid transparent; color: var(--muted);
-    padding: 10px 12px; font: inherit; font-size: 14px; cursor: pointer; }
-  nav button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
-  main { padding: 20px 24px 60px; max-width: 1100px; }
+    font: var(--fs-6)/1.6 var(--font-sans); }
+  /* 화면을 못 보는 사용자가 183행짜리 표를 지나 본문으로 바로 갈 수 있어야 한다. */
+  .skip-link { position: absolute; left: -9999px; top: 0; background: var(--panel); color: var(--ink);
+    padding: var(--space-2) var(--space-3); border: 1px solid var(--accent);
+    border-radius: var(--radius-md); z-index: 10; }
+  .skip-link:focus { left: var(--space-3); top: var(--space-3); }
+  /* D-7 — header+nav 통합. 한 줄 안에서 제목·탭·메타가 나란히 온다. */
+  .app-bar { display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap;
+    padding: var(--space-2) var(--space-6); border-bottom: 1px solid var(--line);
+    background: var(--panel); }
+  h1 { font-size: var(--fs-7); margin: 0; letter-spacing: -0.012em; font-weight: 600; }
+  .meta { color: var(--muted); font-size: var(--fs-2); }
+  .tabs { display: flex; gap: var(--space-1); }
+  .tabs button { background: none; border: none; border-bottom: 2px solid transparent;
+    color: var(--muted); padding: var(--space-1) var(--space-3); font: inherit;
+    font-size: var(--fs-5); line-height: 1.7; cursor: pointer; }
+  .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent);
+    font-weight: 500; }
+  main { padding: var(--space-3) var(--space-6) 60px; max-width: 1100px; }
   .banner { background: var(--warn-bg); border: 1px solid var(--warn-line); color: var(--warn-ink);
-    padding: 10px 14px; border-radius: 6px; margin-bottom: 18px; font-size: 14px; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { color: var(--muted); font-weight: 500; font-size: 12.5px; text-transform: uppercase; letter-spacing: .04em; }
+    padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
+    margin-bottom: var(--space-5); font-size: var(--fs-5); }
+  /* D-6 — 0건일 때 표 머리만 덩그러니 남으면 "불러오지 못했다"처럼 보인다. 빈 상태는
+     **0건이라는 사실**과 **그것이 정상이라는 판단**을 함께 말한다. */
+  .empty-state { border: 1px dashed var(--line); border-radius: var(--radius-md);
+    padding: var(--space-5) var(--space-4); text-align: center; color: var(--muted);
+    font-size: var(--fs-4); }
+  .empty-state b { display: block; color: var(--ink); font-size: var(--fs-5);
+    margin-bottom: var(--space-1); font-weight: 600; }
+  #view-usage h2 { font-size: var(--fs-6); margin: 0 0 var(--space-3); font-weight: 600; }
+  #view-usage h2.later { margin-top: var(--space-7); }
+  /* ⚠️ **가로 스크롤은 회귀가 아니라 교체다.** 이전에는 좁은 화면에서 넘침이 0인 대신 셀이
+     줄바꿈되어 행 높이가 폭에 따라 요동쳤다. 표를 자기 컨테이너 안에서 스크롤하게 두면
+     행 높이가 일정해지고, 페이지 본문은 절대 옆으로 밀리지 않는다. */
+  .table-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: var(--fs-5); }
+  th, td { text-align: left; padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--line); vertical-align: top; }
+  /* 183행을 훑는 동안 열 이름이 계속 보여야 한다. */
+  th { color: var(--muted); font-weight: 500; font-size: var(--fs-1); text-transform: uppercase;
+    letter-spacing: .05em; position: sticky; top: 0; background: var(--bg); white-space: nowrap; }
+  td { white-space: nowrap; }
+  /* 이름만 늘어날 수 있게 두고 넘치면 말줄임 — 나머지 칸은 짧은 값들이다. */
+  td:first-child { max-width: 34ch; overflow: hidden; text-overflow: ellipsis; }
   tbody tr:hover { background: var(--panel); }
   .kind { display: inline-block; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line);
-    font-size: 12px; color: var(--muted); }
+    font-size: 12px; color: var(--muted); margin-inline-end: 4px; }
+  /* 설치 칸은 한 열이지만 **두 줄**이다 — 스코프와 활성은 다른 축이라 노드를 나눠 둔다.
+     한 문자열로 이어붙이면 두 축이 뭉개진다(B3 Step 3a). */
+  /* ⚠️ 두 줄에 **각각 이름**을 붙인다. 이전에는 스코프가 라벨 없는 굵은 줄이었는데,
+     최상위 자산 대다수가 스코프 기록이 없어 **첫 줄이 대시 하나(정보 0)이고 실제 값은
+     흐린 둘째 줄**에 왔다 — 눈이 빈 값으로 먼저 갔다. 이름을 붙이면 어느 줄이 무슨 축인지
+     묻지 않아도 되고, 어느 쪽도 "더 중요한 줄"이 아니게 된다. */
+  .install-scope { display: block; font-size: var(--fs-2); }
+  .install-enabled { display: block; font-size: var(--fs-2); color: var(--muted); }
+  /* D-10 — 토글과 이름이 붙어 보이던 문제. \`.row-link\`의 padding:0은 유지하고 여백만 준다. */
+  .twisty { margin-inline-end: 6px; }
+  /* 상세 머리의 메타 그리드 — 목록에만 있던 설치·활성·출처를 상세에서도 보여준다(D-5). */
+  .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px 16px; margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--panel); }
+  .meta-grid dt { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--muted); margin: 0 0 2px; }
+  .meta-grid dd { margin: 0; font-size: var(--fs-3); }
+  #detail-name { font-size: var(--fs-8); margin: var(--space-2) 0 var(--space-3); font-weight: 600; }
+  /* frontmatter 접기(D-3). 기본 닫힘이고, 열어야 기계용 메타가 보인다. */
+  details { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px;
+    margin: 0 0 12px; background: var(--panel); }
+  summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+  pre.fm { margin: 12px 0 0; font-size: 12.5px; color: var(--muted);
+    white-space: pre-wrap; overflow-x: auto;
+    font-family: var(--font-mono); }
+  .kidcount { color: var(--muted); font-size: 12px; margin-inline-start: 6px;
+    font-variant-numeric: tabular-nums; }
   .badge { display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 12px; border: 1px solid var(--line); }
   .b-enabled { color: var(--accent); border-color: var(--accent); }
   .b-disabled { color: var(--muted); }
@@ -87,11 +173,35 @@ function renderUiHtml(nonce: string): string {
   .b-unset { color: var(--muted); border-style: dashed; }
   .muted { color: var(--muted); }
   a { color: var(--accent); }
-  .filters { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
-  .filters input, .filters select { padding: 6px 9px; border: 1px solid var(--line); border-radius: 5px;
-    background: var(--panel); color: var(--ink); font: inherit; font-size: 14px; }
+  .toolbar { display: flex; gap: var(--space-3); align-items: center; margin-bottom: var(--space-2);
+    flex-wrap: wrap; }
+  .toolbar input, .toolbar select { padding: 5px 9px; border: 1px solid var(--line);
+    border-radius: var(--radius-sm); background: var(--panel); color: var(--ink);
+    font: inherit; font-size: var(--fs-4); }
+  .toolbar .meta { margin-inline-start: auto; font-variant-numeric: tabular-nums; }
   .doc { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px;
     white-space: pre-wrap; font-size: 13.5px; overflow-x: auto; }
+  /* 마크다운 최소 렌더(D-4). 블록이 노드가 되었으므로 문단 안에서만 개행을 보존한다 —
+     \`.doc\`의 pre-wrap을 그대로 두면 블록 사이 빈 줄이 이중으로 벌어진다. */
+  .doc h4, .doc h5, .doc h6 { margin: 18px 0 8px; font-weight: 600; }
+  .doc h4 { font-size: 15px; } .doc h5 { font-size: 14px; } .doc h6 { font-size: 13.5px; }
+  .doc p { margin: 0 0 12px; white-space: pre-wrap; }
+  .doc ul, .doc ol { margin: 0 0 12px; padding-inline-start: 20px; }
+  .doc li { margin: 2px 0; }
+  .doc blockquote { margin: 0 0 14px; padding: 6px 14px; border-inline-start: 2px solid var(--line);
+    color: var(--muted); font-size: 13px; white-space: pre-wrap; }
+  .doc code { font-size: 12.5px; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 4px; padding: 0 4px;
+    font-family: var(--font-mono); }
+  .doc pre.code { margin: 0 0 12px; padding: 10px 12px; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; font-size: 12.5px;
+    white-space: pre; font-family: var(--font-mono); }
+  /* 인용 표기는 본문에서 가장 흔한 요소라 눌러야 읽힌다 — 다만 지우지는 않는다. */
+  /* 좌우 여백을 비대칭으로 준다 — 앞 낱말과는 띄고 **뒤따르는 문장부호와는 붙는다.**
+     대칭 패딩이면 "…이다 [칩] ." 처럼 마침표가 떨어져 보였다(Step 5 실측). */
+  .cite { font-size: 10px; color: var(--muted); border: 1px solid var(--line);
+    border-radius: var(--radius-sm); padding: 0 2px 0 3px; margin-inline-start: 3px;
+    white-space: nowrap; font-family: var(--font-mono); vertical-align: baseline; }
   .row-link { background: none; border: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer;
     text-align: left; }
   /* 가시성은 클래스가 아니라 속성이다 — 이 파일에서 요소를 숨기는 유일한 규칙.
@@ -118,19 +228,24 @@ function renderUiHtml(nonce: string): string {
   .confirm .hint { margin: 8px 0 0; font-size: 13px; font-weight: 600; }
   .result { border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px; margin: 12px 0;
     font-size: 13.5px; white-space: pre-wrap; background: var(--panel); }
-  .result.fail { border-color: var(--warn-line); background: var(--warn-bg); color: var(--warn-ink); }
+  /* ⚠️ 클래스명은 그대로 두고 **가리키는 값만** 바꾼다 — 기존 단언이 클래스명을 본다.
+     "아직 판정 중"(warn)과 "확실히 실패"(danger)를 색으로 가른다. */
+  .result.fail { border-color: var(--danger-line); background: var(--danger-bg); color: var(--danger-ink); }
 </style>
 </head>
 <body>
-<header>
-  <h1>ctk — 툴 콘솔</h1>
+<a class="skip-link" href="#main">본문으로 건너뛰기</a>
+<!-- D-7 — header와 nav를 한 줄로 합친다. 이전에는 둘이 각각 한 층을 차지해 첫 데이터 행
+     앞에 다섯 층(header · nav · 액션바 · 필터 · thead)이 쌓였다. -->
+<header class="app-bar">
+  <h1>ctk</h1>
+  <nav class="tabs" role="tablist" aria-label="화면">
+    <button id="tab-assets" role="tab" aria-selected="true" aria-controls="view-assets">자산</button>
+    <button id="tab-usage" role="tab" aria-selected="false" aria-controls="view-usage">사용량</button>
+  </nav>
   <span class="meta" id="freshness"></span>
   <span class="meta" id="counts"></span>
 </header>
-<nav>
-  <button id="tab-assets" aria-selected="true">자산</button>
-  <button id="tab-usage" aria-selected="false">사용량</button>
-</nav>
 <div class="action-bar" id="action-bar" hidden>
   <strong style="font-size:13px">액션</strong>
   <button id="btn-scan" disabled>스캔</button>
@@ -138,46 +253,62 @@ function renderUiHtml(nonce: string): string {
   <button id="btn-rollback" disabled>마지막 조치 되돌리기</button>
   <span class="sep" id="action-note"></span>
 </div>
-<main>
+<main id="main">
   <div id="action-area"></div>
-  <section id="view-assets">
-    <div class="filters">
+  <section id="view-assets" role="tabpanel" aria-labelledby="tab-assets">
+    <div class="toolbar">
       <input id="q" type="search" placeholder="이름·id로 거르기" autocomplete="off">
       <select id="kind">
         <option value="">모든 종류</option>
         ${KIND_OPTIONS_HTML}
       </select>
+      <!-- ⚠️ **버튼이다. 체크박스·라디오·submit 입력으로 만들지 않는다** —
+           \`readonly-server.test.ts\`가 그 세 입력 유형의 부재를 단언한다(MCP 쓰기 UI 부재 가드).
+           그 가드는 범위가 넓지만 옳고, 여기서 깨면 정당한 이유 없이 보안 단언이 지워진다.
+           (그 정규식을 여기 그대로 옮겨 적지 않는다 — 게이트가 자기 규칙을 적은 주석에
+           반응하면 신호가 아니라 잡음이다.) -->
+      <button class="row-link" id="btn-expand-all">전체 펼치기</button>
       <span class="meta" id="filter-count"></span>
     </div>
-    <table>
-      <thead><tr>
-        <th>이름</th><th>종류</th><th>설치 스코프</th><th>활성</th><th>MCP 상태</th><th>출처</th><th>문서</th>
-      </tr></thead>
-      <tbody id="assets-body"></tbody>
-    </table>
+    <div class="table-scroll" id="assets-table">
+      <table>
+        <thead><tr>
+          <th>이름</th><th>종류</th><th>설치</th><th>출처</th><th>문서</th>
+        </tr></thead>
+        <tbody id="assets-body"></tbody>
+      </table>
+    </div>
+    <div class="empty-state" id="assets-empty" hidden></div>
   </section>
 
-  <section id="view-detail" hidden>
+  <section id="view-detail" role="tabpanel" aria-labelledby="tab-assets" hidden>
     <p><button class="row-link" id="back">← 목록으로</button></p>
-    <h2 id="detail-name" style="font-size:16px;margin:.2em 0"></h2>
-    <p class="meta" id="detail-meta"></p>
+    <h2 id="detail-name"></h2>
+    <dl class="meta-grid" id="detail-meta-grid"></dl>
     <div id="detail-actions"></div>
     <div id="detail-docs"></div>
   </section>
 
-  <section id="view-usage" hidden>
+  <section id="view-usage" role="tabpanel" aria-labelledby="tab-usage" hidden>
+    <!-- 순위 자격 경고는 **표보다 먼저** 온다 — 믿어도 되는지를 먼저 말해야 한다. -->
     <div id="usage-banner"></div>
-    <h2 style="font-size:15px">안 쓰는데 비싼 툴</h2>
-    <table>
-      <thead><tr><th>자산</th><th>상시 점유(idle)</th><th>호출</th><th>마지막 사용</th></tr></thead>
-      <tbody id="ranked-body"></tbody>
-    </table>
-    <h2 style="font-size:15px;margin-top:28px">순위에 넣을 수 없는 자산</h2>
+    <h2>안 쓰는데 비싼 툴</h2>
+    <div class="table-scroll" id="ranked-table">
+      <table>
+        <thead><tr><th>자산</th><th>상시 점유(idle)</th><th>호출</th><th>마지막 사용</th></tr></thead>
+        <tbody id="ranked-body"></tbody>
+      </table>
+    </div>
+    <div class="empty-state" id="ranked-empty" hidden></div>
+    <h2 class="later">순위에 넣을 수 없는 자산</h2>
     <p class="meta">점유가 측정되지 않아 비교할 수 없다. 추정치로 채우지 않는다.</p>
-    <table>
-      <thead><tr><th>자산</th><th>상태</th><th>이유</th></tr></thead>
-      <tbody id="unrankable-body"></tbody>
-    </table>
+    <div class="table-scroll" id="unrankable-table">
+      <table>
+        <thead><tr><th>자산</th><th>상태</th><th>이유</th></tr></thead>
+        <tbody id="unrankable-body"></tbody>
+      </table>
+    </div>
+    <div class="empty-state" id="unrankable-empty" hidden></div>
   </section>
 </main>
 
@@ -486,8 +617,15 @@ function mcpBadge(states) {
   return span;
 }
 
-function repoCell(row, repo) {
-  const td = document.createElement("td");
+/**
+ * 출처를 주어진 요소에 채운다 — **스킴 검증의 단일 관문**(B3 Step 4a).
+ *
+ * 목록의 \`<td>\`와 상세의 \`<dd>\`가 같은 함수를 부른다. 각자 검증하면 한쪽이 뒤처지고,
+ * **뒤처진 쪽이 \`javascript:\`를 링크로 만든다** — 이 저장소가 반복해서 만난 사본 문제다.
+ * 요소를 만들어 돌려주지 않고 **받아서 채우는** 이유는 호출부의 DOM 모양을 바꾸지 않기
+ * 위해서다(목록 셀에 래퍼가 하나 끼면 기존 테스트의 자식 수 단언이 의미를 잃는다).
+ */
+function applyRepoTo(td, repo) {
   if (repo === null) { td.className = "muted"; td.textContent = "—"; }
   else if (repo.url === null) {
     // 로컬 디렉터리 출처 — 원격 URL이 없다. 죽은 링크를 만들지 않는다.
@@ -510,6 +648,11 @@ function repoCell(row, repo) {
       td.appendChild(a);
     }
   }
+}
+
+function repoCell(row, repo) {
+  const td = document.createElement("td");
+  applyRepoTo(td, repo);
   row.appendChild(td);
 }
 
@@ -530,13 +673,47 @@ function installationsOf(a) {
   return v.installations;
 }
 
-/** 자식 행이 부모에게서 설치 정보를 상속했음을 **명시**한다 — 빈 값으로 두면 자기 것처럼 보인다. */
-function installCellText(a, pick) {
+/**
+ * 설치 칸을 만든다 — **병합이지 융합이 아니다**(B3 Step 3a).
+ *
+ * 이전에는 \`설치 스코프\`와 \`활성\`이 각각 한 열이었다. 열을 하나로 합치되 **DOM 노드는 둘로
+ * 나눈다** — CLAUDE.md의 「설치 스코프와 활성 여부는 다른 축이다」를 화면에서 지키는 자리다.
+ * 한 문자열로 이어붙이면 두 축이 시각적으로 뭉개지고, 나중에 어느 쪽이 무엇이었는지 되짚을 수 없다.
+ *
+ * ⚠️ \`inherited_unavailable\`은 **한 노드 + 배지**다. 빈 값이나 대시로 그리면 "미설치"로 읽히는데,
+ * 부모를 해석하지 못한 것은 "없음"이 아니라 "판정 불가"다(안전 원칙 7). 그래서 MCP \`unknown\`과
+ * **같은 시각 계열**(\`b-unknown\`)을 공유한다 — 사용자가 할 일이 같다(더 재야 한다).
+ */
+function installCellNodes(a) {
+  const td = document.createElement("td");
   const list = installationsOf(a);
-  if (list === null) return "상속 정보 확인 불가";
-  const joined = uniqueJoin(list.map(pick));
-  if (a.installations.source === "inherited_from_parent") return joined === "—" ? "부모 상속" : joined + " (부모 상속)";
-  return joined;
+
+  if (list === null) {
+    const badge = document.createElement("span");
+    badge.className = "badge b-unknown";
+    badge.textContent = "상속 정보 확인 불가";
+    td.appendChild(badge);
+    return td;
+  }
+
+  const inherited = a.installations.source === "inherited_from_parent";
+  // ⚠️ **두 줄에 각각 이름을 붙인다**(B3 Step 6a). 이전에는 스코프가 라벨 없는 줄이었는데,
+  // 최상위 자산 대다수가 스코프 기록이 없어 **첫 줄이 대시 하나(정보 0)**이고 실제 값은 흐린
+  // 둘째 줄에 왔다 — 눈이 빈 값으로 먼저 갔다. 이름이 붙으면 \`스코프: —\`가 "기록 없음"으로
+  // 읽히고, 값을 감추지 않으면서 오해도 없앤다.
+  const scope = document.createElement("span");
+  scope.className = "install-scope";
+  const scopeText = uniqueJoin(list.map((i) => i.install_scope));
+  // 상속 표시는 **스코프 줄에만** 붙인다. 두 줄에 다 붙이면 같은 사실이 두 번 나오고,
+  // 어느 줄도 안 붙이면 자식이 자기 설치를 가진 것처럼 보인다.
+  scope.textContent = inherited ? "스코프: " + scopeText + " (부모 상속)" : "스코프: " + scopeText;
+  td.appendChild(scope);
+
+  const enabled = document.createElement("span");
+  enabled.className = "install-enabled";
+  enabled.textContent = "활성: " + uniqueJoin(list.map((i) => i.enabled_at));
+  td.appendChild(enabled);
+  return td;
 }
 
 function assetRow(a, depth) {
@@ -547,7 +724,10 @@ function assetRow(a, depth) {
   const kids = CHILDREN.get(a.id);
   if (depth === 0 && kids && kids.length > 0) {
     const toggle = document.createElement("button");
-    toggle.className = "row-link";
+    // D-10 — \`row-link\`는 \`padding:0\`이라 토글과 이름이 붙어 보였다(\`▸example-plugin\`).
+    // 여백은 \`twisty\`가 준다. **연속 appendChild 구조는 그대로 둔다** — 이름 칸의 첫 자식이
+    // 펼치기 버튼이라는 결합에 기존 테스트가 기대고 있고, 그 결합은 의도적으로 유지한다.
+    toggle.className = "row-link twisty";
     toggle.setAttribute("aria-expanded", String(EXPANDED.has(a.id)));
     toggle.textContent = EXPANDED.has(a.id) ? "▾" : "▸";
     toggle.addEventListener("click", () => {
@@ -562,25 +742,96 @@ function assetRow(a, depth) {
   btn.textContent = (depth > 0 ? "└ " : "") + a.name;
   btn.addEventListener("click", () => showDetail(a));
   nameTd.appendChild(btn);
+
+  // 자식 수를 **펼치기 전에** 보여준다. 지금은 열어보기 전까지 안에 뭐가 있는지 전혀 알 수
+  // 없어서, 46개 부모를 하나씩 눌러봐야 했다. 개수만 있어도 펼칠지 말지 판단이 선다.
+  if (depth === 0 && kids && kids.length > 0) {
+    const n = document.createElement("span");
+    n.className = "kidcount";
+    // 괄호를 붙인다 — 맨 숫자는 이름의 일부로 읽힌다(\`example-plugin 12\`).
+    n.textContent = "(" + kids.length + ")";
+    nameTd.appendChild(n);
+  }
   tr.appendChild(nameTd);
 
   const kindTd = document.createElement("td");
   const kindSpan = document.createElement("span");
   kindSpan.className = "kind"; kindSpan.textContent = a.kind;
-  kindTd.appendChild(kindSpan); tr.appendChild(kindTd);
+  kindTd.appendChild(kindSpan);
 
-  cell(tr, installCellText(a, (i) => i.install_scope));
-  cell(tr, installCellText(a, (i) => i.enabled_at));
+  // D-8 — MCP 상태를 **별도 열 대신 종류 칸에 흡수**한다.
+  //
+  // 이전에는 모든 행이 \`MCP 상태\` 칸을 가졌고, mcp가 아닌 자산은 전부 빈 배지였다
+  // (\`toMcpStateView\`가 mcp 외 전 유형에 \`not_applicable\`을 준다 — 실측상 그 열이 의미를
+  // 갖는 행은 카탈로그의 0.3%다). 열 자체를 없애면 "빈 배지가 반복된다"는 문제가 **구조적으로**
+  // 사라진다. \`a.kind === "mcp"\` 게이트는 \`not_applicable\` 판정과 정확히 같은 축이고, 유형으로
+  // 묻는 편이 읽는 사람에게 더 분명하다.
+  if (a.kind === "mcp") {
+    const own = installationsOf(a);
+    kindTd.appendChild(mcpBadge(own === null ? [] : own.map((i) => i.mcp_state)));
+  }
+  tr.appendChild(kindTd);
 
-  const mcpTd = document.createElement("td");
-  const list = installationsOf(a);
-  mcpTd.appendChild(mcpBadge(list === null ? [] : list.map((i) => i.mcp_state)));
-  tr.appendChild(mcpTd);
+  tr.appendChild(installCellNodes(a));
 
   repoCell(tr, a.repo);
   cell(tr, [a.has_annotation ? "주석" : null, a.has_usage_doc ? "사용법" : null].filter(Boolean).join(" · ") || "—",
     a.has_annotation || a.has_usage_doc ? "" : "muted");
   return tr;
+}
+
+/**
+ * 빈 상태를 채운다 — **D-6**(B3 Step 6b).
+ *
+ * 0건일 때 표 머리만 덩그러니 남으면 "불러오지 못했다"처럼 보인다. 빈 상태는 **0건이라는
+ * 사실**과 **그것이 정상이라는 판단**을 함께 말한다 — 시안에서 문구를 실제로 써 보고서야
+ * "해당 없음"만으로는 빈 표와 구별되지 않는다는 것이 분명해졌다.
+ *
+ * 표 자체를 함께 숨긴다. 머리만 남은 표는 그 자체로 "내용이 있어야 하는데 없다"로 읽힌다.
+ */
+function setEmptyState(tableId, emptyId, isEmpty, title, detail) {
+  $(tableId).hidden = isEmpty;
+  const host = $(emptyId);
+  host.hidden = !isEmpty;
+  if (!isEmpty) return;
+  host.textContent = "";
+  const b = document.createElement("b");
+  b.textContent = title;
+  host.appendChild(b);
+  const span = document.createElement("span");
+  span.textContent = detail;
+  host.appendChild(span);
+}
+
+/**
+ * 부모 id 집합 — \`CHILDREN\`은 매 렌더에 다시 만들어지므로 여기서는 **뷰모델에서 직접** 센다.
+ * 렌더 시점 자료구조에 기대면 아직 한 번도 렌더하지 않은 상태에서 버튼이 틀린 말을 한다.
+ */
+function parentIdsFromVm() {
+  const ids = new Set();
+  for (const a of VM.assets) {
+    if (a.parent_id !== null && a.parent_id !== undefined) ids.add(a.parent_id);
+  }
+  return ids;
+}
+
+/**
+ * 부모가 **하나라도 있고** 전부 펼쳐져 있는가.
+ *
+ * ⚠️ 부모가 0건이면 \`false\`다 — 공집합에 대한 "전부"는 참이지만, 그걸 참으로 두면 부모가
+ * 없는 카탈로그에서 버튼이 "전체 접기"라고 말한다(접을 것이 없는데).
+ */
+function allParentsExpanded() {
+  const parents = parentIdsFromVm();
+  if (parents.size === 0) return false;
+  for (const id of parents) if (!EXPANDED.has(id)) return false;
+  return true;
+}
+
+function toggleExpandAll() {
+  if (allParentsExpanded()) EXPANDED.clear();
+  else for (const id of parentIdsFromVm()) EXPANDED.add(id);
+  renderAssets();
 }
 
 /**
@@ -642,6 +893,251 @@ function renderAssets() {
   const filtered = q !== "" || kind !== "";
   const tail = "최상위 " + visibleTops.size + "건 · 전체 " + VM.assets.length + "건";
   $("filter-count").textContent = filtered ? "매치 " + matched.length + "건 · " + tail : tail;
+
+  setEmptyState(
+    "assets-table", "assets-empty", matched.length === 0,
+    "맞는 자산이 없다",
+    "검색어나 종류 필터를 지우면 전체가 다시 보인다.",
+  );
+
+  // 접을 것이 없으면 버튼을 숨긴다 — 눌러도 아무 일이 없는 버튼은 사용자가 고장으로 읽는다.
+  const expandBtn = $("btn-expand-all");
+  expandBtn.hidden = parentIdsFromVm().size === 0;
+  expandBtn.textContent = allParentsExpanded() ? "전체 접기" : "전체 펼치기";
+}
+
+/**
+ * 상세 머리의 메타 그리드 — **D-5**(B3 Step 4a).
+ *
+ * 이전에는 \`종류 · id · marketplace\` 한 줄이 전부였다. 설치 스코프·활성·출처는 **목록에만
+ * 있어서**, 자산 하나를 보다가 그 값을 알려면 목록으로 되돌아가야 했다. 새 데이터 조회는
+ * 없다 — 이미 뷰모델이 들고 있는 값이다.
+ */
+function renderDetailMeta(asset) {
+  const dl = $("detail-meta-grid");
+  dl.textContent = "";
+
+  // 쌍을 \`<div>\`로 감싼다 — \`<dl>\`에 grid를 걸고 \`dt\`/\`dd\`를 직접 자식으로 두면 둘이
+  // **각각 별도 셀**이 되어 라벨과 값이 어긋난다. 감싸면 한 칸 안에서 라벨이 값 위에 온다.
+  const add = (label) => {
+    const cell = document.createElement("div");
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    cell.appendChild(dt);
+    const dd = document.createElement("dd");
+    cell.appendChild(dd);
+    dl.appendChild(cell);
+    return dd;
+  };
+
+  add("종류").textContent = asset.kind;
+  add("id").textContent = asset.id;
+  if (asset.marketplace) add("마켓플레이스").textContent = asset.marketplace;
+
+  const list = installationsOf(asset);
+  if (list === null) {
+    // ⚠️ 설치와 활성을 **두 행으로 벌리지 않는다** — 둘 다 "부모를 해석하지 못했다"는 **한
+    // 사실**의 결과다. 두 행에 같은 배지를 넣으면 서로 다른 두 판정처럼 보인다.
+    const dd = add("설치");
+    const badge = document.createElement("span");
+    badge.className = "badge b-unknown";
+    badge.textContent = "상속 정보 확인 불가";
+    dd.appendChild(badge);
+  } else {
+    const inherited = asset.installations.source === "inherited_from_parent";
+    const scopeText = uniqueJoin(list.map((i) => i.install_scope));
+    add("설치 스코프").textContent = inherited
+      ? (scopeText === "—" ? "부모 상속" : scopeText + " (부모 상속)")
+      : scopeText;
+    add("활성").textContent = uniqueJoin(list.map((i) => i.enabled_at));
+  }
+
+  // mcp면 **항상** 한 행을 낸다 — 목록의 칩과 같은 규칙을 쓴다(판정 주체를 둘로 만들지 않는다).
+  if (asset.kind === "mcp") {
+    add("MCP 상태").appendChild(mcpBadge(list === null ? [] : list.map((i) => i.mcp_state)));
+  }
+
+  applyRepoTo(add("출처"), asset.repo);
+}
+
+/**
+ * 인라인 토큰 — 인라인 코드 · 굵게 · 인용 표기 세 가지.
+ *
+ * ⚠️ **단일 \`*\` 기울임은 넣지 않는다.** 줄머리 \`* \`가 순서없는 리스트 마커와 같은 문자라
+ * 한 문자를 두 축이 판정하게 된다. \`**\`는 그 충돌이 없다(리스트 마커가 될 수 없다).
+ * 실측: 굵게 769건 대 기울임 17건 — 흔한 쪽만 취하고 모호한 쪽은 원문 그대로 둔다.
+ */
+const INLINE_RE = /(\`[^\`]+\`)|(\\*\\*[^*]+\\*\\*)|(\\[\\[cite:[^\\]]+\\]\\])/g;
+
+/** 인라인 토큰을 노드로 편다. **\`innerHTML\`을 쓰지 않는다** — 원문은 서드파티 텍스트다. */
+function renderInline(el, text) {
+  INLINE_RE.lastIndex = 0;
+  if (!INLINE_RE.test(text)) { el.textContent = text; return; }
+  INLINE_RE.lastIndex = 0;
+
+  const put = (s) => {
+    if (s === "") return;
+    const span = document.createElement("span");
+    span.textContent = s;
+    el.appendChild(span);
+  };
+
+  let last = 0;
+  let m = INLINE_RE.exec(text);
+  while (m !== null) {
+    put(text.slice(last, m.index));
+    const tok = m[0];
+    if (m[1] !== undefined) {
+      const code = document.createElement("code");
+      code.textContent = tok.slice(1, -1);
+      el.appendChild(code);
+    } else if (m[2] !== undefined) {
+      const strong = document.createElement("strong");
+      strong.textContent = tok.slice(2, -2);
+      el.appendChild(strong);
+    } else {
+      // 인용 표기 — 문서당 평균 열일곱 개로 **본문에서 가장 흔한 요소**다. 읽는 흐름에서
+      // 빠지도록 작은 첨자 칩으로 누르되 **지우지는 않는다**(출처 추적이 그 값이다).
+      const cite = document.createElement("sup");
+      cite.className = "cite";
+      // \`[[cite:\`는 **7글자**다(대괄호 둘 + \`cite\` 넷 + 콜론 하나). 8로 자르면 참조의 첫
+      // 글자가 조용히 사라진다 — 테스트가 잡았다.
+      cite.textContent = tok.slice(7, -2);
+      el.appendChild(cite);
+    }
+    last = m.index + tok.length;
+    m = INLINE_RE.exec(text);
+  }
+  put(text.slice(last));
+}
+
+/**
+ * 생성 문서의 마크다운을 **최소 범위만** 렌더한다 — **D-4**(B3 Step 5).
+ *
+ * 범위는 추측이 아니라 **모집단 실측**으로 정했다(주석 174파일·4,695줄 + 사용법 174파일·8,210줄):
+ * ATX 헤딩 · 순서없는/있는 리스트 · 인용 · 울타리 코드 · 인라인 코드 · 굵게 · 인용 표기.
+ * **표와 기울임은 넣지 않는다** — 각각 12줄·17건이고, 인식하지 못하면 문단으로 그대로 나와
+ * **오해될 여지가 없다.**
+ *
+ * ⚠️ **울타리 코드는 미관이 아니라 오해 방지 때문에 넣는다.** 코드 블록 **안**에 \`#\`·\`-\`로
+ * 시작하는 줄이 있으면 헤딩·리스트로 **잘못 해석된다** — 그건 "렌더 안 함"이 아니라 **"틀린
+ * 렌더"**다. 울타리 안에서는 파싱을 멈추고 원문 그대로 낸다.
+ *
+ * ⚠️ **인식하지 못한 줄은 문단으로 그대로 낸다.** "해석 못 함"을 "내용 없음"으로 만들지 않는다.
+ *
+ * ⚠️ **\`createElement\` + \`textContent\`만 쓴다.** 원문에는 \`<div>\`처럼 **문자 그대로의 태그**가
+ * 실재한다(실측 214건) — 마크업으로 해석되면 안 되고, 글자로 보여야 한다. 안전이 파서의
+ * 완성도가 아니라 **노드를 만드는 방식**에 걸려 있다.
+ */
+function renderMarkdownInto(host, text) {
+  const lines = text.split("\\n");
+  let para = [];
+  let quote = [];
+  let list = null;
+  // ⚠️ 열려 있는 리스트의 종류를 **별도 변수로** 기억한다. \`list.tag\`를 읽으면 테스트 스텁에서만
+  // 동작한다 — 실제 DOM 요소에는 \`tag\`가 없고 \`tagName\`이 있다(그리고 대문자다).
+  let listTag = null;
+  let fence = null;
+
+  const flushPara = () => {
+    if (para.length === 0) return;
+    const p = document.createElement("p");
+    renderInline(p, para.join("\\n"));
+    host.appendChild(p);
+    para = [];
+  };
+  const flushQuote = () => {
+    if (quote.length === 0) return;
+    const bq = document.createElement("blockquote");
+    renderInline(bq, quote.join("\\n"));
+    host.appendChild(bq);
+    quote = [];
+  };
+  const flushList = () => { list = null; listTag = null; };
+  const flushAll = () => { flushPara(); flushQuote(); flushList(); };
+
+  for (const line of lines) {
+    // ── 울타리 안에서는 아무것도 해석하지 않는다 ──
+    if (fence !== null) {
+      if (line.startsWith("\`\`\`")) {
+        const pre = document.createElement("pre");
+        pre.className = "code";
+        pre.textContent = fence.join("\\n");
+        host.appendChild(pre);
+        fence = null;
+      } else {
+        fence.push(line);
+      }
+      continue;
+    }
+    if (line.startsWith("\`\`\`")) { flushAll(); fence = []; continue; }
+
+    const heading = /^(#{1,6})\\s+(.*)$/.exec(line);
+    if (heading !== null) {
+      flushAll();
+      // 페이지가 이미 h2(자산명)·h3(문서 제목)를 쓰므로 문서 안의 헤딩은 h4부터 시작한다.
+      const h = document.createElement("h" + Math.min(6, heading[1].length + 3));
+      renderInline(h, heading[2]);
+      host.appendChild(h);
+      continue;
+    }
+
+    const quoted = /^>\\s?(.*)$/.exec(line);
+    if (quoted !== null) { flushPara(); flushList(); quote.push(quoted[1]); continue; }
+
+    const bullet = /^\\s*[-*]\\s+(.*)$/.exec(line);
+    const numbered = /^\\s*\\d+\\.\\s+(.*)$/.exec(line);
+    if (bullet !== null || numbered !== null) {
+      flushPara(); flushQuote();
+      const wantTag = bullet !== null ? "ul" : "ol";
+      if (list === null || listTag !== wantTag) {
+        list = document.createElement(wantTag);
+        listTag = wantTag;
+        host.appendChild(list);
+      }
+      const li = document.createElement("li");
+      renderInline(li, (bullet !== null ? bullet[1] : numbered[1]));
+      list.appendChild(li);
+      continue;
+    }
+
+    if (line.trim() === "") { flushAll(); continue; }
+
+    flushQuote(); flushList();
+    para.push(line);
+  }
+
+  flushAll();
+  // 닫히지 않은 울타리도 **내용을 잃지 않는다** — 열린 채 끝났다고 삼키지 않는다.
+  if (fence !== null && fence.length > 0) {
+    const pre = document.createElement("pre");
+    pre.className = "code";
+    pre.textContent = fence.join("\\n");
+    host.appendChild(pre);
+  }
+}
+
+/**
+ * 문서 원문을 frontmatter와 본문으로 가른다 — **D-3**(B3 Step 4b).
+ *
+ * 생성 문서는 \`---\` 두 줄 사이에 기계용 메타(\`schema_version\`·\`gen_source_trust\` 등)를
+ * 담는다. 그것이 본문 맨 위 여덟 줄을 차지해, 정작 읽어야 할 내용은 스크롤 아래에 있었다.
+ * 지우지 않고 접는다 — \`gen_source_trust\`처럼 신뢰 판단에 필요한 값이 들어 있어 없애면
+ * 확인할 길이 사라진다.
+ *
+ * ⚠️ **fail-safe.** 여는 \`---\`만 있고 닫는 것이 없으면 \`null\`을 돌려 **원문 전체를 본문으로**
+ * 보내게 한다. 조용히 자르면 문서 전체가 frontmatter로 삼켜져 화면이 비고, 사용자는 그것을
+ * "본문이 없다"로 읽는다 — 파싱 실패를 빈 결과로 삼키지 않는다(안전 원칙 7).
+ *
+ * 실측 근거: 생성된 문서 전부가 \`^---$\`를 **정확히 두 줄** 가지며 본문에 \`---\`가 나오는
+ * 문서는 0건이다. **다만 그것은 오늘의 표본이므로** 규칙이 어긋나는 문서를 만나도 안전한
+ * 쪽으로 떨어지게 해 둔다.
+ */
+function splitFrontmatter(text) {
+  if (!text.startsWith("---\\n")) return { frontmatter: null, body: text };
+  const end = text.indexOf("\\n---\\n", 3);
+  if (end === -1) return { frontmatter: null, body: text };
+  return { frontmatter: text.slice(4, end + 1), body: text.slice(end + 5) };
 }
 
 async function showDetail(asset) {
@@ -650,9 +1146,7 @@ async function showDetail(asset) {
   $("view-usage").hidden = true;
   $("view-detail").hidden = false;
   $("detail-name").textContent = asset.name;
-  const bits = [asset.kind, asset.id];
-  if (asset.marketplace) bits.push("marketplace: " + asset.marketplace);
-  $("detail-meta").textContent = bits.join(" · ");
+  renderDetailMeta(asset);
 
   renderDetailActions(asset);
 
@@ -694,13 +1188,34 @@ async function showDetail(asset) {
     title.style.fontSize = "14px";
     title.textContent = which === "annotation" ? "언제 쓰는가" : "사용법";
     host.appendChild(title);
-    const pre = document.createElement("div");
-    pre.className = "doc";
     const res = await fetch("/api/assets/" + encodeURIComponent(asset.id) + "/doc/" + which);
+    if (res.ok) {
+      const parts = splitFrontmatter(await res.text());
+      if (parts.frontmatter !== null) {
+        // **기본 닫힘이다** — \`open\`을 붙이지 않는다. 붙이는 순간 D-3이 그대로 재발한다.
+        const det = document.createElement("details");
+        const sum = document.createElement("summary");
+        sum.textContent = "생성 메타데이터 (frontmatter)";
+        det.appendChild(sum);
+        const fm = document.createElement("pre");
+        fm.className = "fm";
+        // frontmatter를 키:값으로 **해석하지 않는다.** 원문 그대로 보여준다 —
+        // 해석하면 형식이 조금만 달라도 조용히 다른 것을 보여주게 된다.
+        fm.textContent = parts.frontmatter;
+        det.appendChild(fm);
+        host.appendChild(det);
+      }
+      const body = document.createElement("div");
+      body.className = "doc";
+      renderMarkdownInto(body, parts.body);
+      host.appendChild(body);
+      continue;
+    }
     // 404를 빈 문서로 렌더하지 않는다 — "없다"와 "비어 있다"는 다른 사실이다.
     // 사유는 위 배너가 말한다. 여기서는 "이 문서가 없다"는 사실만 적는다.
-    pre.textContent = res.ok ? await res.text() : "이 문서는 아직 없다 (사유는 위 상태 참조)";
-    if (!res.ok) pre.className = "doc muted";
+    const pre = document.createElement("div");
+    pre.className = "doc muted";
+    pre.textContent = "이 문서는 아직 없다 (사유는 위 상태 참조)";
     host.appendChild(pre);
   }
 }
@@ -859,6 +1374,18 @@ function renderUsage() {
     cell(tr, x.occupancy_idle.reason || "—", "muted");
     un.appendChild(tr);
   }
+
+  setEmptyState(
+    "ranked-table", "ranked-empty", u.ranked.length === 0,
+    "순위에 올릴 자산이 없다",
+    "점유가 측정된 자산이 아직 없다. ctk measure를 돌리면 채워진다.",
+  );
+  // ⚠️ 이 문구는 **0건이 정상이라는 판단**까지 말한다 — "해당 없음"만으로는 빈 표와 구별되지 않는다.
+  setEmptyState(
+    "unrankable-table", "unrankable-empty", u.unrankable.length === 0,
+    "해당 없음",
+    "모든 자산의 점유가 측정됐다. 추정치로 채우지 않는다.",
+  );
 }
 
 function showTab(which) {
@@ -909,6 +1436,7 @@ async function boot() {
 
   $("q").addEventListener("input", renderAssets);
   $("kind").addEventListener("change", renderAssets);
+  $("btn-expand-all").addEventListener("click", toggleExpandAll);
   $("tab-assets").addEventListener("click", () => showTab("assets"));
   $("tab-usage").addEventListener("click", () => showTab("usage"));
   $("back").addEventListener("click", () => showTab("assets"));
