@@ -6,6 +6,10 @@
 > 이 문서의 목적은 **컨텍스트가 없는 상태에서 이어받을 수 있게** 하는 것이다. 왜 그렇게
 > 결정했는지가 필요하면 `CLAUDE.md`(판단 기준)와 `docs/harness-facts.md`(실측 사실)를 본다.
 > 상세 계획서는 `.omc/plans/ctk-v1-consensus-plan.md`에 있다.
+>
+> ⚠️ **이 문서가 `.omc/plans/…`로 적은 경로는 전부 무시 대상이라 클론되지 않는다.** 2026-09-15에
+> 동기화용 private 저장소의 `handoff/console/plans/…`로 이관했다(같은 파일명). 경위와 나머지
+> 무시 항목은 [`GITIGNORE.md`](GITIGNORE.md)에 있다.
 
 | | |
 |---|---|
@@ -821,4 +825,5 @@
 2. **유료 실행은 소요 시간으로 검산한다.** 유료 5회가 초 단위로 끝나면 모델은 돌지 않은 것이다.
 3. **"통과"를 "검증됨"으로 읽지 않는다.** 이 프로젝트에서 찾은 결함은 대부분 *통과하고 있던*
    것들이었다.
-4. 판단 기준은 `CLAUDE.md`, 실측 사실은 `docs/harness-facts.md`, 상세 계획은 `.omc/plans/`.
+4. 판단 기준은 `CLAUDE.md`, 실측 사실은 `docs/harness-facts.md`, 상세 계획은 private 저장소의
+   `handoff/console/plans/`(위 경로 주의 참고), 무시 항목은 `GITIGNORE.md`.

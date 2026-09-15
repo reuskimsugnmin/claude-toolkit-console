@@ -197,4 +197,4 @@ PR 생성 **직전에 항상** 그 세션의 작업을 회고해 `Skill(claude-m
 
 ## 현재 상태
 
-v1 완료. **남은 것과 진척은 `ROADMAP.md`가 정본이고 여기서 중복하지 않는다**(상세 `.omc/plans/`).
+v1 완료. **남은 것과 진척은 `ROADMAP.md`가 정본**(상세 계획은 private `handoff/console/plans/`, 경위 `GITIGNORE.md`).

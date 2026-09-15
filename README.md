@@ -19,6 +19,9 @@ CLI(`ctk`)와 웹 콘솔이 모두 동작합니다.
 - [설계 방향](#설계-방향)
 - [개발](#개발)
 
+새 로컬에서 이어받는 경우 [`GITIGNORE.md`](GITIGNORE.md)를 먼저 읽습니다 — `pnpm install`로
+다시 생기는 것과, 받아오지 않으면 잃는 것이 갈립니다.
+
 ---
 
 ## 왜 필요한가
@@ -526,7 +529,8 @@ pnpm release:seal    # 봉인이 실제로 동작하는지 실세션 검증
 | [`ROADMAP.md`](ROADMAP.md) | **작업 이력과 남은 일** — 에픽·작업 단위·완료 여부 |
 | `CLAUDE.md` | 판단 기준(안전 원칙·검증 규칙) |
 | `docs/harness-facts.md` | 하네스 실측 사실 — 관측 방법과 파급 |
-| `.omc/plans/` | v1 상세 계획서 |
+| [`GITIGNORE.md`](GITIGNORE.md) | **무시 항목의 정체와 새 로컬에서 얻는 방법** — 재생성되는 것과 이관해야 하는 것 |
+| v1 상세 계획서 | `.omc/plans/`에 있었으나 무시 대상이라 클론되지 않는다. 동기화용 private 저장소의 `handoff/console/plans/`로 이관했다 — [`GITIGNORE.md` ②](GITIGNORE.md) |
 
 ---
 
