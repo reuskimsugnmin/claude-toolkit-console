@@ -1259,6 +1259,8 @@ function renderDetailActions(asset) {
   const host = $("detail-actions");
   host.textContent = "";
   if (SESSION_TOKEN === null) return;
+  // synced(claude.ai 계정 동기화) 플러그인은 레지스트리에 없어 서버가 이관을 거부한다 — 버튼을 내지 않는다.
+  if (asset.installations.some((i) => i.install_scope === "synced")) return;
 
   const scopes = asset.installations.map((i) => i.enabled_at).filter((x) => x !== null);
   const row = document.createElement("div");

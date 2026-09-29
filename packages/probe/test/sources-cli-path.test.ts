@@ -26,7 +26,9 @@ describe("probe/sources/cli-path — PATH 상 알려진 CLI 도구만 탐지(occ
       pathEnv: binDir,
       knownNames: ["codex", "definitely-not-installed-xyz"],
     });
-    expect(result.assets.map((a) => a.id)).toEqual(["codex"]);
+    expect(result.assets.map((a) => a.id)).toEqual(["cli:codex"]);
+    expect(result.assets.map((a) => a.name)).toEqual(["codex"]);
+    expect(result.installations.map((i) => i.asset_id)).toEqual(["cli:codex"]);
     expect(result.installations).toHaveLength(1);
   });
 

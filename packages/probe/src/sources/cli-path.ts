@@ -45,10 +45,14 @@ export function collectCliTools(options: CollectCliToolsOptions): CliSourceResul
     if (dirWithMatch === undefined) continue;
     found.add(name);
     const normalized = normalizePath(path.join(dirWithMatch, name), home.ctkHome);
+    // id에 `cli:`를 붙인다 — 스킬 id는 frontmatter 이름 그대로라 같은 이름의 스킬(예: `codex`)이
+    // 있으면 자산 id가 겹쳐 `mergeAssets`가 스캔 전체를 거부했다(2026-09-29 실측). 스킬 id는
+    // `move`가 쓰는 식별자라 건드리지 않고 이동 대상이 아닌 CLI 쪽을 가른다. 표시 이름은 그대로.
+    const id = `cli:${name}`;
     assets.push({
       schema_version: 1,
       _scope: "machine_independent",
-      id: name,
+      id,
       kind: "cli",
       name,
       source_ref: normalized.home_relative ?? `path_hash:${normalized.path_hash}`,
@@ -56,7 +60,7 @@ export function collectCliTools(options: CollectCliToolsOptions): CliSourceResul
     installations.push({
       schema_version: 1,
       _scope: "machine_dependent",
-      asset_id: name,
+      asset_id: id,
       machine_id: machineId,
       install_scope: null,
       enabled_at: null,

@@ -18,21 +18,29 @@ import { z } from "zod";
  *   이번엔 스파이크의 표본 부족이었다** — 합성 픽스처가 MCP 보유 플러그인을 담지 않았다.
  * - `projectPath`는 `scope==="local"`일 때만 존재하는 조건부 필드다. id 기준 "중복"으로 보이는
  *   엔트리는 실은 중복이 아니라 프로젝트별 local-scope 설치다(P1-13) — `projectPath`가 그 구분자다.
+ * - **`scope: "synced"`** (CLI 2.1.284 실측, 2026-09-29) — claude.ai 계정에서 동기화된 플러그인.
+ *   id가 `<name>@synced`이고 `installedAt`·`lastUpdated`가 **없다.** 두 날짜는 synced일 때만
+ *   생략을 허용한다 — 전부 optional로 풀면 기존 스코프의 필드 누락 드리프트를 못 잡는다.
  */
 export const PluginListEntrySchema = z
   .object({
     id: z.string().regex(/^[^@]+@[^@]+$/, "id는 name@marketplace 형식이어야 한다"),
     version: z.string(),
-    scope: z.enum(["user", "project", "local"]),
+    scope: z.enum(["user", "project", "local", "synced"]),
     enabled: z.boolean(),
     installPath: z.string(),
-    installedAt: z.string(), // ISO 8601
-    lastUpdated: z.string(), // ISO 8601
+    installedAt: z.string().optional(), // ISO 8601 — synced 외에는 superRefine이 강제
+    lastUpdated: z.string().optional(), // ISO 8601 — 동일
     mcpServers: z.record(z.string(), z.unknown()).optional(),
     projectPath: z.string().optional(),
   })
   .strict()
   .superRefine((entry, ctx) => {
+    if (entry.scope !== "synced") {
+      for (const key of ["installedAt", "lastUpdated"] as const) {
+        if (entry[key] == null) ctx.addIssue({ code: "custom", message: `scope=${entry.scope} requires ${key}`, path: [key] });
+      }
+    }
     // 착수 조건 C1 — 단순 optional은 "local인데 경로 없음"을 조용히 통과시킨다. superRefine으로 강제.
     if (entry.scope === "local" && entry.projectPath == null) {
       ctx.addIssue({

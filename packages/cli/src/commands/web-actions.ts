@@ -13,6 +13,7 @@ import {
   ProjectIndexOutOfRangeError,
   ProjectListChangedError,
   SkillLocationAmbiguousError,
+  UnregisteredPluginMoveError,
 } from "./move.js";
 import { runRollback, InvalidBackupRefError, NoRollbackTargetError } from "./rollback.js";
 import { runGenCli, runGenDryRun } from "./gen.js";
@@ -174,6 +175,7 @@ function toActionError(err: unknown): unknown {
     err instanceof AssetNotFoundError ||
     err instanceof NoOpMoveError ||
     err instanceof SkillLocationAmbiguousError ||
+    err instanceof UnregisteredPluginMoveError ||
     err instanceof NoRollbackTargetError ||
     err instanceof InvalidBackupRefError
   ) {

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { catalogIndexPath, parseInstalledPluginsFile } from "@ctk/core";
 import type { CatalogIndexEntry } from "@ctk/sync";
@@ -51,7 +51,31 @@ function reconstructPluginIds(ctkConfigDir: string): Set<string> {
     return new Set();
   }
   const parsed = parseInstalledPluginsFile(JSON.parse(raw) as unknown);
-  return new Set(Object.keys(parsed.plugins));
+  return new Set([...Object.keys(parsed.plugins), ...reconstructSyncedPluginIds(ctkConfigDir)]);
+}
+
+/**
+ * synced(claude.ai 계정 동기화) 플러그인은 installed_plugins.json에 없다 — 독립 출처는
+ * `plugins/synced/<계정>/manifest.json`의 `plugins[].name`이고 plugin-list id는 `<name>@synced`다
+ * (CLI 2.1.284 실측). 디렉터리가 없으면 synced 0건이고, 있는데 형태가 다르면 던진다(빈 집합으로 삼키지 않는다).
+ */
+function reconstructSyncedPluginIds(ctkConfigDir: string): string[] {
+  const syncedRoot = path.join(ctkConfigDir, "plugins", "synced");
+  let accounts: string[];
+  try {
+    accounts = readdirSync(syncedRoot, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err; // 권한 등 읽기 실패를 "synced 0건"으로 삼키지 않는다
+  }
+  return accounts.flatMap((account) => {
+    const manifestAbs = path.join(syncedRoot, account, "manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestAbs, "utf8")) as { plugins?: unknown };
+    if (!Array.isArray(manifest.plugins) || !manifest.plugins.every((p) => typeof (p as { name?: unknown })?.name === "string")) {
+      throw new Error(`${manifestAbs}: plugins[].name 형태가 아니다 — synced manifest 드리프트`);
+    }
+    return (manifest.plugins as { name: string }[]).map((p) => `${p.name}@synced`);
+  });
 }
 
 export async function runVerifyAc1(): Promise<VerifyAc1Report> {
