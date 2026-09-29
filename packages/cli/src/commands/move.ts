@@ -187,6 +187,16 @@ export function resolveRegistryScope(
   return entries?.find((e) => e.scope === fromScope)?.scope ?? entries?.[0]?.scope ?? null;
 }
 
+export class UnregisteredPluginMoveError extends Error {
+  constructor(assetId: string) {
+    super(
+      `v1 미지원 — ${assetId}는 installed_plugins.json에 없는 플러그인(claude.ai 계정 동기화 등)이라 이관하지 않습니다. ` +
+        `켜고 끄기는 /plugin으로 하세요.`,
+    );
+    this.name = "UnregisteredPluginMoveError";
+  }
+}
+
 const FAILURE_CLASS_SET = new Set<string>(FAILURE_CLASSES);
 
 /** 던져진 오류가 알려진 `failure_class`를 싣고 있으면 그대로 쓰고, 아니면 "unclassified"로 남긴다. */
@@ -285,6 +295,9 @@ async function movePluginAsset(
     // (AC-2.1ⓑ) — journal에는 실측된 실제 값을 담는다(가정하지 않는다). L7 방어는
     // resolveRegistryScope() 안에 있다(아래 정의).
     const registryScope = resolveRegistryScope(installedPluginsBefore.plugins, options.assetId, fromScope);
+    // 레지스트리에 없는 플러그인(synced 등)은 `claude plugin enable -s <scope>`의 동작이 실측되지
+    // 않았다 — 백업 전에 거부한다(쓰기 0).
+    if (registryScope === null) throw new UnregisteredPluginMoveError(options.assetId);
 
     // ---- 2. 백업(H4 — .claude.json도 함께 백업하고, before 스냅샷을 함께 저장한다) ----
     const runId = snapshotIdFsSafe();

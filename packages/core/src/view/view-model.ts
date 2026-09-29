@@ -1,5 +1,5 @@
 import { bundledParentId, type Asset, type AssetKind } from "../schema/asset.js";
-import type { Installation, InstallScope, McpStateSource } from "../schema/installation.js";
+import type { Installation, InstallScope, McpStateSource, RegistryScope } from "../schema/installation.js";
 import type { Occupancy, OccupancyValue } from "../schema/occupancy.js";
 import type { UsageMetric } from "../schema/usage.js";
 import { computeFreshness } from "../snapshot/freshness.js";
@@ -55,7 +55,7 @@ export interface RepoLinkView {
 }
 
 export interface InstallationView {
-  install_scope: InstallScope | null;
+  install_scope: RegistryScope | null;
   enabled_at: InstallScope | null;
   project_path_hash: string | null;
   mcp_state: McpStateView;

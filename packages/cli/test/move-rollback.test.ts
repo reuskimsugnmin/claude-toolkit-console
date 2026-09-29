@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runInit } from "../src/commands/init.js";
 import { runScan } from "../src/commands/scan.js";
-import { runMove } from "../src/commands/move.js";
+import { runMove, UnregisteredPluginMoveError } from "../src/commands/move.js";
 import { runRollback } from "../src/commands/rollback.js";
 import { McpMoveRejectedError } from "@ctk/actuator";
 import { collectTree } from "@ctk/probe";
@@ -243,6 +243,23 @@ describe("cli — ctk move / ctk rollback 왕복 e2e (Step 5, AC-2.1/2.2/2.3/2.4
       expect(existsSync(path.join(ctkConfigDir, "skills", "conflict-skill"))).toBe(true);
     },
   );
+
+  it("installed_plugins.json에 없는 플러그인(synced)의 이관은 백업 전에 거부되고 어떤 파일도 변경되지 않는다", async () => {
+    await runInit({});
+    writeJson(path.join(ctkConfigDir, "settings.json"), {});
+    const syncedList = JSON.stringify([
+      { id: "demo@synced", version: "1.0.0", scope: "synced", enabled: true, installPath: path.join(ctkConfigDir, "plugins", "synced", "acct") },
+    ]);
+    await runScan({ spawnFn: async () => ({ exitCode: 0, stdout: syncedList, stderr: "", timedOut: false }) });
+
+    const beforeTree = collectTree(ctkConfigDir).entries;
+
+    await expect(runMove({ assetId: "demo@synced", to: "project", toProjectIndex: 0 })).rejects.toBeInstanceOf(
+      UnregisteredPluginMoveError,
+    );
+
+    expect(collectTree(ctkConfigDir).entries).toEqual(beforeTree);
+  });
 
   it("MCP 자산 이관은 거부되고 어떤 파일도 변경되지 않는다(AC-2.9)", async () => {
     await runInit({});

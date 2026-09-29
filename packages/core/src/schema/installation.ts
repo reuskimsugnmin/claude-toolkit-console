@@ -4,6 +4,14 @@ import { machineDependentTag, schemaVersion } from "./common.js";
 export const InstallScopeSchema = z.enum(["user", "project", "local"]);
 export type InstallScope = z.infer<typeof InstallScopeSchema>;
 
+/**
+ * `install_scope` 전용 — `InstallScope` + `"synced"`(claude.ai 계정 동기화 플러그인, CLI 2.1.284 실측).
+ * `InstallScope`를 넓히지 않는 이유: 그것은 `enabled_at`과 이관 대상(`web-action.ts`의
+ * `.exclude(["local"])`)의 타입이기도 해서, 넓히면 `synced`가 **이동 목적지로 새어 나간다.**
+ */
+export const RegistryScopeSchema = z.enum([...InstallScopeSchema.options, "synced"]);
+export type RegistryScope = z.infer<typeof RegistryScopeSchema>;
+
 /** OQ-7 안 C (2026-08-20 확정) — MCP 활성 상태를 읽어서 표시. 쓰기는 v1.1. */
 export const McpEnabledStateSchema = z.enum(["enabled", "disabled", "unset"]);
 export type McpEnabledState = z.infer<typeof McpEnabledStateSchema>;
@@ -30,7 +38,7 @@ export const InstallationSchema = z
     _scope: machineDependentTag,
     asset_id: z.string().min(1),
     machine_id: z.string().min(1),
-    install_scope: InstallScopeSchema.nullable(),
+    install_scope: RegistryScopeSchema.nullable(),
     enabled_at: InstallScopeSchema.nullable(),
     /** scope==="local" 대응 (AC-0.3 실측 — id 기준 "중복"은 실제로는 프로젝트별 local 설치). 원문 경로 금지 — path_hash만 */
     project_path_hash: z.string().nullable(),

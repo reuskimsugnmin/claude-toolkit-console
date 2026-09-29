@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { collectPlugins } from "../src/sources/plugins.js";
@@ -97,6 +97,25 @@ describe("probe/sources/plugins — id 기준 고유 집계 + install_scope/enab
       .map((i) => i.enabled_at)
       .sort();
     expect(enabledAtValues).toEqual(["local", null]);
+  });
+
+  it("synced 플러그인은 install_scope='synced'로 기록되고, 활성은 user settings.json에서 기본 켜짐·false만 꺼짐이다", async () => {
+    fixture = buildFixtureHome();
+    const settingsAbs = path.join(fixture.home.ctkConfigDir, "settings.json");
+    const settings = JSON.parse(readFileSync(settingsAbs, "utf8")) as { enabledPlugins?: Record<string, boolean> };
+    writeFileSync(settingsAbs, JSON.stringify({ ...settings, enabledPlugins: { ...settings.enabledPlugins, "off-synced@synced": false } }));
+    const syncedEntry = (name: string) => ({ id: `${name}@synced`, version: "1.0.0", scope: "synced", enabled: true, installPath: "/synthetic/synced/acct" });
+    const result = await collectPlugins({
+      home: fixture.home,
+      machineId: "m1",
+      cwd: fixture.home.ctkHome,
+      timeoutSec: 5,
+      spawnFn: fakeSpawn(JSON.stringify([syncedEntry("on-synced"), syncedEntry("off-synced")])),
+    });
+    const byId = new Map(result.installations.map((i) => [i.asset_id, i]));
+    expect(byId.get("on-synced@synced")).toMatchObject({ install_scope: "synced", enabled_at: "user", project_path_hash: null });
+    expect(byId.get("off-synced@synced")).toMatchObject({ install_scope: "synced", enabled_at: null });
+    expect(result.installations).toHaveLength(2);
   });
 
   it("경로 원문이 source_ref에 남지 않는다(AC-1.7) — 홈 상대화 또는 path_hash", async () => {

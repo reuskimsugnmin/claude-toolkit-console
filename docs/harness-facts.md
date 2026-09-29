@@ -14,6 +14,13 @@
   **고유 집계 키는 이름이 아니라 `name@marketplace`다** — 이름만 쓰면 타 마켓플레이스의
   동명 플러그인을 잘못 병합한다. `projectPath`는 `scope === "local"`일 때만 존재한다.
 - `claude plugin list`의 중복 출력(실측 68행/고유 66)은 버그가 아니라 **프로젝트별 local 설치**다.
+- **`scope: "synced"`** (CLI 2.1.284, 2026-09-29) — claude.ai 계정에서 동기화된 플러그인. id는
+  `<name>@synced`이고 `installedAt`·`lastUpdated`가 **없다.** `installed_plugins.json`에 **없고**
+  파일은 `~/.claude/plugins/synced/<계정>/`(목록은 그 안 `manifest.json`의 `plugins[].name`)에 있다.
+  활성은 user `settings.json`의 `enabledPlugins`인데 **끈 것만 `false`로 기록되고 켜진 것은 키가
+  없다**(3/3, `plugin list`의 `enabled`와 일치). 관측: 다른 로컬(이전 CLI)에서 통과하던 `ctk scan`이
+  이 머신에서 zod strict 실패. 파급: 스키마가 synced에만 날짜 생략을 허용하고, `enabled_at`을
+  `=== true`가 아니라 `!== false`로 읽으며, 레지스트리에 없으므로 `move`는 거부한다.
 - `mcpServers`는 서버명을 키로 하는 **객체**다(배열 아님). 스파이크가 빈 배열만 관측해
   배열로 오판한 전례가 있다 — **빈 값은 타입을 알려주지 않는다.**
 - MCP 서버의 출처는 넷이다: `~/.claude.json` 루트 `mcpServers`(user) · 프로젝트 엔트리

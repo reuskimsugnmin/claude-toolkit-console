@@ -68,6 +68,27 @@ describe("plugin-list.schema — 착수 조건 C1 (AC-0.3 정정 스키마)", ()
     expect(PluginListEntrySchema.safeParse(valid).success).toBe(true);
   });
 
+  it("scope:'synced'(claude.ai 계정 동기화, CLI 2.1.284 실측)는 installedAt·lastUpdated 없이 통과한다", () => {
+    const synced = { id: "demo-synced@synced", version: "1.0.0", scope: "synced", enabled: true, installPath: "/synthetic/plugins/synced/acct" };
+    expect(PluginListEntrySchema.safeParse(synced).success).toBe(true);
+  });
+
+  it("synced 외 스코프에서 installedAt·lastUpdated 누락은 여전히 거부된다(날짜 optional이 드리프트 검출을 지우지 않는다)", () => {
+    for (const key of ["installedAt", "lastUpdated"] as const) {
+      const entry: Record<string, unknown> = {
+        id: "demo-plugin@demo-marketplace",
+        version: "1.0.0",
+        scope: "user",
+        enabled: true,
+        installPath: "/synthetic/x",
+        installedAt: "2026-08-01T00:00:00.000Z",
+        lastUpdated: "2026-08-01T00:00:00.000Z",
+      };
+      delete entry[key];
+      expect(PluginListEntrySchema.safeParse(entry).success).toBe(false);
+    }
+  });
+
   it("id가 name@marketplace 형식이 아니면 실패한다", () => {
     const invalid = {
       id: "no-at-sign",

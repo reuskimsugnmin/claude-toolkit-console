@@ -220,6 +220,25 @@ export async function collectPlugins(options: CollectPluginsOptions): Promise<Pl
     }
   }
 
+  // synced(claude.ai 계정 동기화, CLI 2.1.284 실측) — installed_plugins.json에 **없다.** 스코프의
+  // 유일한 출처가 plugin-list 자신이므로 여기서만 plugin-list의 scope를 쓴다. 활성 여부는 다른
+  // 플러그인과 같이 user settings.json 직독이되 **기본값이 켜짐이다** — 끈 것만 `false`로 기록되고
+  // 켜진 것은 키가 없었다(실측 3/3, plugin-list의 `enabled`와 일치). `=== true`로 읽으면 전부 꺼짐으로 보인다.
+  for (const entry of entries) {
+    if (entry.scope !== "synced") continue;
+    installations.push({
+      schema_version: 1,
+      _scope: "machine_dependent",
+      asset_id: entry.id,
+      machine_id: machineId,
+      install_scope: "synced",
+      enabled_at: userEnabled[entry.id] === false ? null : "user",
+      project_path_hash: null,
+      mcp_enabled_state: null,
+      mcp_state_source: null,
+    });
+  }
+
   // 문서화된 단순화(Step 2 범위) — installed_plugins.json에 프로젝트별 설치 기록이 없는데
   // project-committed settings.json만으로 활성화된 케이스는 다루지 않는다. install_scope의
   // 유일한 권위 출처는 installed_plugins.json이라는 §4.1 Step 2 spec 문구를 그대로 따른다.
