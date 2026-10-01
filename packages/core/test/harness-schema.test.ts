@@ -89,6 +89,23 @@ describe("plugin-list.schema — 착수 조건 C1 (AC-0.3 정정 스키마)", ()
     }
   });
 
+  it("CLI 2.1.284의 projectEnabled·notes·noteDetails를 받아들인다(실측 형태)", () => {
+    const entry = {
+      id: "demo-plugin@demo-marketplace",
+      version: "1.0.0",
+      scope: "user",
+      enabled: true,
+      installPath: "/synthetic/x",
+      installedAt: "2026-08-01T00:00:00.000Z",
+      lastUpdated: "2026-08-01T00:00:00.000Z",
+      notes: ["Disabled in user settings but still loads — project settings enable it"],
+      noteDetails: [{ type: "ineffective-disable" }],
+      projectEnabled: true,
+    };
+    expect(PluginListEntrySchema.safeParse(entry).success).toBe(true);
+    expect(PluginListEntrySchema.safeParse({ ...entry, noteDetails: [{ type: "x", extra: 1 }] }).success).toBe(false);
+  });
+
   it("id가 name@marketplace 형식이 아니면 실패한다", () => {
     const invalid = {
       id: "no-at-sign",

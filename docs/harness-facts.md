@@ -21,6 +21,13 @@
   없다**(3/3, `plugin list`의 `enabled`와 일치). 관측: 다른 로컬(이전 CLI)에서 통과하던 `ctk scan`이
   이 머신에서 zod strict 실패. 파급: 스키마가 synced에만 날짜 생략을 허용하고, `enabled_at`을
   `=== true`가 아니라 `!== false`로 읽으며, 레지스트리에 없으므로 `move`는 거부한다.
+- **`claude plugin enable`이 `.claude.json`의 `pluginUsage`를 쓴다** (CLI 2.1.284, 2026-10-02). 그 id 항목
+  하나만 바꾼다 — `usageCount` 보존, `lastUsedAt`=현재 시각, `lastUsedNumStartups`=0, 없으면 `usageCount: 0`으로
+  생성. `disable`은 쓰지 않고 다른 항목은 바이트 그대로다. 관측: 격리 홈에서 install→disable→`enable -s project`
+  →왕복하며 매 단계 `.claude.json`을 덤프(기존 항목·타 항목을 미리 심어 대조). 파급: 2026-08 실측("의미 변경
+  0건")에 기댄 감사가 모든 플러그인 `move`를 롤백시켰다 — `move`만 그 id·그 두 필드를 churn으로 허용한다.
+- 같은 버전의 `plugin list --json`은 프로젝트 설정이 그 플러그인을 언급하면 `projectEnabled`(boolean)를,
+  user에서 껐는데 프로젝트가 켜면 `notes`(string[])·`noteDetails`(`[{type:"ineffective-disable"}]`)를 붙인다.
 - `mcpServers`는 서버명을 키로 하는 **객체**다(배열 아님). 스파이크가 빈 배열만 관측해
   배열로 오판한 전례가 있다 — **빈 값은 타입을 알려주지 않는다.**
 - MCP 서버의 출처는 넷이다: `~/.claude.json` 루트 `mcpServers`(user) · 프로젝트 엔트리

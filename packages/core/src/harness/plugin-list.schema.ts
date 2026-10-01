@@ -33,6 +33,12 @@ export const PluginListEntrySchema = z
     lastUpdated: z.string().optional(), // ISO 8601 — 동일
     mcpServers: z.record(z.string(), z.unknown()).optional(),
     projectPath: z.string().optional(),
+    // CLI 2.1.284 실측 — 프로젝트 설정이 이 플러그인을 언급하면 `projectEnabled`가, user에서 껐는데
+    // 프로젝트가 켜면 `notes`·`noteDetails`(`{type:"ineffective-disable"}`)가 붙는다. 활성 여부는
+    // settings.json류 직독이 정본이라(P0-3) probe는 이 값들을 읽지 않는다 — 받아들이기만 한다.
+    projectEnabled: z.boolean().optional(),
+    notes: z.array(z.string()).optional(),
+    noteDetails: z.array(z.object({ type: z.string() }).strict()).optional(),
   })
   .strict()
   .superRefine((entry, ctx) => {
