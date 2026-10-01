@@ -53,6 +53,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * 자기 소유 프로퍼티만 읽는다. `JSON.parse`는 `"__proto__"`를 **자기 키**로 만들지만 `o["__proto__"]`는
+ * 그 키가 없는 쪽에서 `Object.prototype`을 돌려준다 — `{}`와 deep-equal이 돼 **빈 객체 추가가 통과했다**(보안 심사).
+ */
+function own(o: Record<string, unknown>, key: string): unknown {
+  return Object.hasOwn(o, key) ? o[key] : undefined;
+}
+
 /** 값 기준 재귀 deep-equal — 객체는 키 순서 무관, 배열은 순서 유지. */
 function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
@@ -60,7 +68,7 @@ function deepEqual(a: unknown, b: unknown): boolean {
     const aKeys = Object.keys(a);
     const bKeys = Object.keys(b);
     if (aKeys.length !== bKeys.length) return false;
-    return aKeys.every((k) => Object.prototype.hasOwnProperty.call(b, k) && deepEqual(a[k], b[k]));
+    return aKeys.every((k) => Object.hasOwn(b, k) && deepEqual(own(a, k), own(b, k)));
   }
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return false;
@@ -91,10 +99,46 @@ function diffProjectEntry(
 ): void {
   const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
   for (const key of keys) {
-    if (deepEqual(before[key], after[key])) continue;
+    if (deepEqual(own(before, key), own(after, key))) continue;
     const path = `projects.#${projectPathHash}.${key}`;
     out.push(classify(path, MCP_PROJECT_SUBTREE_KEYS.has(key), allowedChurnKeys, `projects.*.${key}`));
   }
+}
+
+/** `claude plugin enable`이 그 플러그인 항목에서 바꾸는 필드(CLI 2.1.284 실측, docs/harness-facts.md). */
+const PLUGIN_ENABLE_TOUCHED_FIELDS = new Set(["lastUsedAt", "lastUsedNumStartups"]);
+
+/**
+ * `pluginUsage`의 변경이 **`assetId` 하나를 enable한 흔적과 정확히 일치하는가.** 실측(CLI 2.1.284):
+ * `enable`은 그 id 항목의 `lastUsedAt`(현재 시각)·`lastUsedNumStartups`(0)만 바꾸고 `usageCount`는
+ * 보존하며, 항목이 없으면 `usageCount: 0`으로 만든다. **다른 항목은 건드리지 않는다.** 키 전체를
+ * churn으로 열지 않는 이유: 그러면 다른 플러그인의 사용 기록이 바뀌어도 통과한다(통과 축은 완전 일치).
+ */
+export function isPluginEnableUsageTouch(before: unknown, after: unknown, assetId: string): boolean {
+  if (before !== undefined && !isPlainObject(before)) return false;
+  if (!isPlainObject(after)) return false;
+  const b = before ?? {};
+  const keys = new Set([...Object.keys(b), ...Object.keys(after)]);
+  for (const key of keys) {
+    if (key !== assetId && !deepEqual(own(b, key), own(after, key))) return false;
+  }
+  if (!Object.hasOwn(after, assetId)) return false;
+  const afterEntry = after[assetId];
+  if (!isPlainObject(afterEntry)) return false;
+  // 바뀌는 두 필드도 실측 값의 형태와 정확히 맞아야 한다 — 이름만 맞으면 임의 값·삭제가 통과했다.
+  const lastUsedAt = own(afterEntry, "lastUsedAt");
+  if (typeof lastUsedAt !== "number" || !Number.isFinite(lastUsedAt) || own(afterEntry, "lastUsedNumStartups") !== 0) return false;
+  const beforeEntry = own(b, assetId);
+  if (beforeEntry === undefined) {
+    return own(afterEntry, "usageCount") === 0 && Object.keys(afterEntry).every((k) => k === "usageCount" || PLUGIN_ENABLE_TOUCHED_FIELDS.has(k));
+  }
+  if (!isPlainObject(beforeEntry)) return false;
+  const entryKeys = new Set([...Object.keys(beforeEntry), ...Object.keys(afterEntry)]);
+  for (const key of entryKeys) {
+    if (PLUGIN_ENABLE_TOUCHED_FIELDS.has(key)) continue;
+    if (!deepEqual(own(beforeEntry, key), own(afterEntry, key))) return false; // usageCount 포함 — 보존돼야 한다
+  }
+  return true;
 }
 
 /**
@@ -108,6 +152,8 @@ export function claudeJsonSemanticVerdict(
   before: unknown,
   after: unknown,
   allowedChurnKeys: readonly string[] = [],
+  /** 플러그인 `move`만 넘긴다 — 이 id를 enable한 `pluginUsage` 흔적만 churn으로 본다(나머지 경로는 그대로 엄격). */
+  enabledPluginId: string | null = null,
 ): ClaudeJsonSemanticVerdict {
   const allowSet = new Set(allowedChurnKeys);
   const changed: ClaudeJsonPathVerdict[] = [];
@@ -118,7 +164,11 @@ export function claudeJsonSemanticVerdict(
   const topKeys = new Set([...Object.keys(beforeObj), ...Object.keys(afterObj)]);
   for (const key of topKeys) {
     if (key === "projects") continue; // 아래에서 별도 처리(원문 경로 마스킹 필요).
-    if (deepEqual(beforeObj[key], afterObj[key])) continue;
+    if (deepEqual(own(beforeObj, key), own(afterObj, key))) continue;
+    if (key === "pluginUsage" && enabledPluginId !== null && isPluginEnableUsageTouch(own(beforeObj, key), own(afterObj, key), enabledPluginId)) {
+      changed.push({ path: key, status: "allowed_churn", mcpForbidden: false });
+      continue;
+    }
     changed.push(classify(key, MCP_ROOT_FORBIDDEN_KEYS.has(key), allowSet, key));
   }
 
@@ -126,8 +176,8 @@ export function claudeJsonSemanticVerdict(
   const afterProjects = isPlainObject(afterObj.projects) ? afterObj.projects : {};
   const projectKeys = new Set([...Object.keys(beforeProjects), ...Object.keys(afterProjects)]);
   for (const projectPath of projectKeys) {
-    const beforeEntry = beforeProjects[projectPath];
-    const afterEntry = afterProjects[projectPath];
+    const beforeEntry = own(beforeProjects, projectPath);
+    const afterEntry = own(afterProjects, projectPath);
     if (deepEqual(beforeEntry, afterEntry)) continue;
     const hash = hashPath(projectPath).slice(0, 8);
     diffProjectEntry(

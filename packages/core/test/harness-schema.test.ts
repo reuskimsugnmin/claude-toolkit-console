@@ -89,6 +89,25 @@ describe("plugin-list.schema — 착수 조건 C1 (AC-0.3 정정 스키마)", ()
     }
   });
 
+  it("CLI 2.1.284~286의 projectEnabled·notes·noteDetails·hasUserConfig를 받아들인다(실측 형태)", () => {
+    const entry = {
+      id: "demo-plugin@demo-marketplace",
+      version: "1.0.0",
+      scope: "user",
+      enabled: true,
+      installPath: "/synthetic/x",
+      installedAt: "2026-08-01T00:00:00.000Z",
+      lastUpdated: "2026-08-01T00:00:00.000Z",
+      notes: ["Disabled in user settings but still loads — project settings enable it"],
+      noteDetails: [{ type: "ineffective-disable" }],
+      projectEnabled: true,
+      hasUserConfig: true, // CLI 2.1.286
+    };
+    expect(PluginListEntrySchema.safeParse(entry).success).toBe(true);
+    expect(PluginListEntrySchema.safeParse({ ...entry, hasUserConfig: "yes" }).success).toBe(false);
+    expect(PluginListEntrySchema.safeParse({ ...entry, noteDetails: [{ type: "x", extra: 1 }] }).success).toBe(false);
+  });
+
   it("id가 name@marketplace 형식이 아니면 실패한다", () => {
     const invalid = {
       id: "no-at-sign",
@@ -126,6 +145,28 @@ describe("transcript-row.schema — AC-0.6b 실측 형에 대한 합성 픽스�
   it("type:'agent-name' 행이 parse된다 (Step 3 실측 추가 — 17번째 관측 타입, 세션 표시 이름 메타데이터)", () => {
     const row = { type: "agent-name", agentName: "some-session-name", sessionId: "sess-1" };
     expect(() => parseTranscriptRow(row)).not.toThrow();
+  });
+
+  it("CLI 2.1.284의 메타데이터 행 cost-state·custom-title·continued-in이 parse된다(실측 키 전부)", () => {
+    const costState = {
+      type: "cost-state",
+      sessionId: "sess-1",
+      startTime: 1,
+      totalCostUSD: 0.12,
+      hasUnknownModelCost: false,
+      modelUsage: { "synthetic-model": { inputTokens: 1 } },
+      totalAPIDuration: 10,
+      totalAPIDurationWithoutRetries: 9,
+      totalDuration: 20,
+      totalLinesAdded: 3,
+      totalLinesRemoved: 1,
+      totalToolDuration: 5,
+    };
+    expect(() => parseTranscriptRow(costState)).not.toThrow();
+    expect(() => parseTranscriptRow({ type: "custom-title", customTitle: "synthetic title", sessionId: "sess-1" })).not.toThrow();
+    expect(() =>
+      parseTranscriptRow({ type: "continued-in", timestamp: "2026-10-01T00:00:00.000Z", sessionId: "sess-1", continuedInSessionId: "sess-2" }),
+    ).not.toThrow();
   });
 
   it("tool_result는 type:'user' 행에서 관측된다 (AC-0.6b ⓐ)", () => {

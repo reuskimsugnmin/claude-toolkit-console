@@ -349,43 +349,29 @@
     그대로 동작한다
   - **기록**: `docs/harness-facts.md`의 AC-3.5 · AC-3.3 절
 
-### 새 로컬 드리프트 후속 (2026-09-29 신규)
+### 새 로컬 드리프트 후속 (2026-09-29 신규 · 2026-10-02 완료)
 
 다른 로컬에서 개발된 코드를 새 머신(Claude Code CLI 2.1.284)에 처음 설치하며 드러났다. `scan`을 막던
-두 건(`synced` 플러그인 스코프 · 스킬/CLI 동명 id)은 #44로 고쳤고, 아래는 **막지는 않았지만 남은 것**이다.
-**순서는 영향 순이다.**
+두 건(`synced` 플러그인 스코프 · 스킬/CLI 동명 id)은 #44로 고쳤고, 아래 여섯 건을 이어서 닫았다.
+**고칠 때마다 다음 드리프트가 드러났다** — 감사를 통과시키자 재스캔이 `projectEnabled`에서, 세션 사이 CLI가
+2.1.286으로 자동 업데이트되자 `hasUserConfig`에서 다시 멈췄다(둘 다 같은 PR에서 수용).
 
-- [ ] **D1. 플러그인 `move`가 CLI 2.1.284에서 항상 롤백된다** — 최우선
-  - **관측**: `move-rollback.test.ts`의 AC-2.1 왕복 e2e(실제 `claude` 사용)가 **#44 이전 `main`에서도**
-    실패한다(`git stash` 후 재실행으로 확인). 감사가 `.claude.json`의 `pluginUsage` 변경을
-    `WhitelistViolationError`로 판정해 자동 롤백한다 — 안전하게 실패하지만 **기능이 죽어 있다**
-  - **추정 원인**: 새 CLI가 `claude plugin enable/disable` 중 `pluginUsage`를 쓴다(미실측 — 먼저 잰다)
-  - **방향**: 화이트리스트의 `.claude.json` 의미 규칙에 `pluginUsage`를 넣을지 판단. **actuator 변경이므로
-    `security-reviewer` 필수**. 관측 방법·파급은 `docs/harness-facts.md`에 추가
-  - ⚠️ **CI에는 `claude`가 없어 이 테스트가 skip된다** — CI 초록이 이 결함을 가린다
-- [ ] **D2. 옛 bare-id CLI 자산의 정리** (#44의 `cli:` 네임스페이스 후속)
-  - **무엇**: #44 이전에 스캔한 카탈로그에는 `id: "codex"` 같은 CLI `asset.json`이 남는다. 인덱스는 디스크의
-    파일로 재구성되므로 **새 `cli:codex`와 함께 두 행으로 보인다**
-  - **언제 급해지나**: **다른 로컬에서 #44 이후 처음 `scan`할 때.** 그 전에 처리하거나 그때 수동 정리한다
-  - **방향**: `sync/src/migrate-catalog-paths.ts`(일회성 이전기, 깨끗한 git 트리 요구)에 규칙 추가 —
-    `kind: "cli"`이고 `cli:` 접두사가 없으면 id를 바꿔 옮긴다. CLI 문서는 설명 한 줄뿐이라 재생성 비용은 없다
-- [ ] **D3. `gen --no-llm`이 여러 줄 `when_to_use`에 인용을 못 붙인다**
-  - **관측**: 규칙 추출 결과의 절반가량이 `citation_missing`으로 `stale`이 됐다. 목록 항목(`- **…**`)마다
-    원본 줄 인용이 빠진다. 같은 실행의 정책차단(`injection_pattern_detected`)은 설계대로다
-  - **방향**: 규칙 추출기가 목록 항목에도 원본 줄 번호를 붙이게 한다. 유료 경로는 영향 없음(미확인 — 확인할 것)
-- [ ] **D4. README가 코드와 어긋난 두 곳**
-  - `gen --no-llm` 예시에 `--max-budget-usd`·`--timeout-sec`가 빠져 있다 — 코드(`runGenCli`)는 경로와 무관하게
-    둘을 요구한다. 문서를 고칠지, `--no-llm`에서 면제할지 결정
-  - 「다른 머신에도 이게 깔려 있나?」 절이 push/pull을 **현재 기능처럼** 설명한다 — 실제로는 R8·R9(v2)다
-- [ ] **D5. `synced` 플러그인의 번들 하위 툴이 편입되지 않는다**
-  - **무엇**: 번들 수집이 `installed_plugins.json`의 `installPath`에 기대는데 synced는 거기 없다.
-    `scan`이 "번들 편입 실패"로 경고한다(삼키지 않음)
-  - **방향**: synced 설치 경로는 `plugins/synced/<계정>/<name>~g<세대>/`(실측). 경로 검증(`validateInstallPath`)을
-    같은 강도로 적용해야 하므로 **보안 심사 대상**
-- [ ] **D6. 트랜스크립트의 새 행 타입이 파싱 실패로 집계된다**
-  - **관측**: `cost-state`·`custom-title` 행이 스키마 불일치(R13)로 센다(전체 행의 0.1% 수준). 사용량 행이 아니라
-    집계 값은 안 흔들리지만 `measure`의 "파싱 실패" 수가 부풀어 진짜 드리프트를 가린다
-  - **방향**: 실측 형태를 확인해 스키마에 넣거나, "알려진 무시 타입"으로 따로 센다(0건으로 삼키지 않는다)
+- [x] **D1. 플러그인 `move`가 CLI 2.1.284에서 항상 롤백되던 문제**
+  - 실측: `plugin enable`이 `.claude.json`의 `pluginUsage[<그 id>]`만 쓴다(`usageCount` 보존 · `lastUsedAt`=현재 ·
+    `lastUsedNumStartups`=0). 키 전체가 아니라 **옮기는 id·그 두 필드·실측 형태**만 허용(`isPluginEnableUsageTouch`)
+  - 보안 심사: 자기 키 `__proto__`가 프로토타입을 거쳐 `{}`와 같다고 판정되던 결함을 변경 밖(최상위·`projects`)까지
+    범위로 닫았다. 실제 `claude` AC-2.1 왕복 e2e가 통과한다 — ⚠️ **CI에는 `claude`가 없어 이 e2e는 여전히 skip된다**
+- [x] **D2. 옛 bare-id CLI 자산의 정리** — 이전기가 id를 고쳐 옮기거나(새 디렉터리 없음) 중복을 지운다(있음).
+  예상 밖 파일이 있으면 멈춘다. `cli:` 접두사는 core 상수 하나. `scan`이 이전기 결과를 경고로 보고한다
+- [x] **D3. `gen --no-llm` 인용 누락** — 검사와 부착이 블록 분할 함수 하나를 공유한다. 섹션 분할기가 코드블록 안
+  `# 주석`에서 자르던 잔여 원인도 닫았다(인용은 섹션별·검사는 이어 붙인 전체 — 같은 규칙, 다른 입력).
+  실제 카탈로그의 `citation_missing`이 0건이 됐다
+- [x] **D4. README** — `gen --no-llm`의 필수 플래그를 문서에 반영(면제하지 않음 — 원 설계 존중). push/pull 절에
+  "아직 구현되지 않음(v2)" 명시
+- [x] **D5. `synced` 플러그인의 번들 하위 툴** — 경로를 manifest에서만 조립하고(`bundled.ts` 조립 금지 원칙의
+  유일한 예외) 판정 관문 하나(`validatePluginInstallPathEntry`)를 번들·gen이 같이 지난다. 보안 심사 2회
+  (우선순위 단일화·중복 거부·실패 격리·사유에 계정 id 미노출)
+- [x] **D6. 트랜스크립트 새 행 타입** — `cost-state`·`custom-title`·`continued-in`. 실제 트랜스크립트 파싱 실패 0행
 
 ### 설계 부채
 

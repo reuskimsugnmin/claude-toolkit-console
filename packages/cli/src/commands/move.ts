@@ -382,7 +382,7 @@ async function movePluginAsset(
       // M10 — before의 캐시를 넘겨 안 바뀐 파일은 재해시를 건너뛴다.
       const configAfter = captureRootSnapshot(configRoot, configBefore.cache);
       const configAudit = auditRoot(
-        { rootAbs: configRoot, tier1: TIER1_INTENTIONAL_WRITES, allowTier2Churn: true },
+        { rootAbs: configRoot, tier1: TIER1_INTENTIONAL_WRITES, allowTier2Churn: true, enabledPluginId: options.assetId },
         configBefore,
         configAfter,
         claudeJsonBeforeRaw,

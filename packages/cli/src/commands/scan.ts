@@ -198,7 +198,15 @@ export async function runScan(options: RunScanOptions = {}): Promise<ScanSummary
     // (`<kind>/<name>__<id 해시8>/`)로 옮긴다. **반드시 upsertAsset·rebuildCatalogIndex보다
     // 먼저** 돈다 — 먼저 upsertAsset이 새 경로에 asset.json을 써버리면 이전기가 구 경로를
     // 새 경로로 옮기려 할 때 대상이 이미 존재해 충돌한다.
-    migrateCatalogPaths(catalogPath);
+    // 결과를 버리지 않는다 — 이전기가 무엇을 옮기거나 지웠는지 사용자가 알아야 한다(신호에는 읽는 자리가 필요하다).
+    const migration = migrateCatalogPaths(catalogPath);
+    const legacyCliRenamed = migration.moved.filter((m) => m.rewriteId !== undefined).length;
+    const layoutMoved = migration.moved.length - legacyCliRenamed;
+    if (layoutMoved > 0) warnings.push(`카탈로그 경로 이전 — 구 레이아웃 디렉터리 ${layoutMoved}건을 id 파생 경로로 옮겼다`);
+    if (legacyCliRenamed > 0) warnings.push(`옛 bare-id CLI 자산 ${legacyCliRenamed}건을 cli: id로 고쳐 옮겼다(#44 후속)`);
+    if (migration.removed.length > 0) {
+      warnings.push(`옛 bare-id CLI 자산 ${migration.removed.length}건은 새 cli: id와 중복이라 지웠다 — 카탈로그 git 이력으로 되돌릴 수 있다`);
+    }
 
     for (const asset of assets) {
       upsertAsset(catalogPath, asset);

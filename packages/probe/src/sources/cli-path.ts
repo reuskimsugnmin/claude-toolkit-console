@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { normalizePath, type Asset, type Installation } from "@ctk/core";
+import { CLI_ASSET_ID_PREFIX, normalizePath, type Asset, type Installation } from "@ctk/core";
 import type { HomeContext } from "../home.js";
 
 /**
@@ -48,7 +48,7 @@ export function collectCliTools(options: CollectCliToolsOptions): CliSourceResul
     // id에 `cli:`를 붙인다 — 스킬 id는 frontmatter 이름 그대로라 같은 이름의 스킬(예: `codex`)이
     // 있으면 자산 id가 겹쳐 `mergeAssets`가 스캔 전체를 거부했다(2026-09-29 실측). 스킬 id는
     // `move`가 쓰는 식별자라 건드리지 않고 이동 대상이 아닌 CLI 쪽을 가른다. 표시 이름은 그대로.
-    const id = `cli:${name}`;
+    const id = `${CLI_ASSET_ID_PREFIX}${name}`;
     assets.push({
       schema_version: 1,
       _scope: "machine_independent",

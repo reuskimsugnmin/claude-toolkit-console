@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { collectBundled, type BundledSourceResult } from "../src/sources/bundled.js";
+import { findPluginInstallPath } from "../src/sources/plugins.js";
 import type { HomeContext } from "../src/home.js";
 
 /**
@@ -454,5 +455,138 @@ describe("probe/sources/bundled — 플러그인 번들 스킬·커맨드·에�
     const ids = result.assets.map((a) => a.id);
     expect(new Set(ids).size).toBe(ids.length); // 중복 id가 없다 — mergeAssets가 죽지 않는다.
     expect(ids).toContain("p@mkt:skill:command:x"); // 정상 쪽은 남는다(반대 축).
+  });
+});
+
+// ROADMAP D5 — synced 플러그인은 installed_plugins.json에 없다. 경로는 manifest에서만 나온다(실측 형태).
+function makeSynced(home: HomeContext, plugins: { name: string; generation: unknown }[]): string {
+  const accountDir = path.join(home.ctkConfigDir, "plugins", "synced", "acct-synthetic");
+  mkdirSync(accountDir, { recursive: true });
+  writeFileSync(path.join(accountDir, "manifest.json"), JSON.stringify({ lastUpdated: 1, plugins }), "utf8");
+  return accountDir;
+}
+
+describe("probe/sources/bundled — synced 플러그인 하위 툴 편입 (ROADMAP D5)", () => {
+  let fixture: { home: HomeContext; cleanup: () => void };
+  afterEach(() => fixture?.cleanup());
+
+  it("레지스트리 파일이 없어도 manifest의 <name>~g<generation> 디렉터리에서 하위 스킬을 편입한다", () => {
+    fixture = buildHome();
+    const accountDir = makeSynced(fixture.home, [{ name: "demo", generation: 2 }]);
+    writeSkill(path.join(accountDir, "demo~g2"), "demo-skill", "demo-skill");
+    const result = collectBundled({ home: fixture.home, pluginIds: ["demo@synced"] });
+    expect(result.perParent[0]?.state).toBe("ok");
+    expect(result.assets.map((a) => a.id)).toEqual(["demo@synced:skill:demo-skill"]);
+  });
+
+  it.each([
+    ["순회 이름", "../../escape"],
+    ["선행 점", ".hidden"],
+    ["경로 구분자", "a/b"],
+  ])("%s는 경로로 쓰지 않는다 → install_path_rejected(공격 형태는 '없음'이 아니다)", (_label, name) => {
+    fixture = buildHome();
+    const accountDir = makeSynced(fixture.home, [{ name, generation: 2 }]);
+    // 이름이 가리킬 디렉터리를 <config>/plugins 경계 **안에** 실제로 만든다 — 없으면 이름 규칙이 없어도
+    // "없음"으로 통과해 이 테스트가 엉뚱한 이유로 초록이 된다.
+    writeSkill(path.join(accountDir, `${name}~g2`), "s", "s");
+    const result = collectBundled({ home: fixture.home, pluginIds: [`${name}@synced`] });
+    expect(result.perParent[0]?.state).toBe("install_path_rejected");
+    expect(result.assets).toEqual([]);
+  });
+
+  it("세대가 정수가 아니면 경로로 쓰지 않는다", () => {
+    fixture = buildHome();
+    makeSynced(fixture.home, [{ name: "demo", generation: "2/../../x" }]);
+    expect(collectBundled({ home: fixture.home, pluginIds: ["demo@synced"] }).perParent[0]?.state).toBe("install_path_rejected");
+  });
+
+  it("<name>~g<n>이 <config>/plugins 밖을 가리키는 심볼릭 링크면 거부된다(같은 강도의 경계 검사)", () => {
+    fixture = buildHome();
+    const accountDir = makeSynced(fixture.home, [{ name: "demo", generation: 2 }]);
+    const outside = mkdtempSync(path.join(tmpdir(), "ctk-synced-outside-"));
+    writeSkill(outside, "leak", "leak");
+    symlinkSync(outside, path.join(accountDir, "demo~g2"));
+    try {
+      const result = collectBundled({ home: fixture.home, pluginIds: ["demo@synced"] });
+      expect(result.perParent[0]?.state).toBe("install_path_rejected");
+      expect(result.assets).toEqual([]);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("probe/sources/plugins — synced 경로의 판정 불가 축 (D5 보안 심사 M1·M2·M3)", () => {
+  let fixture: { home: HomeContext; cleanup: () => void };
+  afterEach(() => fixture?.cleanup());
+
+  it("M2 — 두 계정이 같은 이름을 내면 먼저 온 쪽을 고르지 않고 거부한다", () => {
+    fixture = buildHome();
+    for (const acct of ["acct-a", "acct-b"]) {
+      const dir = path.join(fixture.home.ctkConfigDir, "plugins", "synced", acct);
+      mkdirSync(path.join(dir, "demo~g1"), { recursive: true });
+      writeFileSync(path.join(dir, "manifest.json"), JSON.stringify({ plugins: [{ name: "demo", generation: 1 }] }), "utf8");
+    }
+    expect(collectBundled({ home: fixture.home, pluginIds: ["demo@synced"] }).perParent[0]?.state).toBe("install_path_rejected");
+    expect(findPluginInstallPath(fixture.home, "demo@synced").ok).toBe(false);
+  });
+
+  it("M1 — 같은 x@synced가 레지스트리에도 있으면 두 조회 모두 같은 판정(거부)을 낸다", () => {
+    fixture = buildHome();
+    const accountDir = makeSynced(fixture.home, [{ name: "demo", generation: 1 }]);
+    mkdirSync(path.join(accountDir, "demo~g1"), { recursive: true });
+    writeInstalledPlugins(fixture.home, { "demo@synced": makePluginDir(fixture.home, "demo") });
+    expect(collectBundled({ home: fixture.home, pluginIds: ["demo@synced"] }).perParent[0]?.state).toBe("install_path_rejected");
+    const found = findPluginInstallPath(fixture.home, "demo@synced");
+    expect(found.ok === false && found.state).toBe("install_path_rejected");
+  });
+
+  it("M3 — synced manifest가 망가져도 일반 플러그인의 gen 경로 조회는 멈추지 않는다", () => {
+    fixture = buildHome();
+    const accountDir = makeSynced(fixture.home, []);
+    writeFileSync(path.join(accountDir, "manifest.json"), "{not json", "utf8");
+    writeInstalledPlugins(fixture.home, { "demo@synth-marketplace": makePluginDir(fixture.home, "demo") });
+    expect(findPluginInstallPath(fixture.home, "demo@synth-marketplace").ok).toBe(true);
+    // synced 축은 실패를 삼키지 않는다 — "없음"이 아니라 manifest를 못 읽었다는 사유가 남는다
+    expect(findPluginInstallPath(fixture.home, "demo@synced")).toMatchObject({ ok: false, state: "install_path_missing", reason: expect.stringContaining("synced manifest") });
+    // 번들 수집도 같다(재심 M3 잔여) — 레지스트리 플러그인은 편입되고 synced만 판정 불가로 남는다
+    writeSkill(makePluginDir(fixture.home, "demo"), "ok-skill", "ok-skill");
+    const result = collectBundled({ home: fixture.home, pluginIds: ["demo@synth-marketplace", "demo@synced"] });
+    expect(result.perParent.map((p) => p.state)).toEqual(["ok", "install_path_missing"]);
+  });
+
+  it("manifest의 plugins가 배열이 아니면 0건으로 삼키지 않고 판정 불가 사유를 남긴다", () => {
+    fixture = buildHome();
+    const accountDir = makeSynced(fixture.home, []);
+    writeFileSync(path.join(accountDir, "manifest.json"), JSON.stringify({ plugins: {} }), "utf8");
+    const parent = collectBundled({ home: fixture.home, pluginIds: ["demo@synced"] }).perParent[0];
+    expect(parent?.state).toBe("install_path_missing");
+    expect(parent?.reasons.join(" ")).toContain("형태가 예상과 다르다");
+  });
+
+  it("synced 사유 문구에는 계정 디렉터리 이름이 실리지 않는다(재심 신규)", () => {
+    fixture = buildHome();
+    makeSynced(fixture.home, [{ name: "demo", generation: 9 }]); // demo~g9 디렉터리는 만들지 않는다
+    const found = findPluginInstallPath(fixture.home, "demo@synced");
+    expect(found.ok === false && found.reason).toBe("synced 플러그인 디렉터리가 디스크에 없다");
+    expect(JSON.stringify(collectBundled({ home: fixture.home, pluginIds: ["demo@synced"] }).perParent)).not.toContain("acct-synthetic");
+  });
+});
+
+describe("probe/sources/plugins — findPluginInstallPath도 같은 synced 출처를 쓴다 (gen 축, ROADMAP D5)", () => {
+  let fixture: { home: HomeContext; cleanup: () => void };
+  afterEach(() => fixture?.cleanup());
+
+  it("synced id의 설치 경로를 검증된 형태로 돌려준다", () => {
+    fixture = buildHome();
+    const accountDir = makeSynced(fixture.home, [{ name: "demo", generation: 3 }]);
+    mkdirSync(path.join(accountDir, "demo~g3"), { recursive: true });
+    expect(findPluginInstallPath(fixture.home, "demo@synced")).toEqual({ ok: true, absPath: path.join(accountDir, "demo~g3") });
+  });
+
+  it("__proto__ 같은 id는 레지스트리 프로토타입으로 새지 않는다", () => {
+    fixture = buildHome();
+    writeInstalledPlugins(fixture.home, {});
+    expect(findPluginInstallPath(fixture.home, "__proto__").ok).toBe(false);
   });
 });

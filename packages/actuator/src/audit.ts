@@ -84,6 +84,8 @@ export interface AuditRootConfig {
   tier1: readonly AllowlistRule[];
   /** true면 이 루트에 TIER2_CHURN_ALLOWLIST를 추가 적용하고 `.claude.json` 의미 diff도 돈다. config 루트만 true. */
   allowTier2Churn: boolean;
+  /** 플러그인 `move`가 enable하는 자산 id — `.claude.json`의 그 `pluginUsage` 항목 흔적만 허용한다. 그 외 경로는 생략. */
+  enabledPluginId?: string;
 }
 
 export interface RootAuditSnapshot {
@@ -190,7 +192,7 @@ export function auditRoot(
   if (config.allowTier2Churn && claudeJsonTouchedAsChurn(verdict)) {
     const beforeValue = claudeJsonBeforeRaw !== null ? (JSON.parse(claudeJsonBeforeRaw) as unknown) : {};
     const afterValue = readJsonOrThrowOnCorruption(config.rootAbs);
-    claudeJsonSemantic = claudeJsonSemanticVerdict(beforeValue, afterValue, claudeJsonAllowedChurnKeys);
+    claudeJsonSemantic = claudeJsonSemanticVerdict(beforeValue, afterValue, claudeJsonAllowedChurnKeys, config.enabledPluginId ?? null);
   }
 
   // M3 — 수집 자체가 불완전했으면(읽기 실패) "변경 없음"으로 보여도 신뢰할 수 없다 —

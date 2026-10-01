@@ -93,7 +93,7 @@ pnpm ctk measure --no-credentials-ok
 
 ```sh
 pnpm ctk gen --dry-run     # 0원 — 대상 자산 수와 원본 크기만
-pnpm ctk gen --no-llm      # 0원 — 규칙 기반 추출
+pnpm ctk gen --no-llm --max-budget-usd 0.01 --timeout-sec 60   # 0원 — 규칙 기반 추출(두 플래그는 모든 경로에서 필수, 이 경로에선 쓰이지 않음)
 pnpm ctk gen --max-budget-usd 2 --timeout-sec 180   # 유료
 
 # 플러그인이 번들한 하위 툴(스킬·커맨드·에이전트)은 부모를 지정할 때만 대상이 됩니다
@@ -165,8 +165,12 @@ pnpm ctk rollback --last
 
 ### "다른 머신에도 이게 깔려 있나?"
 
+> ⚠️ **아직 구현되지 않았습니다(v2 — `ROADMAP.md` R8·R9).** v1의 카탈로그는 **로컬 전용**이고
+> `ctk init`은 원격 URL을 거부합니다. 지금 콘솔은 **이 머신의 설치 현황만** 보여줍니다.
+> 스키마는 머신 종속/독립으로 미리 갈라 두었고, 아래는 목표 동작입니다.
+
 각 머신에서 `ctk scan`을 돌리고 스냅샷을 **private Git 저장소**에 push하면, 다른 머신에서
-pull해 설치 현황을 볼 수 있습니다.
+pull해 설치 현황을 볼 수 있게 됩니다.
 
 > ⚠️ 동기화 저장소는 **반드시 private**이어야 합니다. 스냅샷에는 설치된 툴 목록과 사용량이
 > 들어갑니다.
@@ -324,14 +328,14 @@ pnpm ctk measure [--transcripts <경로>] [--no-credentials-ok]
 
 ```sh
 pnpm ctk gen --dry-run
-pnpm ctk gen --no-llm
+pnpm ctk gen --no-llm --max-budget-usd <금액> --timeout-sec <초>
 pnpm ctk gen --max-budget-usd <금액> --timeout-sec <초> [--max-assets N] [--resume] [--yes]
 ```
 
 | 플래그 | 뜻 |
 |---|---|
 | `--dry-run` | **0원.** 네트워크 호출도 서브프로세스도 없이 대상 수·원본 크기만 |
-| `--no-llm` | **0원.** frontmatter·헤딩을 규칙 기반으로 추출 |
+| `--no-llm` | **0원.** frontmatter·헤딩을 규칙 기반으로 추출. `--max-budget-usd`·`--timeout-sec`는 여기서도 필수다(값은 쓰이지 않는다) |
 | `--max-budget-usd` | **유료 경로 필수.** 각 호출의 하드캡 |
 | `--timeout-sec` | **유료 경로 필수.** 호출당 타임아웃 |
 | `--max-assets` | 이번 실행에서 처리할 자산 수 상한 |

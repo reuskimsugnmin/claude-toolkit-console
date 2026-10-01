@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
   normalizePath,
@@ -267,13 +267,135 @@ export async function collectPlugins(options: CollectPluginsOptions): Promise<Pl
  *    이제 `state`가 `install_path_missing`과 `install_path_rejected`를 갈라 준다.
  */
 export function findPluginInstallPath(home: HomeContext, assetId: string): ValidatedInstallPath {
-  const installedPluginsAbsPath = path.join(home.ctkConfigDir, "plugins", "installed_plugins.json");
-  const raw = readJsonOrNull(installedPluginsAbsPath);
-  if (raw === null) {
+  // 피해 반경을 좁힌다(보안 심사 M3) — synced manifest가 망가져도 일반 플러그인의 gen은 멈추지 않는다.
+  const synced = assetId.endsWith(SYNCED_ID_SUFFIX) ? readSyncedOrFailure(home) : new Map<string, PluginInstallPathEntry>();
+  const registry = readRegistryInstallPaths(home);
+  if (registry === null && !assetId.endsWith(SYNCED_ID_SUFFIX)) {
     return { ok: false, state: "install_path_missing", reason: "installed_plugins.json을 읽지 못했다" };
   }
-  const parsed = parseInstalledPluginsFile(raw);
-  return validateInstallPath(home, parsed.plugins[assetId]?.[0]?.installPath);
+  if (!(synced instanceof Map)) return validatePluginInstallPathEntry(home, assetId, synced);
+  return validatePluginInstallPathEntry(home, assetId, pluginInstallPathEntry(registry ?? new Map(), synced, assetId));
+}
+
+const SYNCED_ID_SUFFIX = "@synced";
+
+/** 설치 경로 후보 — 조립 단계에서 이미 거부된 것은 경로가 아니라 사유를 싣는다("없음"과 "거부"를 가른다). */
+export type PluginInstallPathEntry = { path: string } | { rejected: string } | { missing: string };
+
+/** 번들 수집이 쓰는 조회 — synced 쪽을 못 읽었을 때 그 실패를 `@synced` id에만 싣기 위해 Map 대신 쓴다. */
+export interface PluginInstallPathIndex {
+  get(assetId: string): PluginInstallPathEntry | undefined;
+}
+
+/** synced 읽기 실패를 **synced id에만** 남긴다(보안 심사 M3) — 사유에 경로·계정 이름을 싣지 않는다. */
+function syncedReadFailure(err: unknown): PluginInstallPathEntry {
+  const kind = err instanceof ParseSchemaMismatchError ? "형태가 예상과 다르다" : `읽지 못했다(${(err as NodeJS.ErrnoException).code ?? "unknown"})`;
+  return { missing: `synced manifest를 ${kind} — synced 플러그인만 판정 불가` };
+}
+
+function readSyncedOrFailure(home: HomeContext): Map<string, PluginInstallPathEntry> | PluginInstallPathEntry {
+  try {
+    return readSyncedPluginInstallPaths(home);
+  } catch (err) {
+    return syncedReadFailure(err);
+  }
+}
+
+function readRegistryInstallPaths(home: HomeContext): Map<string, PluginInstallPathEntry> | null {
+  const raw = readJsonOrNull(path.join(home.ctkConfigDir, "plugins", "installed_plugins.json"));
+  if (raw === null) return null;
+  const result = new Map<string, PluginInstallPathEntry>();
+  for (const [id, entries] of Object.entries(parseInstalledPluginsFile(raw).plugins)) {
+    const first = entries[0];
+    if (first !== undefined) result.set(id, { path: first.installPath });
+  }
+  return result;
+}
+
+/**
+ * **우선순위 규칙은 여기 한 곳이다**(보안 심사 M1) — `@synced` id는 synced manifest에서만, 나머지는
+ * 레지스트리에서만 찾는다. 같은 `x@synced`가 레지스트리에도 있으면(마켓플레이스 이름이 `synced`)
+ * 어느 쪽도 고르지 않고 거부한다.
+ */
+function pluginInstallPathEntry(
+  registry: ReadonlyMap<string, PluginInstallPathEntry>,
+  synced: ReadonlyMap<string, PluginInstallPathEntry>,
+  assetId: string,
+): PluginInstallPathEntry | undefined {
+  if (!assetId.endsWith(SYNCED_ID_SUFFIX)) return registry.get(assetId);
+  if (registry.has(assetId)) return { rejected: "같은 id가 installed_plugins.json과 synced manifest 양쪽에 있다 — 어느 쪽인지 판정할 수 없다" };
+  return synced.get(assetId);
+}
+
+/** 설치 경로 판정의 단일 관문 — 번들 수집과 gen이 모두 지난다. 경로는 반드시 `validateInstallPath`를 거친다. */
+export function validatePluginInstallPathEntry(home: HomeContext, assetId: string, entry: PluginInstallPathEntry | undefined): ValidatedInstallPath {
+  if (entry === undefined) {
+    return assetId.endsWith(SYNCED_ID_SUFFIX)
+      ? { ok: false, state: "install_path_missing", reason: "synced manifest에 이 플러그인이 없다" }
+      : validateInstallPath(home, undefined);
+  }
+  if ("missing" in entry) return { ok: false, state: "install_path_missing", reason: entry.missing };
+  if ("rejected" in entry) {
+    return { ok: false, state: "install_path_rejected", reason: entry.rejected, rejectedPath: "(synced manifest)" };
+  }
+  const validated = validateInstallPath(home, entry.path);
+  // synced 경로의 사유에는 계정 디렉터리 이름이 섞인다(재심 신규) — scan 경고·웹 응답으로 나가므로 고정 문구로 바꾼다.
+  if (validated.ok || !assetId.endsWith(SYNCED_ID_SUFFIX)) return validated;
+  return validated.state === "install_path_missing"
+    ? { ok: false, state: "install_path_missing", reason: "synced 플러그인 디렉터리가 디스크에 없다" }
+    : { ...validated, reason: "synced 플러그인 디렉터리가 <config>/plugins 경계 검증을 통과하지 못했다" };
+}
+
+/** manifest의 `name`이 경로 세그먼트 하나로만 쓰이게 한다 — `/`·`..`·선행 점을 막는다. */
+const SAFE_SYNCED_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
+ * ROADMAP D5 — synced(claude.ai 계정 동기화) 플러그인의 설치 경로. `installed_plugins.json`에 없고
+ * `plugin list`의 `installPath`는 플러그인이 아니라 **계정 디렉터리**다. 실측(CLI 2.1.284, 3/3):
+ * `<config>/plugins/synced/<계정>/<name>~g<generation>/`, 목록은 같은 계정의 `manifest.json`
+ * `plugins[]{name, generation}`. 조립을 금지하는 번들 축의 원칙(`bundled.ts`)에서 벗어나는 유일한
+ * 자리라 **출처를 manifest로 한정한다.** 이름·세대가 어긋나거나 id가 중복되면 고르지 않고 거부로
+ * 싣는다(보안 심사 M2·L2). manifest 형태가 틀리면 레지스트리처럼 던진다. 디렉터리가 없으면 0건.
+ */
+export function readSyncedPluginInstallPaths(home: HomeContext): Map<string, PluginInstallPathEntry> {
+  const syncedRoot = path.join(home.ctkConfigDir, "plugins", "synced");
+  let accounts: string[];
+  try {
+    accounts = readdirSync(syncedRoot, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return new Map();
+    throw err;
+  }
+  const result = new Map<string, PluginInstallPathEntry>();
+  for (const account of accounts) {
+    const manifestAbs = path.join(syncedRoot, account, "manifest.json");
+    let manifestRaw: string;
+    try {
+      manifestRaw = readFileSync(manifestAbs, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue; // 매니페스트 없는 계정 디렉터리 — 0건
+      throw err; // 권한 등은 "없음"이 아니다(재심 L2)
+    }
+    let manifest: unknown;
+    try {
+      manifest = JSON.parse(manifestRaw);
+    } catch {
+      throw new ParseSchemaMismatchError("synced manifest.json (invalid JSON)", "계정 디렉터리 하나의 manifest를 파싱하지 못했다");
+    }
+    const plugins = typeof manifest === "object" ? (manifest as { plugins?: unknown }).plugins : undefined;
+    if (!Array.isArray(plugins)) throw new ParseSchemaMismatchError("synced manifest.json (plugins[] 아님)", "계정 디렉터리 하나의 manifest 형태가 다르다");
+    for (const entry of plugins as { name?: unknown; generation?: unknown }[]) {
+      const { name, generation } = entry ?? {};
+      if (typeof name !== "string") throw new ParseSchemaMismatchError("synced manifest.json (plugins[].name 아님)", "계정 디렉터리 하나의 manifest 형태가 다르다");
+      const id = `${name}${SYNCED_ID_SUFFIX}`;
+      let candidate: PluginInstallPathEntry;
+      if (!SAFE_SYNCED_NAME.test(name)) candidate = { rejected: "synced manifest의 이름이 안전한 경로 세그먼트가 아니다" };
+      else if (typeof generation !== "number" || !Number.isInteger(generation) || generation < 0) candidate = { rejected: "synced manifest의 generation이 음이 아닌 정수가 아니다" };
+      else candidate = { path: path.join(syncedRoot, account, `${name}~g${generation}`) };
+      result.set(id, result.has(id) ? { rejected: "synced manifest에 같은 이름이 둘 이상 있다 — 어느 쪽인지 판정할 수 없다" } : candidate);
+    }
+  }
+  return result;
 }
 
 /**
@@ -283,17 +405,15 @@ export function findPluginInstallPath(home: HomeContext, assetId: string): Valid
  * 같은 id가 여러 스코프에 설치돼 있으면 첫 항목을 대표값으로 쓴다(`findPluginInstallPath`와
  * 동일 정책 — 어느 설치를 "정답"으로 볼지가 번들 내용에 영향을 주지 않는다).
  */
-export function listPluginInstallPaths(home: HomeContext): Map<string, string> {
-  const installedPluginsAbsPath = path.join(home.ctkConfigDir, "plugins", "installed_plugins.json");
-  const raw = readJsonOrNull(installedPluginsAbsPath);
-  if (raw === null) return new Map();
-  const parsed = parseInstalledPluginsFile(raw);
-  const result = new Map<string, string>();
-  for (const [id, entries] of Object.entries(parsed.plugins)) {
-    const first = entries[0];
-    if (first !== undefined) result.set(id, first.installPath);
+export function listPluginInstallPaths(home: HomeContext): PluginInstallPathIndex {
+  const registry = readRegistryInstallPaths(home) ?? new Map<string, PluginInstallPathEntry>();
+  // synced를 못 읽어도 레지스트리 플러그인의 편입은 계속된다(재심 M3 잔여) — 실패는 @synced id에만 실린다.
+  const synced = readSyncedOrFailure(home);
+  if (!(synced instanceof Map)) {
+    return { get: (id) => (id.endsWith(SYNCED_ID_SUFFIX) ? synced : registry.get(id)) };
   }
-  return result;
+  // 레지스트리가 없어도 synced는 있을 수 있다 — 조기 반환하면 synced만 있는 머신이 통째로 빠진다.
+  return { get: (id) => pluginInstallPathEntry(registry, synced, id) };
 }
 
 /**

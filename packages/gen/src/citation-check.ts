@@ -36,43 +36,65 @@ export interface CitationCheckResult {
 }
 
 /** 텍스트를 문단/불릿 블록으로 나눈다 — 빈 줄로 문단을 가르고, `-`/`*`로 시작하는 줄은 각각
- * 독립된 불릿 블록으로 취급한다. 제목(`#`)·코드블록(```로 감싼 구간)은 검사 대상에서 뺀다. */
-function splitBlocks(text: string): string[] {
+ * 독립된 불릿 블록으로 취급한다. 제목(`#`)·코드블록(```로 감싼 구간)은 검사 대상에서 뺀다.
+ * **검사(`checkCitations`)와 부착(`citeEachBlock`)이 이 한 함수를 같이 쓴다** — 규칙이 둘로 갈리면
+ * 규칙 추출기가 붙인 자리와 검사기가 요구하는 자리가 어긋난다(D3: 섹션 끝 태그 하나 → 절반이 `citation_missing`). */
+function walkBlocks(text: string): { lines: string[]; blocks: { text: string; lastLine: number }[] } {
   const lines = text.split(/\r?\n/);
-  const blocks: string[] = [];
+  const blocks: { text: string; lastLine: number }[] = [];
   let current: string[] = [];
+  let currentLast = -1;
   let inCodeBlock = false;
 
   function flush(): void {
     const joined = current.join("\n").trim();
-    if (joined.length > 0) blocks.push(joined);
+    if (joined.length > 0) blocks.push({ text: joined, lastLine: currentLast });
     current = [];
   }
 
-  for (const line of lines) {
+  lines.forEach((line, idx) => {
     const trimmed = line.trim();
     if (trimmed.startsWith("```")) {
       inCodeBlock = !inCodeBlock;
-      continue; // 코드블록 구획 마커·본문은 인용 검사 대상이 아니다.
+      return; // 코드블록 구획 마커·본문은 인용 검사 대상이 아니다.
     }
-    if (inCodeBlock) continue;
+    if (inCodeBlock) return;
     if (trimmed.length === 0) {
       flush();
-      continue;
+      return;
     }
     if (trimmed.startsWith("#")) {
       flush();
-      continue; // 제목은 인용 대상이 아니다.
+      return; // 제목은 인용 대상이 아니다.
     }
     if (/^[-*]\s+/.test(trimmed)) {
       flush(); // 불릿은 한 줄이 한 블록이다(여러 줄 이어지는 불릿은 v1 범위 밖 — 단순화).
-      blocks.push(trimmed);
-      continue;
+      blocks.push({ text: trimmed, lastLine: idx });
+      return;
     }
     current.push(line);
-  }
+    currentLast = idx;
+  });
   flush();
-  return blocks;
+  return { lines, blocks };
+}
+
+function splitBlocks(text: string): string[] {
+  return walkBlocks(text).blocks.map((b) => b.text);
+}
+
+/**
+ * 인용이 없는 **모든** 문단·불릿 끝에 `tag`를 붙인다 — `checkCitations`가 요구하는 자리와 같다.
+ * 규칙 추출(`rule-extract.ts`)이 섹션 하나를 옮길 때 쓴다: 그 섹션의 줄 범위 태그는 섹션 안의 각
+ * 블록에 대해서도 참이다(더 좁지는 않지만 거짓은 아니다).
+ */
+export function citeEachBlock(text: string, tag: string): string {
+  const { lines, blocks } = walkBlocks(text);
+  const out = [...lines];
+  for (const block of blocks) {
+    if (!CITATION_TAG_PATTERN.test(block.text)) out[block.lastLine] = `${out[block.lastLine]} ${tag}`;
+  }
+  return out.join("\n");
 }
 
 /** 하나의 프로즈 필드(문자열)에 대해 문단/불릿 단위 인용 검사를 한다. */

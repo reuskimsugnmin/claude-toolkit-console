@@ -202,3 +202,70 @@ describe("sync/migrate-catalog-paths — 구 레이아웃 → id 파생 경로 �
     },
   );
 });
+
+// ROADMAP D2 — #44 이전 스캔이 남긴 bare-id CLI 자산. 레이아웃은 이미 id 파생 경로(`codex__<hash("codex")>`)다.
+describe("sync/migrate-catalog-paths — 옛 bare-id CLI 자산 → cli: id (ROADMAP D2)", () => {
+  let catalogRoot: string;
+  beforeEach(() => {
+    catalogRoot = mkdtempSync(path.join(tmpdir(), "ctk-migrate-cli-"));
+  });
+  afterEach(() => {
+    rmSync(catalogRoot, { recursive: true, force: true });
+  });
+
+  const legacyDir = () => path.join(catalogRoot, "catalog", "assets", "cli", assetPathSegment("codex", "codex"));
+  const newDir = () => path.join(catalogRoot, "catalog", "assets", "cli", assetPathSegment("codex", "cli:codex"));
+  const readJson = (p: string) => JSON.parse(readFileSync(p, "utf8")) as Record<string, unknown>;
+
+  function writeLegacyCli(extra: Record<string, string> = {}): void {
+    writeNewLayoutAsset(catalogRoot, "cli", "codex", "codex");
+    writeFileSync(path.join(legacyDir(), "occupancy.json"), `${JSON.stringify({ asset_id: "codex", keep: 1 }, null, 2)}\n`);
+    for (const [name, content] of Object.entries(extra)) writeFileSync(path.join(legacyDir(), name), content);
+  }
+
+  it("새 id 디렉터리가 없으면 asset.json·occupancy.json의 id를 고쳐 cli: 경로로 옮긴다(다른 필드는 보존)", () => {
+    writeLegacyCli();
+    initCommittedGitRepo(catalogRoot);
+    const result = migrateCatalogPaths(catalogRoot);
+    expect(result.moved).toEqual([expect.objectContaining({ id: "cli:codex", rewriteId: "cli:codex" })]);
+    expect(result.removed).toEqual([]);
+    expect(existsSync(legacyDir())).toBe(false);
+    expect(readJson(path.join(newDir(), "asset.json"))).toMatchObject({ id: "cli:codex", kind: "cli", name: "codex" });
+    expect(readJson(path.join(newDir(), "occupancy.json"))).toEqual({ asset_id: "cli:codex", keep: 1 });
+    expect(migrateCatalogPaths(catalogRoot)).toMatchObject({ moved: [], removed: [] }); // 멱등
+  });
+
+  it("새 cli: id 디렉터리가 이미 있으면 옛 디렉터리는 순수 중복이라 지운다", () => {
+    writeLegacyCli();
+    writeNewLayoutAsset(catalogRoot, "cli", "codex", "cli:codex");
+    initCommittedGitRepo(catalogRoot);
+    const result = migrateCatalogPaths(catalogRoot);
+    expect(result.removed).toEqual([path.relative(catalogRoot, legacyDir())]);
+    expect(existsSync(legacyDir())).toBe(false);
+    expect(readJson(path.join(newDir(), "asset.json")).id).toBe("cli:codex");
+  });
+
+  it("예상 밖 파일(예: annotation.md)이 있으면 추측하지 않고 아무것도 바꾸지 않은 채 멈춘다", () => {
+    writeLegacyCli({ "annotation.md": "# 사람이 쓴 문서\n" });
+    initCommittedGitRepo(catalogRoot);
+    expect(() => migrateCatalogPaths(catalogRoot)).toThrow(/예상 밖 파일.*annotation\.md/);
+    expect(readJson(path.join(legacyDir(), "asset.json")).id).toBe("codex");
+    expect(existsSync(newDir())).toBe(false);
+  });
+
+  it("dry-run은 계획만 내고 파일을 바꾸지 않는다", () => {
+    writeLegacyCli();
+    const result = migrateCatalogPaths(catalogRoot, { dryRun: true });
+    expect(result.moved).toHaveLength(1);
+    expect(readJson(path.join(legacyDir(), "asset.json")).id).toBe("codex");
+  });
+
+  it("더러운 git 트리에서는 옮기지도 지우지도 않는다(되돌릴 길이 git뿐이다)", () => {
+    writeLegacyCli();
+    writeNewLayoutAsset(catalogRoot, "cli", "codex", "cli:codex");
+    initCommittedGitRepo(catalogRoot);
+    writeFileSync(path.join(catalogRoot, "dirty.txt"), "x");
+    expect(() => migrateCatalogPaths(catalogRoot)).toThrow(DirtyCatalogRepoError);
+    expect(existsSync(legacyDir())).toBe(true);
+  });
+});
