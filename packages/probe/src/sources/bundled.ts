@@ -3,11 +3,10 @@ import path from "node:path";
 import { McpJsonShapeError, normalizePath, parseMcpJson, type Asset, type AssetKind } from "@ctk/core";
 import type { HomeContext } from "../home.js";
 import { FRONTMATTER_SCAN_MAX_BYTES, scanFrontmatter } from "../frontmatter-scan.js";
-import { listPluginInstallPaths } from "./plugins.js";
+import { listPluginInstallPaths, validatePluginInstallPathEntry, type PluginInstallPathIndex } from "./plugins.js";
 import { safeAssetNameSegment } from "./asset-name.js";
 import {
   isRealPathWithinRealRoot,
-  validateInstallPath,
   type InstallPathState,
   type ValidatedInstallPath,
 } from "./install-path.js";
@@ -550,7 +549,7 @@ interface ParentScanCacheEntry {
  * 새 캐시라 창이 캐시 없음과 같다.
  */
 export interface BundledToolLocationCache {
-  installPaths: Map<string, string> | null;
+  installPaths: PluginInstallPathIndex | null;
   parents: Map<string, ParentScanCacheEntry>;
 }
 
@@ -607,7 +606,7 @@ export function findBundledToolPath(
 
   let parentEntry = cache.parents.get(parentAssetId);
   if (parentEntry === undefined) {
-    const validated = validateInstallPath(home, cache.installPaths.get(parentAssetId));
+    const validated = validatePluginInstallPathEntry(home, parentAssetId, cache.installPaths.get(parentAssetId));
     parentEntry = { validated, scans: {} };
     cache.parents.set(parentAssetId, parentEntry);
   }
@@ -645,7 +644,7 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
   const perParent: BundledParentReport[] = [];
 
   for (const parentId of pluginIds) {
-    const validated = validateInstallPath(home, installPaths.get(parentId));
+    const validated = validatePluginInstallPathEntry(home, parentId, installPaths.get(parentId));
     if (!validated.ok) {
       perParent.push({
         parentId,
