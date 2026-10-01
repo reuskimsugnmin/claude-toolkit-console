@@ -190,6 +190,8 @@ export interface RunGenOptions {
   noLlm: boolean;
   /** `--retry-blocked` — 정책 차단된 자산도 다시 시도한다(가드의 탈출구). */
   retryPolicyBlocked?: boolean;
+  /** `--upgrade-rule-extract` — 규칙 추출 문서를 LLM으로 다시 만든다. 승인 시점 계획과 같은 값을 받아야 한다. */
+  upgradeRuleExtract?: boolean;
   /**
    * `--plugin`(반복 가능) — 문서 생성 대상으로 삼을 번들 부모 id. 미지정이면 `[]`(결정 6
    * "기본 무동작") — `planGenTargets`가 요구하는 필수 필드로, 여기서 호출자가 명시하지 않으면
@@ -243,6 +245,7 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
     timeoutSec,
     noLlm,
     retryPolicyBlocked,
+    upgradeRuleExtract,
     bundledParents = [],
     verifiedCliVersion,
     routingProbeCommand,
@@ -268,7 +271,15 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
   }
 
   const index: CatalogIndex = readCatalogIndex(catalogRoot);
-  const plan = planGenTargets({ home, assets, index, maxAssets, retryPolicyBlocked, bundledParents });
+  const plan = planGenTargets({
+    home,
+    assets,
+    index,
+    maxAssets,
+    retryPolicyBlocked,
+    bundledParents,
+    ...(upgradeRuleExtract === true ? { upgradeRuleExtract: { catalogRoot } } : {}),
+  });
 
   const results: RunGenAssetResult[] = [];
   const injectionFindingsTotal: InjectionFindingsSummary = { directive: 0, executable: 0, url: 0, length: 0 };

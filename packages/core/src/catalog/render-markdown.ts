@@ -1,4 +1,4 @@
-import type { Annotation } from "../schema/annotation.js";
+import { GenModeSchema, type Annotation, type GenMode } from "../schema/annotation.js";
 import type { DocPage } from "../schema/docpage.js";
 
 /**
@@ -27,6 +27,27 @@ function yamlFrontmatter(fields: Record<string, string>): string {
 export const GEN_SOURCE_TRUST_HEADER = "출처: 서드파티 원문 기반 · 자동 생성";
 
 const SOURCE_TRUST_HEADER_LINE = (trust: string) => `> ${GEN_SOURCE_TRUST_HEADER} (${trust})\n`;
+
+/**
+ * `renderAnnotationMarkdown`이 쓴 머리말에서 `gen_mode`만 읽는다 — **형식 정의를 렌더러와 같은 파일에
+ * 둔다**(쓰는 쪽과 읽는 쪽이 갈리면 한쪽만 바뀐다). 머리말·필드가 없거나 값이 스키마 밖이면 `null`(못 읽음).
+ */
+export function readAnnotationGenMode(markdown: string): GenMode | null {
+  const match = /^---\n([\s\S]*?)\n---\n/.exec(markdown);
+  if (match === null) return null;
+  for (const line of (match[1] ?? "").split("\n")) {
+    if (!line.startsWith("gen_mode: ")) continue;
+    let value: unknown;
+    try {
+      value = JSON.parse(line.slice("gen_mode: ".length));
+    } catch {
+      return null;
+    }
+    const parsed = GenModeSchema.safeParse(value);
+    return parsed.success ? parsed.data : null;
+  }
+  return null;
+}
 
 export function renderAnnotationMarkdown(annotation: Annotation): string {
   const frontmatter = yamlFrontmatter({
