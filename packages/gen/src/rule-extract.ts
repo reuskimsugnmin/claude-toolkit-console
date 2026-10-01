@@ -1,5 +1,5 @@
 import { usageMdPath, type Annotation, type Asset, type Citation, type DocPage } from "@ctk/core";
-import { citationTag } from "./citation-check.js";
+import { citationTag, citeEachBlock } from "./citation-check.js";
 import { extractSpawnMetadata } from "./extract-frontmatter.js";
 import type { PromptEnvelopeSection } from "./prompt-envelope.js";
 import { determineSourceTrust } from "./source-trust.js";
@@ -47,9 +47,13 @@ function extractHeadingSections(bodyContent: string, bodyStartLine: number): Hea
     current = null;
   }
 
+  // 코드블록 안의 `# 주석`은 제목이 아니다 — 그 줄에서 자르면 펜스 짝이 두 섹션으로 갈려, 섹션을 이어
+  // 붙인 본문에서 코드와 문단이 뒤집힌다(인용은 섹션별, 검사는 이어 붙인 전체 — D3 잔여 12건의 원인).
+  let inCodeBlock = false;
   lines.forEach((line, idx) => {
     const lineNo = bodyStartLine + idx;
-    const headingMatch = HEADING_PATTERN.exec(line);
+    if (line.trim().startsWith("```")) inCodeBlock = !inCodeBlock;
+    const headingMatch = inCodeBlock ? null : HEADING_PATTERN.exec(line);
     if (headingMatch) {
       flush(lineNo - 1);
       current = { heading: headingMatch[2] ?? "", lines: [], startLine: lineNo };
@@ -149,7 +153,7 @@ export function ruleExtract(asset: Asset, sections: readonly PromptEnvelopeSecti
         const tag = citationTag(section.label, heading.lineStart, heading.lineEnd);
         pushCitation(section.label, heading.lineStart, heading.lineEnd);
         const headingLine = heading.heading.length > 0 ? `### ${heading.heading}\n\n` : "";
-        bodySections.push(`${headingLine}${heading.body} ${tag}`);
+        bodySections.push(`${headingLine}${citeEachBlock(heading.body, tag)}`);
         if (whenToUseText === undefined && WHEN_TO_USE_HEADING_PATTERN.test(heading.heading)) {
           whenToUseText = heading.body;
           whenToUseCitation = tag;
@@ -161,7 +165,7 @@ export function ruleExtract(asset: Asset, sections: readonly PromptEnvelopeSecti
         roleText = desc.value;
         roleCitation = citationTag(section.label, desc.line, desc.line);
         pushCitation(section.label, desc.line, desc.line);
-        bodySections.push(`${desc.value} ${roleCitation}`);
+        bodySections.push(citeEachBlock(desc.value, roleCitation));
       }
     } else if (section.label.toLowerCase().startsWith("readme")) {
       const { body, startLine } = bodyAfterFrontmatter(section.content);
@@ -169,7 +173,7 @@ export function ruleExtract(asset: Asset, sections: readonly PromptEnvelopeSecti
         const tag = citationTag(section.label, heading.lineStart, heading.lineEnd);
         pushCitation(section.label, heading.lineStart, heading.lineEnd);
         const headingLine = heading.heading.length > 0 ? `### ${heading.heading}\n\n` : "";
-        bodySections.push(`${headingLine}${heading.body} ${tag}`);
+        bodySections.push(`${headingLine}${citeEachBlock(heading.body, tag)}`);
         if (whenToUseText === undefined && WHEN_TO_USE_HEADING_PATTERN.test(heading.heading)) {
           whenToUseText = heading.body;
           whenToUseCitation = tag;
@@ -179,7 +183,7 @@ export function ruleExtract(asset: Asset, sections: readonly PromptEnvelopeSecti
       roleText = section.content;
       roleCitation = citationTag("asset.description", 1, 1);
       pushCitation("asset.description", 1, 1);
-      bodySections.push(`${section.content} ${roleCitation}`);
+      bodySections.push(citeEachBlock(section.content, roleCitation));
     } else if (section.label === ".mcp.json") {
       // ⚠️ **보안 재심 M-4 — I-2와 같은 결함의 재발이었다.** 이 분기가 없으면 번들 MCP 원문의
       // 결정론적 추출 소비자가 0이 되고, `description`이 없는 번들 MCP 자산은 아래 폴백으로
@@ -193,25 +197,26 @@ export function ruleExtract(asset: Asset, sections: readonly PromptEnvelopeSecti
       roleText = summary;
       roleCitation = citationTag(".mcp.json", 1, countLines(section.content));
       pushCitation(".mcp.json", 1, countLines(section.content));
-      bodySections.push(`${summary} ${roleCitation}`);
+      bodySections.push(citeEachBlock(summary, roleCitation));
     }
   }
 
   // 원문에서 아무것도 못 뽑았으면 asset.description으로 최소 채움(그마저 없으면 호출자가
   // 이 함수를 부르지 않아야 한다 — plan.ts가 "빈 자산"으로 건너뛴다).
-  if (roleText === undefined) {
+  // 두 값을 함께 본다 — 텍스트만 있고 인용이 없으면 예전엔 템플릿 문자열이 `undefined`를 그대로 찍었다.
+  if (roleText === undefined || roleCitation === undefined) {
     roleText = asset.description ?? asset.name;
     roleCitation = citationTag("asset.description", 1, 1);
     pushCitation("asset.description", 1, 1);
-    if (bodySections.length === 0) bodySections.push(`${roleText} ${roleCitation}`);
+    if (bodySections.length === 0) bodySections.push(citeEachBlock(roleText, roleCitation));
   }
 
-  const role = `${roleText} ${roleCitation}`;
+  const role = citeEachBlock(roleText, roleCitation);
   const purpose = role; // 규칙 기반 폴백은 role과 purpose를 같은 원문에서 뽑는다(단순화, v1 범위).
   const whenToUse =
     whenToUseText !== undefined && whenToUseCitation !== undefined
-      ? `${whenToUseText} ${whenToUseCitation}`
-      : `${roleText} 설명을 참고한다 ${roleCitation}`;
+      ? citeEachBlock(whenToUseText, whenToUseCitation)
+      : citeEachBlock(`${roleText} 설명을 참고한다`, roleCitation);
 
   const annotation: Annotation = {
     schema_version: 1,

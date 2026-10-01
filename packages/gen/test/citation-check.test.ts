@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkAllCitations, checkCitations, citationTag } from "../src/citation-check.js";
+import { checkAllCitations, checkCitations, citationTag, citeEachBlock } from "../src/citation-check.js";
 
 describe("gen/citation-check — P5 구조 규칙 검사 (AC-3.6)", () => {
   it("모든 문단에 인용 태그가 있으면 clean이다", () => {
@@ -47,5 +47,23 @@ describe("gen/citation-check — P5 구조 규칙 검사 (AC-3.6)", () => {
 
   it("citationTag는 정확한 형식을 만든다(citation-check가 파싱하는 것과 동일한 패턴)", () => {
     expect(citationTag("SKILL.md", 3, 7)).toBe("[[cite:SKILL.md#L3-L7]]");
+  });
+});
+
+describe("gen/citation-check — citeEachBlock은 checkCitations가 요구하는 자리에 붙인다", () => {
+  const TAG = "[[cite:SKILL.md#L1-L9]]";
+  it.each([
+    ["불릿 여러 개", "- a\n- b\n- c"],
+    ["문단 + 불릿 + 문단", "첫 문단\n이어지는 줄\n\n- 불릿\n\n끝 문단"],
+    ["제목·코드블록 섞임", "## 제목\n\n문단\n\n```\ncode\n```\n\n- 불릿"],
+    ["이미 인용된 블록은 다시 붙이지 않는다", `- a [[cite:README#L2-L2]]\n- b`],
+  ])("%s", (_name, text) => {
+    const cited = citeEachBlock(text, TAG);
+    expect(checkCitations(cited).status).toBe("clean");
+    expect(cited.split(TAG).length - 1).toBeLessThanOrEqual(text.split("\n").length);
+  });
+
+  it("이미 인용된 블록에는 태그를 덧붙이지 않는다", () => {
+    expect(citeEachBlock("- a [[cite:README#L2-L2]]\n- b", TAG)).toBe(`- a [[cite:README#L2-L2]]\n- b ${TAG}`);
   });
 });
