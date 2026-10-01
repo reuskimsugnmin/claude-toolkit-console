@@ -80,7 +80,10 @@ pnpm ctk measure
 세션 트랜스크립트를 파싱해 호출 횟수·마지막 사용 시점·토큰 합계를 뽑고, 각 자산이 **가만히
 있어도 차지하는 컨텍스트**(상시 점유)를 잽니다.
 
-**상시 점유 측정에는 `ANTHROPIC_API_KEY`가 필요합니다**(`count_tokens` API). 없으면:
+**상시 점유 측정에는 `count_tokens` 크레덴셜이 필요합니다.** API 키가 없어도 됩니다 — SDK가
+`ANTHROPIC_API_KEY` → `ANTHROPIC_AUTH_TOKEN` → **`ant auth login` OAuth 프로파일** 순으로 찾으므로,
+`brew install anthropics/tap/ant && ant auth login` 한 번이면 됩니다(claude.ai 구독 로그인과는 별개 표면이며
+서로 간섭하지 않습니다). 크레덴셜 없이 돌리려면:
 
 ```sh
 pnpm ctk measure --no-credentials-ok
@@ -322,7 +325,7 @@ pnpm ctk measure [--transcripts <경로>] [--no-credentials-ok]
 ```
 
 - `--transcripts` — 트랜스크립트 디렉터리 직접 지정
-- `--no-credentials-ok` — `ANTHROPIC_API_KEY` 없이 실행. 점유는 `unmeasured`로 남습니다
+- `--no-credentials-ok` — count_tokens 크레덴셜(API 키 또는 `ant` 프로파일) 없이 실행. 점유는 `unmeasured`로 남습니다
 
 ### `gen` — 카탈로그 문서 생성
 
@@ -445,7 +448,7 @@ pnpm ctk agent-probe --catalog <합성 카탈로그 루트> --machine-id <머신
 
 ### 순위가 결론이 되려면 모집단이 받쳐줘야 한다
 
-`ANTHROPIC_API_KEY`가 없으면 대부분의 자산이 **점유 미측정**으로 빠집니다. 그러면
+count_tokens 크레덴셜이 없으면 대부분의 자산이 **점유 미측정**으로 빠집니다. 그러면
 "안 쓰는데 비싼 툴" 순위에는 **비용이 정말로 0인 것만** 남습니다 — 숫자는 다 맞는데 화면이
 답하는 질문에는 거짓입니다.
 
@@ -453,8 +456,8 @@ pnpm ctk agent-probe --catalog <합성 카탈로그 루트> --machine-id <머신
 알립니다:
 
 ```
-⚠️  이 순위는 아직 결론이 될 수 없다 — 점유가 측정된 3건이 전부 0토큰이다 (미측정 177건).
-    ANTHROPIC_API_KEY를 설정하고 `ctk measure`를 다시 돌리면 점유가 측정된다.
+이 순위는 아직 결론이 될 수 없다 — 점유가 측정된 자산이 전부 0토큰이다 (측정 3건 · 미측정 177건).
+ctk measure에 count_tokens 크레덴셜이 필요하다.
 ```
 
 ### "없음"과 "판정 불가"는 다르다

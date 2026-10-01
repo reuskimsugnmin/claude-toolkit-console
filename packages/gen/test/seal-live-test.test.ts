@@ -7,6 +7,12 @@ import { runSealLiveTest } from "../src/seal-live-test.js";
 
 const HOME: HomeContext = { ctkHome: "/synthetic/home", ctkConfigDir: "/synthetic/home/.claude", configDirExplicit: true };
 
+/** CLI 2.1.286 실측 형태 — stream-json의 init 이벤트(필요한 키만). 봉인 세션은 slash_commands가 0건이었다. */
+function initLine(slashCommands: string[]): string {
+  return JSON.stringify({ type: "system", subtype: "init", session_id: "s", slash_commands: slashCommands, plugins: [] });
+}
+const SEALED_INIT = initLine([]);
+
 describe("gen/seal-live-test — ⓓ-2 실행형 봉인 테스트 (가짜 spawnFn으로 3신호 로직만 검증)", () => {
   let dir: string;
   afterEach(() => {
@@ -36,7 +42,7 @@ describe("gen/seal-live-test — ⓓ-2 실행형 봉인 테스트 (가짜 spawnF
       call++;
       if (call === 1) return { exitCode: 0, stdout: "YES", stderr: "", timedOut: false }; // 양성 대조군
       if (call === 2) return { exitCode: 0, stdout: "NO", stderr: "", timedOut: false }; // (ii) 실제 세션
-      return { exitCode: 1, stdout: "", stderr: "Unknown command: /synth-plugin:help", timedOut: false }; // (iii)
+      return { exitCode: 1, stdout: SEALED_INIT, stderr: "", timedOut: false }; // (iii)
     };
 
     const result = await runSealLiveTest({ ...baseOptions(hookMarkerPath), spawnFn: spawnFn as never });
@@ -69,7 +75,7 @@ describe("gen/seal-live-test — ⓓ-2 실행형 봉인 테스트 (가짜 spawnF
       call++;
       if (call === 1) return { exitCode: 0, stdout: "YES", stderr: "", timedOut: false };
       if (call === 2) return { exitCode: 0, stdout: "NO", stderr: "", timedOut: false };
-      return { exitCode: 1, stdout: "", stderr: "Unknown command", timedOut: false };
+      return { exitCode: 1, stdout: SEALED_INIT, stderr: "", timedOut: false };
     };
     const result = await runSealLiveTest({ ...baseOptions(hookMarkerPath), spawnFn: spawnFn as never });
     expect(result.signals.hookMarker).toBe("present");
@@ -84,7 +90,7 @@ describe("gen/seal-live-test — ⓓ-2 실행형 봉인 테스트 (가짜 spawnF
       call++;
       if (call === 1) return { exitCode: 0, stdout: "YES", stderr: "", timedOut: false }; // 대조군
       if (call === 2) return { exitCode: 0, stdout: "YES", stderr: "", timedOut: false }; // 실제 세션도 YES = 새고 있다
-      return { exitCode: 1, stdout: "", stderr: "Unknown command", timedOut: false };
+      return { exitCode: 1, stdout: SEALED_INIT, stderr: "", timedOut: false };
     };
     const result = await runSealLiveTest({ ...baseOptions(hookMarkerPath), spawnFn: spawnFn as never });
     expect(result.signals.claudeMdString).toBe("present");
@@ -99,7 +105,7 @@ describe("gen/seal-live-test — ⓓ-2 실행형 봉인 테스트 (가짜 spawnF
       call++;
       if (call === 1) return { exitCode: 0, stdout: "YES", stderr: "", timedOut: false };
       if (call === 2) return { exitCode: 0, stdout: "NO", stderr: "", timedOut: false };
-      return { exitCode: 0, stdout: "명령을 실행했습니다", stderr: "", timedOut: false }; // 인식됨
+      return { exitCode: 0, stdout: initLine(["synth-plugin:help"]), stderr: "", timedOut: false }; // 인식됨(init에 실렸다)
     };
     const result = await runSealLiveTest({ ...baseOptions(hookMarkerPath), spawnFn: spawnFn as never });
     expect(result.signals.pluginCommandRouting).toBe("recognized");
@@ -136,7 +142,7 @@ describe("(i)의 양성 대조군 — 없으면 판정하지 않는다 (2026-08-
       // 1: 대조군(YES) · 2: (ii) 실제 세션(NO) · 3: (iii) 커맨드 미인식
       if (call === 1) return Promise.resolve({ stdout: "YES", stderr: "", exitCode: 0, timedOut: false });
       if (call === 2) return Promise.resolve({ stdout: "NO", stderr: "", exitCode: 0, timedOut: false });
-      return Promise.resolve({ stdout: "", stderr: "unknown command", exitCode: 1, timedOut: false });
+      return Promise.resolve({ stdout: SEALED_INIT, stderr: "", exitCode: 1, timedOut: false });
     };
   };
 
@@ -201,7 +207,7 @@ describe("gen/seal-live-test — (ii)는 호출 실패를 '부재'로 삼키지 
       call++;
       if (call === 1) return { exitCode: 0, stdout: "YES", stderr: "", timedOut: false };
       if (call === 2) return { ...second, stderr: "", timedOut: false };
-      return { exitCode: 1, stdout: "", stderr: "Unknown command", timedOut: false };
+      return { exitCode: 1, stdout: SEALED_INIT, stderr: "", timedOut: false };
     };
   }
 
@@ -372,21 +378,66 @@ describe("gen/seal-live-test — (iii) 라우팅 신호의 3상태", () => {
     dirs.push(dir);
     const result = await runSealLiveTest({
       ...optsFor(dir),
-      spawnFn: spawnWithThird({ exitCode: 0, stdout: "스킬을 로드했다", stderr: "" }) as never,
+      spawnFn: spawnWithThird({ exitCode: 0, stdout: initLine(["synth-plugin:help"]), stderr: "" }) as never,
     });
     expect(result.signals.pluginCommandRouting).toBe("recognized");
     expect(result.passed).toBe(false);
   });
 
-  it("Unknown command면 confirmed_unrecognized이고 통과다 — 위 셋이 '항상 실패'와 구분된다", async () => {
+  it("init의 slash_commands에 플러그인 커맨드가 없으면 confirmed_unrecognized이고 통과다 — 위 셋이 '항상 실패'와 구분된다", async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "ctk-seal-iii-ok-"));
     dirs.push(dir);
     const result = await runSealLiveTest({
       ...optsFor(dir),
-      spawnFn: spawnWithThird({ exitCode: 1, stdout: "", stderr: "Unknown command: /synth-plugin:help" }) as never,
+      spawnFn: spawnWithThird({ exitCode: 1, stdout: SEALED_INIT, stderr: "" }) as never,
     });
     expect(result.signals.pluginCommandRouting).toBe("confirmed_unrecognized");
     expect(result.passed).toBe(true);
+  });
+  it("드리프트 그 자체 — 거부 문구만 있고 init이 없으면 '인식 안 됨'이 아니라 unmeasured다", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ctk-seal-iii-drift-"));
+    dirs.push(dir);
+    const r = await runSealLiveTest({ ...optsFor(dir), spawnFn: spawnWithThird({ exitCode: 1, stdout: "", stderr: "Unknown command: /synth-plugin:help" }) as never });
+    expect(r.signals.pluginCommandRouting).toBe("unmeasured");
+    expect(r.passed).toBe(false);
+  });
+
+  it("모델 응답 텍스트만 있고 init이 없으면 unmeasured다(예전 판정은 이것을 'recognized'로 읽었다)", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ctk-seal-iii-text-"));
+    dirs.push(dir);
+    const r = await runSealLiveTest({ ...optsFor(dir), spawnFn: spawnWithThird({ exitCode: 1, stdout: "Error: Exceeded USD budget (0.5)", stderr: "" }) as never });
+    expect(r.signals.pluginCommandRouting).toBe("unmeasured");
+  });
+
+  it("지정 커맨드는 없어도 다른 플러그인 네임스페이스 커맨드가 실렸으면 recognized다(봉인 세션은 0건이어야 한다)", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ctk-seal-iii-other-"));
+    dirs.push(dir);
+    const r = await runSealLiveTest({ ...optsFor(dir), spawnFn: spawnWithThird({ exitCode: 0, stdout: initLine(["other-plugin:do"]), stderr: "" }) as never });
+    expect(r.signals.pluginCommandRouting).toBe("recognized");
+    expect(r.passed).toBe(false);
+  });
+
+  it("slash_commands 형태가 깨지면 unmeasured다", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ctk-seal-iii-shape-"));
+    dirs.push(dir);
+    const broken = JSON.stringify({ type: "system", subtype: "init", slash_commands: [1, 2] });
+    const r = await runSealLiveTest({ ...optsFor(dir), spawnFn: spawnWithThird({ exitCode: 0, stdout: broken, stderr: "" }) as never });
+    expect(r.signals.pluginCommandRouting).toBe("unmeasured");
+  });
+
+  it("네임스페이스 없는 커맨드(사용자 커맨드·스킬)가 실려도 recognized다 — 통과는 빈 목록뿐이다(보안 심사 M)", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ctk-seal-iii-bare-"));
+    dirs.push(dir);
+    const r = await runSealLiveTest({ ...optsFor(dir), spawnFn: spawnWithThird({ exitCode: 0, stdout: initLine(["my-user-command"]), stderr: "" }) as never });
+    expect(r.signals.pluginCommandRouting).toBe("recognized");
+    expect(r.passed).toBe(false);
+  });
+
+  it("init 이벤트가 여럿이면 전부 비어 있어야 통과다 — 첫 것만 보지 않는다(보안 심사 L)", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ctk-seal-iii-multi-"));
+    dirs.push(dir);
+    const r = await runSealLiveTest({ ...optsFor(dir), spawnFn: spawnWithThird({ exitCode: 0, stdout: `${SEALED_INIT}\n${initLine(["synth-plugin:help"])}`, stderr: "" }) as never });
+    expect(r.signals.pluginCommandRouting).toBe("recognized");
   });
 });
 
@@ -443,4 +494,5 @@ describe("gen/seal-live-test — 모든 spawn이 모델을 고정한다 (2026-08
       expect(argv[argv.indexOf("--model") + 1]).toBe("synthetic-model");
     }
   });
+
 });

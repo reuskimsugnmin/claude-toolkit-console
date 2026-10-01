@@ -279,10 +279,11 @@ describe("probe/harness/spawn-claude — §1.3 결정 6 봉인 래퍼 (가짜 cl
       ).rejects.toBeInstanceOf(SealUnverifiedCliError);
     });
 
-    it("버전이 다르지만 0원 라우팅 신호가 재현되면 진행하고 mismatch_routing_reproduced를 기록한다", async () => {
+    it("버전이 다르지만 라우팅 신호(봉인 세션 커맨드 0건)가 재현되면 진행하고 mismatch_routing_reproduced를 기록한다", async () => {
       const marker = "/__ctk_probe_marker__";
       writeFakeClaude(
-        `for a in "$@"; do if [ "$a" = "${marker}" ]; then echo "Unknown command: ${marker}"; exit 1; fi; done\necho real-call-ok`,
+        // CLI 2.1.286 실측 형태 — 봉인 프로브는 stream-json init에 slash_commands 0건을 싣는다(거부 문구는 없다)
+        `input=$(cat); if [ "$input" = "${marker}" ]; then echo '{"type":"system","subtype":"init","slash_commands":[]}'; exit 1; fi\necho real-call-ok`,
       );
       const result = await spawnClaude({
         profile: "sealed-live",
@@ -295,6 +296,42 @@ describe("probe/harness/spawn-claude — §1.3 결정 6 봉인 래퍼 (가짜 cl
       });
       expect(result.preflightVersionMatch).toBe("mismatch_routing_reproduced");
       expect(result.stdout).toContain("real-call-ok");
+    });
+
+    it.each([
+      ["봉인 프로브에 그 커맨드가 실림(봉인이 샘)", `echo '{"type":"system","subtype":"init","slash_commands":["__ctk_probe_marker__"]}'`],
+      ["init 없이 옛 거부 문구만 나옴(CLI 2.1.286 드리프트 — 판정 불가)", `echo "Unknown command: /__ctk_probe_marker__"`],
+    ])("버전이 다르고 %s → 진행하지 않고 SealUnverifiedCliError로 거부한다", async (_label, probeOutput) => {
+      const marker = "/__ctk_probe_marker__";
+      writeFakeClaude(`input=$(cat); if [ "$input" = "${marker}" ]; then ${probeOutput}; exit 1; fi\necho real-call-ok`);
+      await expect(
+        spawnClaude({
+          profile: "sealed-live",
+          subcommand: ["-p"],
+          home,
+          cwd: home.ctkHome,
+          timeoutSec: 5,
+          verifiedCliVersion: "1.2.3",
+          routingProbeCommand: marker,
+        }),
+      ).rejects.toBeInstanceOf(SealUnverifiedCliError);
+    });
+
+    it("routingProbeCommand가 슬래시 커맨드 형태가 아니면(플래그로 읽힐 값) 프로브를 띄우지 않고 거부한다", async () => {
+      const probed = path.join(home.ctkHome, "probed");
+      writeFakeClaude(`input=$(cat); if [ -n "$input" ]; then touch "${probed}"; echo '{"type":"system","subtype":"init","slash_commands":[]}'; exit 1; fi\necho real-call-ok`);
+      await expect(
+        spawnClaude({
+          profile: "sealed-live",
+          subcommand: ["-p"],
+          home,
+          cwd: home.ctkHome,
+          timeoutSec: 5,
+          verifiedCliVersion: "1.2.3",
+          routingProbeCommand: "--plugin-dir=/tmp/x",
+        }),
+      ).rejects.toBeInstanceOf(SealUnverifiedCliError);
+      expect(existsSync(probed)).toBe(false);
     });
   });
 

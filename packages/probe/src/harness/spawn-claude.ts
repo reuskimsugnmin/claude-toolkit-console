@@ -10,6 +10,7 @@ import {
   ENV_WHITELIST_SEALED_LIVE_EXTRA,
   verdictPreflightVersion,
   type PreflightVersionMatch,
+  judgeSealedPluginCommand,
 } from "@ctk/core";
 import type { HomeContext } from "../home.js";
 import { assertNoAncestorConfig } from "./cwd-guard.js";
@@ -81,7 +82,7 @@ export class SealToolsNotEmptyError extends Error {
 }
 
 /**
- * iter 8 · B5 — spawn 직전 `claude --version`이 검증된 버전과 다르고, 0원 라우팅 신호
+ * iter 8 · B5 — spawn 직전 `claude --version`이 검증된 버전과 다르고, 라우팅 신호(상한 $0.01)
  * 재현에도 실패했다. 경고가 아니라 거부다.
  */
 export class SealUnverifiedCliError extends Error {
@@ -91,7 +92,7 @@ export class SealUnverifiedCliError extends Error {
   constructor(verifiedVersion: string, actualVersion: string) {
     super(
       `claude 버전이 검증된 버전과 다르고(검증: ${verifiedVersion}, 실제: ${actualVersion}) ` +
-        "0원 라우팅 신호 재현도 실패했다 — sealed-live 실행을 거부한다. 복구: `ctk verify seal --installed-plugin-command <설치된 슬래시 커맨드> --max-budget-usd <수치> --timeout-sec <초>`로 새 CLI 버전에서 봉인을 재증명하라 — 통과해야만 검증 버전이 갱신된다",
+        "라우팅 신호 재현도 실패했다(봉인 세션에 커맨드가 실렸거나 판정할 수 없다) — sealed-live 실행을 거부한다. 복구: `ctk verify seal --installed-plugin-command <설치된 슬래시 커맨드> --max-budget-usd <수치> --timeout-sec <초>`로 새 CLI 버전에서 봉인을 재증명하라 — 통과해야만 검증 버전이 갱신된다",
     );
     this.name = "SealUnverifiedCliError";
     this.verifiedVersion = verifiedVersion;
@@ -161,12 +162,16 @@ export function extractVersionString(stdout: string): string | null {
 }
 
 /**
- * iter 8 · B5 — 0원 라우팅 신호 재현. `routingProbeCommand`(실제 설치된 플러그인 슬래시 커맨드)를
- * `--safe-mode`로 호출해 "인식되지 않음"류 응답이 나오는지 본다(harness-facts.md: "슬래시 커맨드
- * 라우팅은 인증 이전에 결정된다 — 커맨드 존재 여부 판정은 모델 호출 없이 $0에 가능하다"). 이
- * 판정은 라우팅 계층이 안전 모드에서도 기존과 동일하게 동작한다는 최소 증거일 뿐, 3신호
- * 전체(ⓓ-2)를 대신하지 않는다 — `--max-budget-usd`를 극소값으로 고정해 판정 전제가 깨져도
- * 과금이 새지 않게 한다(방어적 상한, 이 신호 자체가 $0이어야 한다는 전제가 틀렸을 경우의 안전망).
+ * iter 8 · B5 — 라우팅 신호 재현.
+ *
+ * ⚠️ **증명하는 범위**(재심): 봉인 프로파일에는 `--disable-slash-commands`가 있어 그것만으로도 목록이 빈다.
+ * 그래서 이 신호가 증명하는 것은 "gen이 실제로 쓰는 프로파일의 세션에 커맨드가 실리지 않는다"이지
+ * "`--safe-mode`가 플러그인 로드를 막는다"가 아니다. 플러그인의 다른 효과는 봉인 검증의 (i) 훅 마커·
+ * `--strict-mcp-config`가 따로 본다. init의 `plugins` 필드로 로드 자체를 재는 것은 미측정이다. `routingProbeCommand`(실제 설치된 플러그인 슬래시 커맨드)를 봉인 프로파일로
+ * 띄워, 세션 init의 `slash_commands`가 비어 있는지 본다(CLI 2.1.286부터 — 예전의 "인식되지 않음" 문구는
+ * 사라졌고 모르는 커맨드는 **모델에게 넘어간다**. 그래서 0원이 아니다, harness-facts.md). 이 판정은 봉인이
+ * 버전이 바뀐 뒤에도 커맨드를 싣지 않는다는 최소 증거일 뿐 3신호 전체(ⓓ-2)를 대신하지 않는다 —
+ * `--max-budget-usd`를 극소값으로 고정해 모델이 돌아도 지출은 그 상한을 넘지 않는다.
  */
 function reproduceRoutingSignal(
   execPath: string,
@@ -174,13 +179,18 @@ function reproduceRoutingSignal(
   cwd: string,
   routingProbeCommand: string,
 ): boolean {
-  const result = spawnSync(
-    execPath,
-    ["--safe-mode", "--tools", "", "--max-budget-usd", "0.01", "-p", routingProbeCommand],
-    { cwd, env, encoding: "utf8", timeout: 20_000 },
-  );
-  const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-  return /unknown\s+command|not\s+(a\s+)?recognized|no\s+such\s+command/i.test(combined);
+  // 판정은 봉인 검증과 같은 core 함수로 한다(init 이벤트의 slash_commands) — 예전 "Unknown command" 문구
+  // 매칭은 CLI 2.1.286이 문구를 없애 늘 "인식됨"이 됐다. 같은 판정을 두 자리에 베끼지 않는다.
+  // 형태가 슬래시 커맨드가 아니면 쓰지 않는다 — 값이 플래그(`--plugin-dir=…`)로 읽힐 여지를 없앤다(재심).
+  if (!/^\/[A-Za-z0-9_.:-]+$/.test(routingProbeCommand)) return false;
+  // 실제 gen 세션과 같은 봉인 프로파일 플래그로 띄운다 — `--safe-mode`만이면 내장 커맨드가 실려(실측 56건)
+  // "빈 목록만 통과" 판정과 축이 어긋난다. 프롬프트는 stdin으로 넘기고(래퍼의 stdin 규칙과 같다) argv는
+  // 래퍼와 같은 금지 검사를 지난다 — 이 경로만 검사를 건너뛰면 단일 관문이 아니다.
+  const argv = buildFullArgv("sealed-live", ["-p", "--max-budget-usd", "0.01", "--output-format", "stream-json", "--verbose"]);
+  const argvVerdict = assertForbiddenArgv(argv, undefined, WRAPPER_SINGLE_VALUE_ARGV_FLAGS, { checkPositionalArguments: true });
+  if (argvVerdict.status === "violation") return false;
+  const result = spawnSync(execPath, argv, { cwd, env, input: routingProbeCommand, encoding: "utf8", timeout: 20_000 });
+  return judgeSealedPluginCommand(result.stdout ?? "", routingProbeCommand) === "confirmed_unrecognized";
 }
 
 /**
@@ -236,9 +246,9 @@ export interface SpawnClaudeOptions {
    * 검증된 버전을 요구하면 순환이 된다. 다른 어떤 경로에서도 켜지 않는다. */
   isSealVerification?: boolean;
   /**
-   * iter 8 · B5 — 버전 불일치 시 재현을 시도할 0원 라우팅 신호. 실제 설치된 플러그인 슬래시
-   * 커맨드(예: `/oh-my-claudecode:help`)를 안전 모드에서 호출했을 때 `Unknown command`류
-   * 응답이 나오는지로 판정한다. 미지정이면 재현을 시도하지 않고 곧바로 거부한다.
+   * iter 8 · B5 — 버전 불일치 시 재현을 시도할 라우팅 신호(상한 $0.01). 실제 설치된 플러그인 슬래시
+   * 커맨드(예: `/oh-my-claudecode:help`)를 봉인 프로파일로 띄워 init의 `slash_commands`가 비어 있는지로
+   * 판정한다(core `judgeSealedPluginCommand`). 미지정이면 재현을 시도하지 않고 곧바로 거부한다.
    */
   routingProbeCommand?: string;
 }

@@ -24,7 +24,7 @@ export const FAILURE_CLASSES = [
   "seal_env_leak", // 허용목록 밖 환경변수가 자식 프로세스에 도달함 (iter 8 · B2) — Step 2
   "seal_timeout", // 서브프로세스가 --timeout-sec 벽시계를 초과 (iter 8 · M4) — Step 2
   "seal_tools_not_empty", // sealed-live argv에 --tools ""가 없거나 도구가 활성 (iter 8 · B4) — Step 4
-  "seal_unverified_cli", // spawn 직전 claude --version이 검증 버전과 다르고 0원 라우팅 신호 재현도 실패 (iter 8 · B5) — Step 4
+  "seal_unverified_cli", // spawn 직전 claude --version이 검증 버전과 다르고 라우팅 신호(init slash_commands 빈 목록) 재현도 실패 (iter 8 · B5) — Step 4
   "seal_cwd_ancestor_config", // agent-probe cwd 상위에 CLAUDE.md/.claude/가 존재 (iter 8 · M2) — Step 4
   "injection_pattern_detected", // gen 산출물 후검증 4규칙 위반 — sync 쓰기 이전에 거부 (iter 8 · B1-3 · R18) — Step 4
   "managed_policy_blocked", // managed 정책에 위험 키가 있는데 비대화형 실행이고 --allow-managed-policy 미지정 (iter 8 · M1) — Step 4
