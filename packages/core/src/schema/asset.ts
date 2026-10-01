@@ -17,6 +17,12 @@ import { assertCatalogSegment, PathTraversalDetectedError } from "../catalog/lay
 export const AssetKindSchema = z.enum(["plugin", "skill", "mcp", "cli", "agent", "command"]);
 export type AssetKind = z.infer<typeof AssetKindSchema>;
 
+/**
+ * CLI 도구 자산 id 접두사(#44) — 스킬 id(frontmatter 이름)와 같은 공간이라 `codex` 같은 동명이 충돌했다.
+ * **생성(probe)과 이전(sync)이 이 상수 하나를 쓴다** — 키 포맷을 두 곳에 베끼면 한쪽 정정이 다른 쪽에 닿지 않는다.
+ */
+export const CLI_ASSET_ID_PREFIX = "cli:";
+
 type FieldRule = "required" | "forbidden" | "optional";
 
 interface KindConstraint {
