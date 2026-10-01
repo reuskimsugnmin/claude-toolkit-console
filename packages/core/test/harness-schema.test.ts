@@ -145,6 +145,28 @@ describe("transcript-row.schema — AC-0.6b 실측 형에 대한 합성 픽스�
     expect(() => parseTranscriptRow(row)).not.toThrow();
   });
 
+  it("CLI 2.1.284의 메타데이터 행 cost-state·custom-title·continued-in이 parse된다(실측 키 전부)", () => {
+    const costState = {
+      type: "cost-state",
+      sessionId: "sess-1",
+      startTime: 1,
+      totalCostUSD: 0.12,
+      hasUnknownModelCost: false,
+      modelUsage: { "synthetic-model": { inputTokens: 1 } },
+      totalAPIDuration: 10,
+      totalAPIDurationWithoutRetries: 9,
+      totalDuration: 20,
+      totalLinesAdded: 3,
+      totalLinesRemoved: 1,
+      totalToolDuration: 5,
+    };
+    expect(() => parseTranscriptRow(costState)).not.toThrow();
+    expect(() => parseTranscriptRow({ type: "custom-title", customTitle: "synthetic title", sessionId: "sess-1" })).not.toThrow();
+    expect(() =>
+      parseTranscriptRow({ type: "continued-in", timestamp: "2026-10-01T00:00:00.000Z", sessionId: "sess-1", continuedInSessionId: "sess-2" }),
+    ).not.toThrow();
+  });
+
   it("tool_result는 type:'user' 행에서 관측된다 (AC-0.6b ⓐ)", () => {
     const rows = readFixtureJsonl("transcripts/attribution-present.jsonl") as {
       type: string;

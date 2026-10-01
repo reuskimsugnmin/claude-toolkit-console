@@ -36,6 +36,13 @@ export const TranscriptRowTypeSchema = z.enum([
   // assistant/user 타입만 처리하므로 이 타입 추가가 추출 로직에 영향을 주지 않는다). R13이 정확히
   // 의도한 대로 "모르는 타입"을 parse_failure로 드러냈기에 발견했다 — 조용히 스킵됐다면 못 봤다.
   "agent-name",
+  // CLI 2.1.284 실측(2026-10-02) — 메타데이터 행 3종. `cost-state`는 세션 누적 비용·시간
+  // (`totalCostUSD`·`modelUsage`·`totalAPIDuration` 등), `custom-title`은 `{customTitle, sessionId}`,
+  // `continued-in`은 `{timestamp, sessionId, continuedInSessionId}`(세션 이어가기 연결).
+  // `message`가 없어 extract.ts에 영향이 없다. 파싱 실패로 세면 "실패" 수가 부풀어 진짜 드리프트를 가렸다.
+  "cost-state",
+  "custom-title",
+  "continued-in",
 ]);
 export type TranscriptRowType = z.infer<typeof TranscriptRowTypeSchema>;
 

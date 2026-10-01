@@ -65,6 +65,11 @@
   `sessionId` 필드는 **부모 세션과 동일한 값**을 갖는다(서브에이전트도 부모 세션의 일부로 집계
   가능). 즉 귀속 필드는 넷이다 —
   `attributionSkill`·`attributionPlugin`·`attributionMcpServer`·`attributionAgent`.
+- **CLI 2.1.284는 트랜스크립트에 메타데이터 행 3종을 더 쓴다** (2026-10-02) — `cost-state`(세션 누적
+  `totalCostUSD`·`modelUsage`·`totalAPIDuration` 등), `custom-title`(`customTitle`), `continued-in`
+  (`continuedInSessionId`). 셋 다 `message`가 없다. 관측: 실제 트랜스크립트 전수를 파서에
+  태워 실패 행의 `type`과 키 집합을 셌다 — 이 셋이 실패의 전부였다. 파급: 행 타입 enum에 추가(실패 수가
+  부풀면 진짜 드리프트를 가린다). `cost-state`는 세션 실지출의 1차 출처가 될 수 있다(미사용).
 - **대형 tool_result 페이로드는 트랜스크립트에 전문이 남지 않는다.** 하네스가 본문을 잘라
   `<persisted-output>\nOutput too large (36.6KB). Full output saved to: <홈 절대경로>\n\nPreview
   (first 2KB):\n...`로 치환하고, 실제 페이로드는 `<session-dir>/tool-results/<id>.txt`에 별도
