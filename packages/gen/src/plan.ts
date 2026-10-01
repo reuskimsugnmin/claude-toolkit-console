@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
-import type { Asset, AssetDocState, FailureClass } from "@ctk/core";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { annotationMdPath, readAnnotationGenMode, type Asset, type AssetDocState, type FailureClass } from "@ctk/core";
 import { createBundledToolLocationCache, type BundledToolLocationCache, type HomeContext } from "@ctk/probe";
 import type { CatalogIndex, CatalogIndexEntry } from "@ctk/sync";
 import { FileHygieneError } from "./file-hygiene.js";
@@ -17,7 +19,8 @@ import {
  * (직전 실행이 실패로 남긴 것 — §4 Step 4 부분 실패 규약).
  */
 
-export type GenTargetReason = "new" | "changed" | "stale";
+/** `upgrade` — 원문은 그대로지만 문서가 규칙 추출(`--no-llm`)로 만들어져 있어 `--upgrade-rule-extract`가 다시 만든다. */
+export type GenTargetReason = "new" | "changed" | "stale" | "upgrade";
 
 export interface GenPlanTarget {
   asset: Asset;
@@ -53,6 +56,11 @@ export interface GenUnresolvedAsset {
 
 export interface GenPlanResult {
   targets: GenPlanTarget[];
+  /**
+   * `--upgrade-rule-extract`일 때 "최신"인데 `annotation.md`의 `gen_mode`를 읽지 못한 자산 수. LLM 문서로
+   * **추측하지 않고** 대상에서 빼되 건수를 싣는다(없음과 판정 불가를 가른다). 옵션이 없으면 0.
+   */
+  upgradeUnreadable: number;
   /** 원문을 구하지 못한 자산 — gen이 건드리지 않는다. **사유별로 처방이 다르다.** */
   unresolved: GenUnresolvedAsset[];
   /**
@@ -105,6 +113,13 @@ export interface PlanGenTargetsOptions {
   /** `--retry-blocked` — 정책 차단된 자산도 다시 시도한다. 가드의 탈출구다(안전 원칙 6). */
   retryPolicyBlocked?: boolean;
   /**
+   * `--upgrade-rule-extract` — 원문은 그대로라 "최신"이지만 문서가 규칙 추출로 만들어진 자산을 다시 대상에
+   * 넣는다. 판정은 콘텐츠 해시뿐이라 이 옵션 없이는 0원 경로로 먼저 채운 문서가 LLM 문서로 바뀌지 않는다.
+   * **실행 옵션이지 문서 상태가 아니다** — 단건 조회(`judgeAsset`)는 그대로 두고 일괄 산출에서만 적용한다.
+   * 값은 `annotation.md`를 읽을 카탈로그 루트다.
+   */
+  upgradeRuleExtract?: { catalogRoot: string };
+  /**
    * 문서 생성 대상으로 삼을 번들 부모(플러그인) `Asset.id` 목록 — `--plugin`(반복 가능)의
    * CLI 표면. **선택 필드가 아니다.** 빈 배열이 기본이고, 그러면 `parent_asset_id`가 있는
    * 자식은 전부 대상에서 빠진다(결정 6 · AC-6 "기본 무동작").
@@ -121,7 +136,7 @@ export interface PlanGenTargetsOptions {
 }
 
 export function planGenTargets(options: PlanGenTargetsOptions): GenPlanResult {
-  const { home, assets, index, maxAssets, retryPolicyBlocked, bundledParents } = options;
+  const { home, assets, index, maxAssets, retryPolicyBlocked, bundledParents, upgradeRuleExtract } = options;
   const indexById = new Map(index.assets.map((e) => [e.id, e]));
 
   const targets: GenPlanTarget[] = [];
@@ -129,6 +144,7 @@ export function planGenTargets(options: PlanGenTargetsOptions): GenPlanResult {
   const skipped: GenSkippedAsset[] = [];
   let upToDateCount = 0;
   let excludedBundled = 0;
+  let upgradeUnreadable = 0;
 
   // 보안 심사 M-3 — 이 루프가 자산마다 `judgeAsset`을 부르고 그 각각이 번들 자식이면
   // `findBundledToolPath`를 탄다. 캐시 없이는 자산마다 `installed_plugins.json`을 다시 읽고
@@ -162,9 +178,24 @@ export function planGenTargets(options: PlanGenTargetsOptions): GenPlanResult {
           ...(verdict.locationCount === undefined ? {} : { locationCount: verdict.locationCount }),
         });
         continue;
-      case "up-to-date":
+      case "up-to-date": {
+        if (upgradeRuleExtract !== undefined) {
+          const mode = readGenModeOrNull(upgradeRuleExtract.catalogRoot, asset);
+          if (mode === "rule_extract") {
+            targets.push({
+              asset,
+              reason: "upgrade",
+              sections: verdict.sections,
+              credentialsRedacted: verdict.credentialsRedacted,
+              sourceContentSha256: verdict.sourceContentSha256,
+            });
+            continue;
+          }
+          if (mode === null) upgradeUnreadable++;
+        }
         upToDateCount++;
         continue;
+      }
       case "target":
         targets.push({
           asset,
@@ -177,15 +208,25 @@ export function planGenTargets(options: PlanGenTargetsOptions): GenPlanResult {
     }
   }
 
-  return { targets, unresolved, skipped, upToDateCount, excludedBundled };
+  return { targets, unresolved, skipped, upToDateCount, excludedBundled, upgradeUnreadable };
+}
+
+/** 이미 쓰인 `annotation.md`의 `gen_mode`. 파일이 없거나 머리말을 못 읽으면 `null`이다. */
+function readGenModeOrNull(catalogRoot: string, asset: Asset): ReturnType<typeof readAnnotationGenMode> {
+  try {
+    return readAnnotationGenMode(readFileSync(path.join(catalogRoot, annotationMdPath(asset.kind, asset.name, asset.id)), "utf8"));
+  } catch {
+    return null;
+  }
 }
 
 /** `judgeAsset`의 내부 판정 결과. 일괄 산출과 단건 조회가 **둘 다 이것을** 근거로 삼는다. */
 type AssetVerdict =
   | { kind: "blocked"; failureClass: FailureClass; reason: string }
   | { kind: "unresolved"; reason: UnresolvedSourceReason; locationCount?: number }
-  | { kind: "up-to-date" }
-  | { kind: "target"; reason: GenTargetReason; sections: AssetSourceSections; sourceContentSha256: string; credentialsRedacted: number };
+  | { kind: "up-to-date"; sections: AssetSourceSections; sourceContentSha256: string; credentialsRedacted: number }
+  // `upgrade`는 실행 옵션이라 단건 판정(judgeAsset)에서는 나오지 않는다 — 타입으로 막는다.
+  | { kind: "target"; reason: Exclude<GenTargetReason, "upgrade">; sections: AssetSourceSections; sourceContentSha256: string; credentialsRedacted: number };
 
 /**
  * 자산 하나의 생성 상태를 판정한다. **파일시스템을 읽지만 아무것도 쓰지 않는다.**
@@ -248,7 +289,7 @@ function judgeAsset(
   if (indexEntry.gen_content_sha256 !== sourceContentSha256) {
     return { kind: "target", reason: "changed", sections: resolved.sections, sourceContentSha256, credentialsRedacted: resolved.credentialsRedacted };
   }
-  return { kind: "up-to-date" };
+  return { kind: "up-to-date", sections: resolved.sections, sourceContentSha256, credentialsRedacted: resolved.credentialsRedacted };
 }
 
 /**

@@ -39,6 +39,7 @@ function handlers(observed = OBSERVED) {
       skipped: [],
       unresolved: [],
       excludedBundled: 0,
+      upgradeUnreadable: 0,
     }),
     observedCostFn: () => observed,
   });
@@ -98,7 +99,7 @@ describe("genEstimate → genExecute — 승인 시점 계획이 실행 시점�
     const execCalls: unknown[] = [];
     const handlersWithExec = createActionHandlers({
       estimates: new EstimateTokenStore(),
-      dryRunFn: () => ({ assetCount: CALL_COUNT, approxBytes: 1000, skipped: [], unresolved: [], excludedBundled: 0 }),
+      dryRunFn: () => ({ assetCount: CALL_COUNT, approxBytes: 1000, skipped: [], unresolved: [], excludedBundled: 0, upgradeUnreadable: 0 }),
       observedCostFn: () => OBSERVED,
       execFn: (async (opts: unknown) => {
         execCalls.push(opts);

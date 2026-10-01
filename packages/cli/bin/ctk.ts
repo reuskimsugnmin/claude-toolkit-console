@@ -381,12 +381,18 @@ async function main(): Promise<void> {
         const bundledParents = readFlagValues(rest, "--plugin");
         if (rest.includes("--dry-run")) {
           // AC-3.8 — 네트워크 호출 0 · 서브프로세스 spawn 0. 파일 직독만 한다.
+          // 실제 실행과 같은 플래그를 받아야 미리보기 건수가 실행 건수와 같다(--retry-blocked도 빠져 있었다).
           const report = runGenDryRun({
             maxAssets: maxAssets !== undefined ? Number(maxAssets) : undefined,
+            retryBlocked: rest.includes("--retry-blocked"),
+            upgradeRuleExtract: rest.includes("--upgrade-rule-extract"),
             bundledParents,
           });
           console.log(`ctk gen --dry-run (로컬 전용 미리보기 — 네트워크·spawn 없음)`);
           console.log(`  생성 대상: ${report.assetCount}건 · 원본 크기 합계: ${report.approxBytes} bytes`);
+          if (report.upgradeUnreadable > 0) {
+            console.log(`  ⚠️ --upgrade-rule-extract: gen_mode를 읽지 못해 대상에서 뺀 자산 ${report.upgradeUnreadable}건(LLM 문서로 추측하지 않는다)`);
+          }
           for (const line of summarizeUnresolved(report.unresolved)) console.log(`  ⚠️ ${line}`);
           if (report.skipped.length > 0) {
             // 위생 거부는 "원본 없음"과 이유가 다르다 — 뭉치면 사용자가 무엇을 고쳐야 할지 모른다.
@@ -408,6 +414,7 @@ async function main(): Promise<void> {
           resume: rest.includes("--resume"),
           noLlm: rest.includes("--no-llm"),
           retryBlocked: rest.includes("--retry-blocked"),
+          upgradeRuleExtract: rest.includes("--upgrade-rule-extract"),
           allowManagedPolicy: rest.includes("--allow-managed-policy"),
           allowConcurrentSessions: rest.includes("--allow-concurrent-sessions"),
           yes: rest.includes("--yes"),

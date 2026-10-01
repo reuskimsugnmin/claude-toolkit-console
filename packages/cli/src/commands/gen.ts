@@ -54,6 +54,8 @@ export interface RunGenCliOptions {
   noLlm?: boolean;
   /** `--retry-blocked` — 정책 차단된 자산도 다시 시도한다. */
   retryBlocked?: boolean;
+  /** `--upgrade-rule-extract` — 규칙 추출로 만든 "최신" 문서를 LLM으로 다시 만든다(유료 경로 전용). */
+  upgradeRuleExtract?: boolean;
   allowManagedPolicy?: boolean;
   yes?: boolean;
   routingProbeCommand?: string;
@@ -169,6 +171,14 @@ function failureClassOf(cause: unknown): FailureClass | null {
   return parsed.success ? parsed.data : null;
 }
 
+/** `--upgrade-rule-extract`는 규칙 추출 문서를 LLM으로 바꾸는 것이다 — `--no-llm`과 함께면 같은 문서를 다시 만들 뿐이다. */
+export class UpgradeRequiresLlmError extends Error {
+  constructor() {
+    super("--upgrade-rule-extract는 --no-llm과 함께 쓸 수 없다 — 규칙 추출 문서를 다시 규칙 추출로 만들 뿐이다");
+    this.name = "UpgradeRequiresLlmError";
+  }
+}
+
 export class MissingRequiredFlagError extends Error {
   constructor(flag: string) {
     super(`${flag}은(는) 필수 플래그다 — 미지정 시 실행을 거부한다(전역 CLAUDE.md 비용/타임아웃 규칙)`);
@@ -185,11 +195,13 @@ export interface GenDryRunReport {
   skipped: { assetId: string; failureClass: FailureClass; reason: string }[];
   /** 번들 자식인데 부모가 `bundledParents`에 없어 대상에서 빠진 건수. 조용히 빼지 않는다. */
   excludedBundled: number;
+  /** `--upgrade-rule-extract`일 때 `gen_mode`를 읽지 못해 대상에서 뺀 "최신" 자산 수. */
+  upgradeUnreadable: number;
 }
 
 /** `--dry-run` — 파일 직독만. API 호출도 서브프로세스 spawn도 하지 않는다(AC-3.8). */
 export function runGenDryRun(
-  options: { maxAssets?: number; retryBlocked?: boolean; bundledParents?: readonly string[] } = {},
+  options: { maxAssets?: number; retryBlocked?: boolean; upgradeRuleExtract?: boolean; bundledParents?: readonly string[] } = {},
 ): GenDryRunReport {
   const home = resolveHomeContext();
   const localConfig = readLocalConfig(home);
@@ -205,6 +217,7 @@ export function runGenDryRun(
     maxAssets: options.maxAssets,
     retryPolicyBlocked: options.retryBlocked,
     bundledParents: options.bundledParents ?? [],
+    ...(options.upgradeRuleExtract === true ? { upgradeRuleExtract: { catalogRoot: catalogPath } } : {}),
   });
   const approxBytes = plan.targets.reduce(
     (sum, t) => sum + t.sections.reduce((s, sec) => s + Buffer.byteLength(sec.content, "utf8"), 0),
@@ -216,6 +229,7 @@ export function runGenDryRun(
     unresolved: plan.unresolved,
     skipped: plan.skipped,
     excludedBundled: plan.excludedBundled,
+    upgradeUnreadable: plan.upgradeUnreadable,
   };
 }
 
@@ -233,6 +247,7 @@ async function confirmInteractively(promptText: string): Promise<boolean> {
 export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummary> {
   if (options.maxBudgetUsd === undefined) throw new MissingRequiredFlagError("--max-budget-usd");
   if (options.timeoutSec === undefined) throw new MissingRequiredFlagError("--timeout-sec");
+  if (options.noLlm === true && options.upgradeRuleExtract === true) throw new UpgradeRequiresLlmError();
 
   const home = resolveHomeContext();
   const localConfig = readLocalConfig(home);
@@ -261,6 +276,7 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
       maxAssets: options.maxAssets,
       retryPolicyBlocked: options.retryBlocked,
       bundledParents,
+      ...(options.upgradeRuleExtract === true ? { upgradeRuleExtract: { catalogRoot: catalogPath } } : {}),
     });
 
     // ⚠️ `.policies`만 꺼내면 파싱 실패가 빈 배열로 흘러 "정책 없음"과 같아진다(안전 원칙 7).
@@ -333,6 +349,7 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
       timeoutSec: options.timeoutSec,
       noLlm: options.noLlm === true,
       retryPolicyBlocked: options.retryBlocked === true,
+      upgradeRuleExtract: options.upgradeRuleExtract === true,
       // 위에서 승인·고지에 쓴 계획과 **같은 값**을 넘긴다 — runGen이 내부에서 다시 계획을
       // 세우므로(gen/index.ts) 여기서 갈리면 "고지한 건수 ≠ 실행한 건수"가 된다(결정 6).
       bundledParents,

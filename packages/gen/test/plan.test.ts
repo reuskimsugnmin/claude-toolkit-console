@@ -2,10 +2,11 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { Asset } from "@ctk/core";
+import { annotationMdPath, parseAnnotation, renderAnnotationMarkdown, type Asset } from "@ctk/core";
 import type { CatalogIndex } from "@ctk/sync";
 import type { HomeContext } from "@ctk/probe";
 import { classifyAssetDocState, planGenTargets } from "../src/plan.js";
+import { ruleExtract } from "../src/rule-extract.js";
 
 function skillAsset(id: string): Asset {
   return { schema_version: 1, _scope: "machine_independent", id, kind: "skill", name: id, description: `${id} 설명` };
@@ -116,6 +117,69 @@ describe("gen/plan — 콘텐츠 해시 기반 증분 대상 산출", () => {
     const second = planGenTargets({ home, bundledParents: [], assets: [asset], index: upToDateIndex });
     expect(second.targets).toHaveLength(0);
     expect(second.upToDateCount).toBe(1);
+  });
+
+  describe("--upgrade-rule-extract — 원문은 그대로지만 규칙 추출로 만든 문서", () => {
+    /** "최신" 상태를 만든다 — 인덱스 해시를 맞추고, 실제 규칙 추출기·렌더러로 annotation.md를 쓴다. */
+    function upToDate(genMode: "rule_extract" | "llm" | null): { catalogRoot: string; index: CatalogIndex; asset: Asset } {
+      setupSkill("demo-skill", "v1");
+      const asset = skillAsset("demo-skill");
+      const bare: CatalogIndex = { schema_version: 1, assets: [{ id: "demo-skill", kind: "skill", name: "demo-skill" }] };
+      const sha = planGenTargets({ home, bundledParents: [], assets: [asset], index: bare }).targets[0]?.sourceContentSha256;
+      const index: CatalogIndex = {
+        schema_version: 1,
+        assets: [{ id: "demo-skill", kind: "skill", name: "demo-skill", gen_state: "fresh", gen_content_sha256: sha }],
+      };
+      const catalogRoot = path.join(ctkHome, "catalog-root");
+      if (genMode !== null) {
+        const { annotation } = ruleExtract(asset, [{ label: "SKILL.md", content: "---\nname: demo-skill\ndescription: v1\n---\n\n본문\n" }], new Date("2026-10-01T00:00:00.000Z"));
+        const rendered = renderAnnotationMarkdown(parseAnnotation({ ...annotation, gen_mode: genMode }));
+        const abs = path.join(catalogRoot, annotationMdPath(asset.kind, asset.name, asset.id));
+        mkdirSync(path.dirname(abs), { recursive: true });
+        writeFileSync(abs, rendered, "utf8");
+      }
+      return { catalogRoot, index, asset };
+    }
+
+    it("플래그가 있으면 규칙 추출 문서가 upgrade 사유로 대상이 된다(원문 해시는 같다)", () => {
+      init();
+      const { catalogRoot, index, asset } = upToDate("rule_extract");
+      const result = planGenTargets({ home, bundledParents: [], assets: [asset], index, upgradeRuleExtract: { catalogRoot } });
+      expect(result.targets.map((t) => t.reason)).toEqual(["upgrade"]);
+      expect(result.upToDateCount).toBe(0);
+    });
+
+    it("플래그가 없으면 같은 문서는 최신으로 건너뛴다(기본 동작은 그대로 — 몰래 재생성하지 않는다)", () => {
+      init();
+      const { index, asset } = upToDate("rule_extract");
+      const result = planGenTargets({ home, bundledParents: [], assets: [asset], index });
+      expect(result.targets).toEqual([]);
+      expect(result.upToDateCount).toBe(1);
+    });
+
+    it("이미 LLM 문서면 플래그가 있어도 대상이 아니다", () => {
+      init();
+      const { catalogRoot, index, asset } = upToDate("llm");
+      const result = planGenTargets({ home, bundledParents: [], assets: [asset], index, upgradeRuleExtract: { catalogRoot } });
+      expect(result.targets).toEqual([]);
+      expect(result.upgradeUnreadable).toBe(0);
+    });
+
+    it("annotation.md를 읽지 못하면 LLM 문서로 추측하지 않고 upgradeUnreadable로 센다", () => {
+      init();
+      const { catalogRoot, index, asset } = upToDate(null);
+      const result = planGenTargets({ home, bundledParents: [], assets: [asset], index, upgradeRuleExtract: { catalogRoot } });
+      expect(result.targets).toEqual([]);
+      expect(result.upgradeUnreadable).toBe(1);
+      expect(result.upToDateCount).toBe(1);
+    });
+
+    it("maxAssets는 upgrade 대상에도 걸린다(소량 시험의 상한이 지켜진다)", () => {
+      init();
+      const { catalogRoot, index, asset } = upToDate("rule_extract");
+      const result = planGenTargets({ home, bundledParents: [], assets: [asset], index, maxAssets: 0, upgradeRuleExtract: { catalogRoot } });
+      expect(result.targets).toEqual([]);
+    });
   });
 
   it("원본이 바뀌면 changed 사유로 다시 대상이 된다", () => {
