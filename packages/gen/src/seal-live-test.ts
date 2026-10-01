@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { judgeSealedPluginCommand } from "@ctk/core";
 import { spawnClaude, type HomeContext } from "@ctk/probe";
 
 /**
@@ -9,8 +10,8 @@ import { spawnClaude, type HomeContext } from "@ctk/probe";
  *   (i)   실제 settings의 SessionStart 훅 마커 파일 미생성
  *   (ii)  실제 `~/.claude/CLAUDE.md`에만 있는 문자열이 컨텍스트에 부재
  *         — `--append-system-prompt` 양성 대조군을 먼저 통과시킨 뒤에만 유효(R14 ④)
- *   (iii) 실제 설치 플러그인 커맨드가 `Unknown command`류로 인식 안 됨 — 라우팅은 인증 이전에
- *         결정되므로(harness-facts.md) 0원에 가깝다
+ *   (iii) 봉인 세션 init의 `slash_commands`가 비어 있음(구조 신호, CLI 2.1.286부터 — 예전 `Unknown command` 문구는
+ *         사라졌고 모르는 커맨드는 모델에게 넘어가므로 0원이 아니다. 지출은 `--max-budget-usd` 상한 안)
  *
  * ⚠️ **릴리스 전 1회, 유료 세션이 필요한 수동/CI 게이트다** — PR 게이트에 상주하지 않는다
  * (§6.6 검증 블록). (i)의 훅 마커·(ii)의 CLAUDE.md 마커 문자열은 **호출자가 실제 환경에
@@ -121,9 +122,6 @@ function readYesNo(result: { exitCode: number | null; stdout: string }): YesNo {
   return "unreadable";
 }
 
-function looksUnrecognized(stdout: string, stderr: string): boolean {
-  return /unknown\s+command|not\s+(a\s+)?recognized|no\s+such\s+command/i.test(`${stdout}\n${stderr}`);
-}
 
 /** ⓓ-2 3신호 + 양성 대조군을 실제로 재현한다. 유료 세션 최대 3회(대조군 1 + (ii) 1 + (iii) 1). */
 /**
@@ -199,10 +197,11 @@ export async function runSealLiveTest(options: SealLiveTestOptions): Promise<Sea
       ? "confirmed_absent"
       : "unmeasured";
 
-  // (iii) — 설치 플러그인 커맨드가 인식되지 않는가(라우팅은 인증 이전 — 0원에 가깝다).
+  // (iii) — 봉인 세션에 커맨드가 하나도 실리지 않는가(init의 slash_commands — 모델이 돌 수 있어 상한 안에서 과금된다).
   const pluginCheck = await spawnFn({
     profile: "sealed-live",
-    subcommand: ["-p", "--model", model, "--max-budget-usd", String(maxBudgetUsd)],
+    // init 이벤트(세션에 실린 slash_commands)를 받기 위해 stream-json으로 띄운다 — 판정은 구조 신호로 한다.
+    subcommand: ["-p", "--model", model, "--max-budget-usd", String(maxBudgetUsd), "--output-format", "stream-json", "--verbose"],
     home,
     cwd,
     timeoutSec,
@@ -210,16 +209,10 @@ export async function runSealLiveTest(options: SealLiveTestOptions): Promise<Sea
     verifiedCliVersion,
     isSealVerification: true, // 이 절차가 곧 검증이다 — 게이트를 요구하면 순환이 된다.
   });
-  // 라우팅은 인증 이전에 결정되므로 종료 코드가 0이 아닌 것 자체는 정상이다 — 판정은 출력으로
-  // 한다. 다만 **타임아웃은 출력이 없다는 뜻**이라 "인식되지 않았다"로 읽으면 안 된다.
+  // 판정은 init 이벤트의 slash_commands로 한다(core `judgeSealedPluginCommand`). 종료 코드는 보지 않는다 —
+  // 상한 초과로 죽어도 init은 이미 나왔다. **타임아웃·init 없음은 "인식 안 됨"이 아니라 못 잰 것이다.**
   const pluginCommandRouting: SealLiveTestSignals["pluginCommandRouting"] =
-    pluginCheck.timedOut === true
-      ? "unmeasured"
-      : looksUnrecognized(pluginCheck.stdout, pluginCheck.stderr)
-        ? "confirmed_unrecognized"
-        : `${pluginCheck.stdout}${pluginCheck.stderr}`.trim() === ""
-          ? "unmeasured" // 출력이 아예 없으면 판정 근거가 없다 — 못 잰 것이다.
-          : "recognized";
+    pluginCheck.timedOut === true ? "unmeasured" : judgeSealedPluginCommand(pluginCheck.stdout, installedPluginCommand);
 
   const signals: SealLiveTestSignals = {
     positiveControlDetected,

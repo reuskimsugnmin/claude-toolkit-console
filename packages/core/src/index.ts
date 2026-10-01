@@ -18,6 +18,7 @@ export * from "./schema/catalog-config.js";
 export * from "./schema/backup-manifest.js";
 
 export * from "./harness/plugin-list.schema.js";
+export * from "./harness/session-init.js";
 export * from "./harness/plugin-details.schema.js";
 export * from "./harness/transcript-row.schema.js";
 export * from "./harness/subagent-meta.schema.js";
