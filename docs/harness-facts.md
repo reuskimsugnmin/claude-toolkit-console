@@ -28,6 +28,8 @@
   0건")에 기댄 감사가 모든 플러그인 `move`를 롤백시켰다 — `move`만 그 id·그 두 필드를 churn으로 허용한다.
 - 같은 버전의 `plugin list --json`은 프로젝트 설정이 그 플러그인을 언급하면 `projectEnabled`(boolean)를,
   user에서 껐는데 프로젝트가 켜면 `notes`(string[])·`noteDetails`(`[{type:"ineffective-disable"}]`)를 붙인다.
+  CLI 2.1.286(2026-10-02)은 사용자 설정을 받는 플러그인에 `hasUserConfig: true`를 더 붙인다 — 세션 사이 자동 업데이트
+  직후 `scan`이 다시 strict 실패로 멈춰 드러났다(**CLI 업데이트마다 첫 `scan`이 드리프트 탐지기다**).
 - `mcpServers`는 서버명을 키로 하는 **객체**다(배열 아님). 스파이크가 빈 배열만 관측해
   배열로 오판한 전례가 있다 — **빈 값은 타입을 알려주지 않는다.**
 - MCP 서버의 출처는 넷이다: `~/.claude.json` 루트 `mcpServers`(user) · 프로젝트 엔트리

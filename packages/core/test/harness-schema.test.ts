@@ -89,7 +89,7 @@ describe("plugin-list.schema — 착수 조건 C1 (AC-0.3 정정 스키마)", ()
     }
   });
 
-  it("CLI 2.1.284의 projectEnabled·notes·noteDetails를 받아들인다(실측 형태)", () => {
+  it("CLI 2.1.284~286의 projectEnabled·notes·noteDetails·hasUserConfig를 받아들인다(실측 형태)", () => {
     const entry = {
       id: "demo-plugin@demo-marketplace",
       version: "1.0.0",
@@ -101,8 +101,10 @@ describe("plugin-list.schema — 착수 조건 C1 (AC-0.3 정정 스키마)", ()
       notes: ["Disabled in user settings but still loads — project settings enable it"],
       noteDetails: [{ type: "ineffective-disable" }],
       projectEnabled: true,
+      hasUserConfig: true, // CLI 2.1.286
     };
     expect(PluginListEntrySchema.safeParse(entry).success).toBe(true);
+    expect(PluginListEntrySchema.safeParse({ ...entry, hasUserConfig: "yes" }).success).toBe(false);
     expect(PluginListEntrySchema.safeParse({ ...entry, noteDetails: [{ type: "x", extra: 1 }] }).success).toBe(false);
   });
 
