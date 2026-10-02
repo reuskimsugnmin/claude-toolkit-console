@@ -66,6 +66,19 @@ describe("lintSkillBody — asset_name_literal (이름 목록이 있어야 판�
     expect(result.nameCheck).toEqual({ state: "checked", namesCompared: 1 });
     expect(result.violations.filter((v) => v.rule === "asset_name_literal")).toHaveLength(0);
   });
+
+  it("스키마 열거값·`ctk <명령>`·더 긴 단어의 일부는 자산 이름과 겹쳐도 위반이 아니다(새 로컬 실측)", () => {
+    const body = ["`ctk verify ac3`으로 잰다", "`marketplace`, `local`", "`skill` · `plugin`", "skills 목록", '"schema_version": 1'].join("\n");
+    const result = lintSkillBody(body, { knownAssetNames: ["verify", "marketplace", "skill", "skill", "schema"] });
+    expect(result.violations).toHaveLength(0);
+    expect(result.nameCheck).toEqual({ state: "checked", namesCompared: 2 }); // verify·schema만 대조 대상(중복 제거)
+  });
+
+  it("독립 토큰으로 등장한 이름은 문장부호·@·경로에 붙어 있어도, ctk 뒤가 아니면 여전히 위반이다", () => {
+    const body = ["(alpha-tool)을 켠다", "alpha-tool@demo 설치", "docs/alpha-tool.md", "verify 스킬을 부른다", "a.b+c 서버"].join("\n");
+    const result = lintSkillBody(body, { knownAssetNames: ["alpha-tool", "verify", "a.b+c"] });
+    expect(result.violations.map((v) => v.line)).toEqual([1, 2, 3, 4, 5]);
+  });
 });
 
 describe("splitSkillDocument", () => {
