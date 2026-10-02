@@ -30,6 +30,9 @@
   user에서 껐는데 프로젝트가 켜면 `notes`(string[])·`noteDetails`(`[{type:"ineffective-disable"}]`)를 붙인다.
   CLI 2.1.286(2026-10-02)은 사용자 설정을 받는 플러그인에 `hasUserConfig: true`를 더 붙인다 — 세션 사이 자동 업데이트
   직후 `scan`이 다시 strict 실패로 멈춰 드러났다(**CLI 업데이트마다 첫 `scan`이 드리프트 탐지기다**).
+  CLI 2.1.287(같은 날 자동 업데이트)은 의존 플러그인이 빠진 항목에 `noteDetails` `{type:"dependencies-not-installed",
+  plugin:"<의존 id>"}`를 붙인다 — `plugin`은 **그 항목 자신이 아닌** 의존 대상이다. 관측: 실제 출력의 `noteDetails` 키·타입
+  형태를 집계하고 `plugin`을 항목 id와 대조. 같은 방식으로 `scan`이 멈춰 드러났다.
 - `mcpServers`는 서버명을 키로 하는 **객체**다(배열 아님). 스파이크가 빈 배열만 관측해
   배열로 오판한 전례가 있다 — **빈 값은 타입을 알려주지 않는다.**
 - MCP 서버의 출처는 넷이다: `~/.claude.json` 루트 `mcpServers`(user) · 프로젝트 엔트리
