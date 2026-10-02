@@ -38,7 +38,8 @@ export const PluginListEntrySchema = z
     // settings.json류 직독이 정본이라(P0-3) probe는 이 값들을 읽지 않는다 — 받아들이기만 한다.
     projectEnabled: z.boolean().optional(),
     notes: z.array(z.string()).optional(),
-    noteDetails: z.array(z.object({ type: z.string() }).strict()).optional(),
+    // CLI 2.1.287 실측(2026-10-02) — `type:"dependencies-not-installed"`는 빠진 의존 플러그인 id를 `plugin`에 싣는다.
+    noteDetails: z.array(z.object({ type: z.string(), plugin: z.string().optional() }).strict()).optional(),
     // CLI 2.1.286 실측(2026-10-02) — 사용자 설정을 받는 플러그인에만 `hasUserConfig: true`가 붙는다(일부 플러그인만). 읽지 않는다.
     hasUserConfig: z.boolean().optional(),
   })
