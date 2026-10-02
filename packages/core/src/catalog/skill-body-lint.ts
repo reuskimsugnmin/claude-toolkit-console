@@ -1,3 +1,4 @@
+import { GenSourceTrustSchema } from "../schema/annotation.js";
 import { AssetKindSchema } from "../schema/asset.js";
 
 /**
@@ -75,6 +76,25 @@ export interface SkillBodyLintResult {
  */
 const MIN_COMPARABLE_NAME_LENGTH = 3;
 
+/**
+ * 스키마가 고정한 열거값 — 본문이 **안내해야 하는** 규약 어휘라 자산 이름과 겹쳐도 하드코딩이 아니다
+ * (경로 규칙이 kind 자리의 열거값을 허용하는 것과 같은 이유). 자산 이름이 일반어(예: `skill`)와 같은 머신에서는
+ * 이 어휘가 전부 위반으로 잡혔다(새 로컬, 2026-10-02).
+ */
+const SCHEMA_VOCABULARY: ReadonlySet<string> = new Set([...ASSET_KINDS, ...GenSourceTrustSchema.options]);
+
+/**
+ * 이름이 **독립 토큰**으로 등장하는가. 부분 문자열 대조는 `skills` 속 `skill`·`schema_version` 속 `schema`를
+ * 잡았다. `ctk <명령>` 자리의 단어는 CLI 명령이지 자산이 아니므로 대조하지 않는다.
+ */
+function containsAsWord(lineText: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const match of lineText.matchAll(new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`, "g"))) {
+    if (!lineText.slice(0, match.index).endsWith("ctk ")) return true;
+  }
+  return false;
+}
+
 export function lintSkillBody(body: string, options: SkillBodyLintOptions = {}): SkillBodyLintResult {
   const violations: SkillBodyViolation[] = [];
   const lines = body.split("\n");
@@ -108,10 +128,12 @@ export function lintSkillBody(body: string, options: SkillBodyLintOptions = {}):
     return { violations, nameCheck: { state: "unchecked", reason: "no_asset_names_provided" } };
   }
 
-  const comparable = knownNames.filter((name) => name.length >= MIN_COMPARABLE_NAME_LENGTH);
+  const comparable = [...new Set(knownNames)].filter(
+    (name) => name.length >= MIN_COMPARABLE_NAME_LENGTH && !SCHEMA_VOCABULARY.has(name),
+  );
   lines.forEach((lineText, index) => {
     for (const name of comparable) {
-      if (lineText.includes(name)) {
+      if (containsAsWord(lineText, name)) {
         violations.push({
           rule: "asset_name_literal",
           line: index + 1,
