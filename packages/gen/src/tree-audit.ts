@@ -51,7 +51,7 @@ function fsErrorCode(err: unknown): string | undefined {
   return typeof err === "object" && err !== null && "code" in err ? (err as { code?: string }).code : undefined;
 }
 
-export function readClaudeJsonRawOrNull(configDirAbs: string): string | null {
+export function readClaudeJsonInConfigDirOrNull(configDirAbs: string): string | null {
   try {
     return readFileSync(path.join(configDirAbs, ".claude.json"), "utf8");
   } catch (err) {
@@ -231,7 +231,7 @@ function claudeJsonTouchedAsChurn(v: TreeDiffVerdict): boolean {
 }
 
 function readJsonOrThrow(configDirAbs: string): unknown {
-  const raw = readClaudeJsonRawOrNull(configDirAbs);
+  const raw = readClaudeJsonInConfigDirOrNull(configDirAbs);
   if (raw === null) return {};
   return JSON.parse(raw) as unknown;
 }

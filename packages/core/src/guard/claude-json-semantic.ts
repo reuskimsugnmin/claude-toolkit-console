@@ -108,19 +108,54 @@ function diffProjectEntry(
 /** `claude plugin enable`이 그 플러그인 항목에서 바꾸는 필드(CLI 2.1.284 실측, docs/harness-facts.md). */
 const PLUGIN_ENABLE_TOUCHED_FIELDS = new Set(["lastUsedAt", "lastUsedNumStartups"]);
 
+const LIVE_SESSION_PLUGIN_ENTRY_FIELDS = new Set(["lastUsedAt", "usageCount"]);
+
+/**
+ * 다른 살아 있는 세션의 사용 기록 churn — **양쪽에 모두 있는 기존 항목**이 `lastUsedAt`·`usageCount`
+ * (숫자)만 바꾼 경우만이다. 항목의 추가·삭제, 다른 필드, 숫자가 아닌 값은 해당되지 않는다.
+ */
+function isLiveSessionEntryChurn(before: unknown, after: unknown): boolean {
+  if (!isPlainObject(before) || !isPlainObject(after)) return false;
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const key of keys) {
+    if (deepEqual(own(before, key), own(after, key))) continue;
+    if (!LIVE_SESSION_PLUGIN_ENTRY_FIELDS.has(key)) return false;
+    if (!Object.hasOwn(before, key) || !Object.hasOwn(after, key)) return false;
+    if (typeof own(after, key) !== "number" || !Number.isFinite(own(after, key))) return false;
+  }
+  return true;
+}
+
+/** `pluginUsage` 전체가 "기존 항목의 live-session churn만"으로 설명되는가(항목 집합은 동일해야 한다). */
+function isLiveSessionPluginUsageChurn(before: unknown, after: unknown, exceptId: string | null): boolean {
+  if (!isPlainObject(before) || !isPlainObject(after)) return false;
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const key of keys) {
+    if (key === exceptId) continue;
+    if (deepEqual(own(before, key), own(after, key))) continue;
+    if (!Object.hasOwn(before, key) || !Object.hasOwn(after, key)) return false; // 새/삭제 항목은 churn이 아니다
+    if (!isLiveSessionEntryChurn(own(before, key), own(after, key))) return false;
+  }
+  return true;
+}
+
 /**
  * `pluginUsage`의 변경이 **`assetId` 하나를 enable한 흔적과 정확히 일치하는가.** 실측(CLI 2.1.284):
  * `enable`은 그 id 항목의 `lastUsedAt`(현재 시각)·`lastUsedNumStartups`(0)만 바꾸고 `usageCount`는
  * 보존하며, 항목이 없으면 `usageCount: 0`으로 만든다. **다른 항목은 건드리지 않는다.** 키 전체를
  * churn으로 열지 않는 이유: 그러면 다른 플러그인의 사용 기록이 바뀌어도 통과한다(통과 축은 완전 일치).
  */
-export function isPluginEnableUsageTouch(before: unknown, after: unknown, assetId: string): boolean {
+export function isPluginEnableUsageTouch(before: unknown, after: unknown, assetId: string, allowLiveSessionChurn = false): boolean {
   if (before !== undefined && !isPlainObject(before)) return false;
   if (!isPlainObject(after)) return false;
   const b = before ?? {};
   const keys = new Set([...Object.keys(b), ...Object.keys(after)]);
-  for (const key of keys) {
-    if (key !== assetId && !deepEqual(own(b, key), own(after, key))) return false;
+  if (allowLiveSessionChurn) {
+    if (!isLiveSessionPluginUsageChurn(b, after, assetId)) return false;
+  } else {
+    for (const key of keys) {
+      if (key !== assetId && !deepEqual(own(b, key), own(after, key))) return false;
+    }
   }
   if (!Object.hasOwn(after, assetId)) return false;
   const afterEntry = after[assetId];
@@ -154,6 +189,8 @@ export function claudeJsonSemanticVerdict(
   allowedChurnKeys: readonly string[] = [],
   /** 플러그인 `move`만 넘긴다 — 이 id를 enable한 `pluginUsage` 흔적만 churn으로 본다(나머지 경로는 그대로 엄격). */
   enabledPluginId: string | null = null,
+  /** true면 `pluginUsage`의 **다른** 기존 항목이 `lastUsedAt`·`usageCount`만 바꾼 것(다른 살아 있는 세션의 흔적)을 churn으로 본다. 실측 근거는 호출자가 책임진다. */
+  allowLiveSessionPluginUsage = false,
 ): ClaudeJsonSemanticVerdict {
   const allowSet = new Set(allowedChurnKeys);
   const changed: ClaudeJsonPathVerdict[] = [];
@@ -165,7 +202,12 @@ export function claudeJsonSemanticVerdict(
   for (const key of topKeys) {
     if (key === "projects") continue; // 아래에서 별도 처리(원문 경로 마스킹 필요).
     if (deepEqual(own(beforeObj, key), own(afterObj, key))) continue;
-    if (key === "pluginUsage" && enabledPluginId !== null && isPluginEnableUsageTouch(own(beforeObj, key), own(afterObj, key), enabledPluginId)) {
+    // 단일 관문 — pluginUsage의 churn 허용은 이 조건 하나로만 결정된다.
+    if (
+      key === "pluginUsage" &&
+      ((enabledPluginId !== null && isPluginEnableUsageTouch(own(beforeObj, key), own(afterObj, key), enabledPluginId, allowLiveSessionPluginUsage)) ||
+        (enabledPluginId === null && allowLiveSessionPluginUsage && isLiveSessionPluginUsageChurn(own(beforeObj, key), own(afterObj, key), null)))
+    ) {
       changed.push({ path: key, status: "allowed_churn", mcpForbidden: false });
       continue;
     }

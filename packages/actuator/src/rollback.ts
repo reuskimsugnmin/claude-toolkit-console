@@ -2,9 +2,10 @@ import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
 import { claudeJsonPath, collectTree, listKnownProjectPaths, type HomeContext } from "@ctk/probe";
-import { BackupManifestSchema, FORBIDDEN_RULES, matchesForbidden, verdict as treeDiffVerdict } from "@ctk/core";
-import { atomicWriteFile } from "./guard/atomic-write.js";
-import { manifestSha256Of, readBeforeSnapshotOrNull, readManifest, type BackupEntry } from "./backup.js";
+import { BackupManifestSchema, FORBIDDEN_RULES, matchesForbidden, verdict as treeDiffVerdict, type ClaudeJsonPathVerdict } from "@ctk/core";
+import { atomicWriteFile, describeCause, describePath } from "./guard/atomic-write.js";
+import { judgeClaudeJson } from "./audit.js";
+import { CLAUDE_JSON_BACKUP_KEY, manifestSha256Of, readBeforeSnapshotOrNull, readManifest, type BackupEntry } from "./backup.js";
 
 /**
  * actuator/src/rollback.ts — 검증 실패 시 자동, 사용자 요청 시 수동(§4 Step 5). 백업에서
@@ -33,14 +34,22 @@ export class RollbackFailedError extends Error {
   readonly failureClass = "rollback_failed" as const;
   readonly backupRoot: string;
   readonly manifestPath: string;
-  constructor(backupRoot: string, cause: unknown) {
+  /** N1 — 복원 루프에서 **이미 복원이 끝난** manifest 키. 비어 있지 않으면 부분 롤백 상태다. */
+  readonly restoredKeys: readonly string[];
+  /** N1 — 복원하지 못한(시도 전이거나 시도 중 실패한) manifest 키. */
+  readonly unrestoredKeys: readonly string[];
+  constructor(backupRoot: string, cause: unknown, progress?: { restoredKeys: readonly string[]; unrestoredKeys: readonly string[] }) {
+    // 절대경로 원문 대신 백업 런 이름만 싣는다(N4) — 위치는 journal의 backup_ref(`~/.ctk-backups/<런>`)가 알려준다.
     super(
-      `롤백 자체가 실패했다 — 수동 복구가 필요하다. 백업: ${backupRoot}, ` +
-        `manifest: ${path.join(backupRoot, "manifest.json")}, 원인: ${String(cause)}`,
+      `롤백 자체가 실패했다 — 수동 복구가 필요하다. 백업 런: ${path.basename(backupRoot)}(manifest.json 포함), ` +
+        (progress !== undefined ? `복원됨: [${progress.restoredKeys.join(", ")}] / 미복원: [${progress.unrestoredKeys.join(", ")}], ` : "") +
+        `원인: ${describeCause(cause)}`,
     );
     this.name = "RollbackFailedError";
     this.backupRoot = backupRoot;
     this.manifestPath = path.join(backupRoot, "manifest.json");
+    this.restoredKeys = progress?.restoredKeys ?? [];
+    this.unrestoredKeys = progress?.unrestoredKeys ?? [];
     this.cause = cause;
   }
 }
@@ -52,7 +61,7 @@ export class ForbiddenRestoreTargetError extends Error {
     super(
       kind === "target"
         ? `복원 대상이 허용된 루트(config 또는 알려진 project/.claude) 밖이다 — 변조된 manifest일 ` +
-          `수 있다: ${value}`
+          `수 있다: ${describePath(value)}`
         : `백업 저장 경로가 금지된 패턴과 일치한다(${note ?? "경로 순회 의심"}): ${value}`,
     );
     this.name = "ForbiddenRestoreTargetError";
@@ -69,7 +78,7 @@ export class ConfigClobberedError extends Error {
   readonly failureClass = "config_clobbered" as const;
   constructor(targetAbs: string) {
     super(
-      `복원 직전 ${targetAbs}의 현재 내용이 우리 조치 직후 남긴 값과 다르다 — 그 사이 다른 ` +
+      `복원 직전 ${describePath(targetAbs)}의 현재 내용이 우리 조치 직후 남긴 값과 다르다 — 그 사이 다른 ` +
         `세션이 이 파일을 바꿨을 수 있다. 그 변경을 조용히 덮어쓰지 않기 위해 복원을 중단한다.`,
     );
     this.name = "ConfigClobberedError";
@@ -82,7 +91,7 @@ export class BackupManifestTamperedError extends Error {
   constructor(backupRoot: string, expected: string, actual: string) {
     super(
       `백업 manifest.json의 실측 sha256(${actual})이 journal에 기록된 값(${expected})과 다르다 — ` +
-        `백업 저장소(${backupRoot})가 롤백 사이 변조됐을 수 있다. 어떤 쓰기도 하지 않았다.`,
+        `백업 저장소(런 ${path.basename(backupRoot)})가 롤백 사이 변조됐을 수 있다. 어떤 쓰기도 하지 않았다.`,
     );
     this.name = "BackupManifestTamperedError";
   }
@@ -131,23 +140,23 @@ function verifyBackupStoreEntry(key: string, entry: BackupEntry, backupRoot: str
   if (!entry.existed) return; // 저장된 바이트가 없다 — 검증 대상 없음.
   const storedAbs = path.join(backupRoot, entry.storedRelPath!);
   if (!existsSync(storedAbs)) {
-    throw new Error(`키 '${key}' — 백업 저장 사본이 존재하지 않는다: ${storedAbs}`);
+    throw new Error(`키 '${key}' — 백업 저장 사본이 존재하지 않는다: ${describePath(storedAbs)}`);
   }
   if (entry.kind === "file") {
     const sha = sha256File(storedAbs);
     if (sha !== entry.sha256) {
-      throw new Error(`키 '${key}' — 백업 저장 사본 sha256이 manifest와 다르다(백업 저장소 손상 의심): ${storedAbs}`);
+      throw new Error(`키 '${key}' — 백업 저장 사본 sha256이 manifest와 다르다(백업 저장소 손상 의심): ${describePath(storedAbs)}`);
     }
     return;
   }
   const files = collectTree(storedAbs).entries;
   if (files.length !== entry.files.length) {
-    throw new Error(`키 '${key}' — 백업 저장 사본 파일 개수가 manifest와 다르다: ${storedAbs}`);
+    throw new Error(`키 '${key}' — 백업 저장 사본 파일 개수가 manifest와 다르다: ${describePath(storedAbs)}`);
   }
   const byPath = new Map(files.map((f) => [f.path, f.sha256]));
   for (const f of entry.files) {
     if (byPath.get(f.relPath) !== f.sha256) {
-      throw new Error(`키 '${key}' — 백업 저장 사본 ${f.relPath}의 sha256이 manifest와 다르다: ${storedAbs}`);
+      throw new Error(`키 '${key}' — 백업 저장 사본 ${f.relPath}의 sha256이 manifest와 다르다: ${describePath(storedAbs)}`);
     }
   }
 }
@@ -197,7 +206,7 @@ function evictedPathFor(backupRoot: string, key: string): string {
 function verifyRestoredFile(absPath: string, expectedSha256: string): void {
   const actual = sha256File(absPath);
   if (actual !== expectedSha256) {
-    throw new Error(`복원 후 sha256 불일치(기대 ${expectedSha256}, 실제 ${actual}): ${absPath}`);
+    throw new Error(`복원 후 sha256 불일치(기대 ${expectedSha256}, 실제 ${actual}): ${describePath(absPath)}`);
   }
 }
 
@@ -205,11 +214,11 @@ function verifyRestoredDirectory(absPath: string, entry: Extract<BackupEntry, { 
   const restored = collectTree(absPath).entries;
   const restoredByPath = new Map(restored.map((f) => [f.path, f.sha256]));
   if (restored.length !== entry.files.length) {
-    throw new Error(`복원 후 파일 개수 불일치(기대 ${entry.files.length}, 실제 ${restored.length}): ${absPath}`);
+    throw new Error(`복원 후 파일 개수 불일치(기대 ${entry.files.length}, 실제 ${restored.length}): ${describePath(absPath)}`);
   }
   for (const f of entry.files) {
     if (restoredByPath.get(f.relPath) !== f.sha256) {
-      throw new Error(`복원 후 ${f.relPath}의 sha256 불일치: ${absPath}`);
+      throw new Error(`복원 후 ${f.relPath}의 sha256 불일치: ${describePath(absPath)}`);
     }
   }
 }
@@ -318,19 +327,97 @@ function restoreDirectoryEntry(key: string, entry: Extract<BackupEntry, { kind: 
 }
 
 /** H4/AC-2.5 — 복원 후 `snapshot-before.json`이 있으면 재수집 트리와 diff해 0건임을 확인한다. */
-function verifyNoResidualDiff(backupRoot: string): void {
+function verifyNoResidualDiff(backupRoot: string, leftUntouchedAbs: readonly string[]): void {
   const snapshot = readBeforeSnapshotOrNull(backupRoot);
   if (snapshot === null) return; // 이 백업 런에 before 스냅샷이 없다(구버전 호환) — 판정 생략.
   for (const root of snapshot.roots) {
     if (!existsSync(root.rootAbs)) continue; // 루트 자체가 원래 없었을 수 있다(project 미해당 등).
-    const after = collectTree(root.rootAbs).entries;
-    const v = treeDiffVerdict(root.entries, after, []); // 빈 allowlist = 어떤 churn도 기대하지 않는다.
+    // 의도적으로 복원하지 않은 파일(M1)은 양쪽에서 뺀다 — 안 뺀 채 두면 "남긴 것"이 잔존 diff로 읽힌다.
+    const skippedRel = new Set(
+      leftUntouchedAbs.map((abs) => path.relative(root.rootAbs, abs).split(path.sep).join("/")),
+    );
+    const after = collectTree(root.rootAbs).entries.filter((e) => !skippedRel.has(e.path));
+    const v = treeDiffVerdict(root.entries.filter((e) => !skippedRel.has(e.path)), after, []); // 빈 allowlist = 어떤 churn도 기대하지 않는다.
     if (v.overallStatus !== "clean") {
       throw new Error(
-        `롤백 후 잔존 diff 발견(AC-2.5 위반) — 루트 ${root.rootAbs}: ${JSON.stringify(v.violations)}`,
+        `롤백 후 잔존 diff 발견(AC-2.5 위반) — 루트 ${describePath(root.rootAbs)}: ${JSON.stringify(v.violations)}`,
       );
     }
   }
+}
+
+export interface RestoreOptions {
+  /** 플러그인 `move`/롤백 대상 id — `.claude.json` 점검(`judgeClaudeJson`)에서 그 `pluginUsage` enable 흔적을 허용하는 데 쓴다. */
+  readonly enabledPluginId?: string | null;
+}
+
+/**
+ * **테스트 전용 이음매** — `restoreFromBackupWithSeam`으로만 넘긴다(공개 옵션 타입에는 없다). 각 항목 복원 직전(CAS
+ * 사전 검사 이후)에 호출돼, 사전 검사와 실제 복원 사이에 다른 세션이 쓰는 경쟁(N1)을 결정적으로 재현한다.
+ */
+export interface RestoreTestSeam {
+  readonly onBeforeRestoreEntry?: (key: string) => void;
+}
+
+/** `.claude.json` 점검 결과 — 이 파일은 **어떤 경로로도 복원하지 않는다**(N2). */
+export interface ClaudeJsonLeftover {
+  /** `ok`=백업 대비 diff가 없거나 허용 churn뿐 · `violation`=허용 밖 변경(사람이 직접 확인) · `unjudgeable`=읽기/파싱 실패. */
+  readonly status: "ok" | "violation" | "unjudgeable";
+  /** `violation`일 때의 위반 경로(프로젝트는 해시로 마스킹돼 있다). */
+  readonly violations: readonly ClaudeJsonPathVerdict[];
+  /** 위반에 MCP 서브트리가 있다 — 가장 먼저 사람이 봐야 한다. */
+  readonly mcpForbidden: boolean;
+}
+
+export interface RestoreReport {
+  /** 의도적으로 복원하지 않은 파일의 manifest 키 — 지금은 `.claude.json`(`claudeJsonPath(home)`)뿐이다. */
+  readonly leftUntouchedKeys: readonly string[];
+  /** 실제로 복원한 manifest 키(run-log 기록용). */
+  readonly restoredKeys: readonly string[];
+  /** manifest에 `.claude.json` 항목이 없으면(스킬 이동 등) null. */
+  readonly claudeJson: ClaudeJsonLeftover | null;
+}
+
+/**
+ * N2 — **`.claude.json`은 어떤 롤백에서도 복원하지 않는다.** ctk move가 이 파일에 남기는 것은 무해한
+ * `pluginUsage[assetId]` 흔적뿐이고 enable 상태는 settings.json에 있으므로, 이 파일을 두고 가도 enable 상태가
+ * 어긋나지 않는다. 반면 통째 복원은 백업~현재 사이(몇 초든 며칠이든) 다른 세션의 정당한 쓰기를 지운다.
+ * 대신 `judgeClaudeJson`(사후 감사와 같은 판정)으로 백업 대비 diff를 점검해 **보고**한다.
+ */
+function inspectClaudeJson(
+  entry: Extract<BackupEntry, { kind: "file" }>,
+  backupRoot: string,
+  enabledPluginId: string | null,
+): ClaudeJsonLeftover {
+  if (!entry.existed || !existsSync(entry.targetAbs)) return { status: "unjudgeable", violations: [], mcpForbidden: false };
+  try {
+    const backupValue = JSON.parse(readFileSync(path.join(backupRoot, entry.storedRelPath!), "utf8")) as unknown;
+    const currentValue = JSON.parse(readFileSync(entry.targetAbs, "utf8")) as unknown;
+    const verdict = judgeClaudeJson(backupValue, currentValue, enabledPluginId);
+    return {
+      status: verdict.overallStatus === "violation" ? "violation" : "ok",
+      violations: verdict.violations,
+      mcpForbidden: verdict.violations.some((v) => v.mcpForbidden),
+    };
+  } catch {
+    return { status: "unjudgeable", violations: [], mcpForbidden: false };
+  }
+}
+
+/** 복원 보고 중 `.claude.json` 부분을 사람이 읽을 문장으로 — move.ts의 자기 롤백과 `ctk rollback`이 같은 문장을 쓴다. */
+export function describeClaudeJsonLeftover(report: RestoreReport, backupRef: string): string | null {
+  const c = report.claudeJson;
+  if (c === null) return null;
+  const backupHint = `백업본은 ${backupRef}/config_claude_json 아래에 남아 있습니다.`;
+  if (c.status === "ok") return null;
+  if (c.status === "unjudgeable") {
+    return `.claude.json은 복원하지 않았고 백업 대비 변경을 판정하지 못했습니다(읽기/파싱 실패) — 직접 확인하세요. ${backupHint}`;
+  }
+  return (
+    `.claude.json의 변경은 ctk가 의도한 것이 아닙니다(ctk가 띄운 claude CLI 하위 프로세스 또는 다른 세션이 쓴 것) — 되돌리지 않고 그대로 두었습니다(허용 밖 변경: ${c.violations.map((v) => v.path).join(", ")}).` +
+    (c.mcpForbidden ? " ⚠ MCP 서브트리 변경이 관측되었습니다 — 반드시 직접 확인하세요." : " 필요하면 직접 확인하세요.") +
+    ` ${backupHint}`
+  );
 }
 
 /**
@@ -344,37 +431,94 @@ function verifyNoResidualDiff(backupRoot: string): void {
  * `ConfigClobberedError`로 중단한다(그 변경을 조용히 덮어쓰지 않는다). 키가 없거나 값이
  * `undefined`면(예: 아직 대상이 없었던 항목) 검사를 생략한다.
  *
- * 하나라도 phase 2 도중 실패하면 즉시 `RollbackFailedError`로 던진다(부분 복원 상태를 성공으로
- * 보고하지 않는다) — 이미 복원된 항목들은 그대로 남는다(추가 되돌리기 시도는 하지 않는다,
- * "롤백의 롤백"은 더 큰 손상 위험). `ConfigClobberedError`는 이 규칙의 예외다 — 그대로
- * 재throw해 호출자가 정확한 failure_class를 볼 수 있게 한다(RollbackFailedError로 뭉개지 않는다).
+ * H1 — 파일 항목의 CAS는 **복원 시작 전에 전부** 먼저 검사한다(하나라도 어긋나면 0건 복원 상태로
+ * `ConfigClobberedError`).
+ * N1 — 복원 도중(사전 검사 통과 뒤의 경쟁 포함) 실패하면, 이미 복원된 키가 있는 한 **항상**
+ * `RollbackFailedError`(`restoredKeys`/`unrestoredKeys` 포함)로 던진다. `ConfigClobberedError`는 복원이 0건일
+ * 때만 그대로 던진다 — "한 파일도 복원하지 않았다"는 사실일 때만 말할 수 있는 문장이기 때문이다.
+ * "롤백의 롤백"은 더 큰 손상 위험이라 하지 않는다.
+ * N2 — `.claude.json`은 복원 대상에서 항상 뺀다(`inspectClaudeJson` 참조).
  */
 export function restoreFromBackup(
   backupRoot: string,
   home: HomeContext,
   expectedManifestSha256?: string,
   expectedCurrentShas?: Readonly<Record<string, string | undefined>>,
-): void {
+  options: RestoreOptions = {},
+): RestoreReport {
+  return restoreInternal(backupRoot, home, expectedManifestSha256, expectedCurrentShas, options, {});
+}
+
+/** 테스트 전용 — 경쟁 재현 이음매(`RestoreTestSeam`)를 받는다. 제품 코드는 `restoreFromBackup`만 쓴다. */
+export function restoreFromBackupWithSeam(
+  backupRoot: string,
+  home: HomeContext,
+  expectedManifestSha256: string | undefined,
+  expectedCurrentShas: Readonly<Record<string, string | undefined>> | undefined,
+  options: RestoreOptions,
+  seam: RestoreTestSeam,
+): RestoreReport {
+  return restoreInternal(backupRoot, home, expectedManifestSha256, expectedCurrentShas, options, seam);
+}
+
+function restoreInternal(
+  backupRoot: string,
+  home: HomeContext,
+  expectedManifestSha256: string | undefined,
+  expectedCurrentShas: Readonly<Record<string, string | undefined>> | undefined,
+  options: RestoreOptions,
+  seam: RestoreTestSeam,
+): RestoreReport {
   const entries = preflightRestore(backupRoot, home, expectedManifestSha256);
 
+  const leftUntouchedKeys: string[] = [];
+  let claudeJson: ClaudeJsonLeftover | null = null;
+  // R7 주의: 지금은 ctk가 이 파일을 직접 쓰지 않으므로(남기는 것은 CLI가 만든 무해한 pluginUsage 흔적뿐) 파일 전체를
+  // 복원에서 뺀다. **R7(ctk가 .claude.json을 직접 쓴다)이 오면 이 전역 제외를 액션별 소유 서브트리 단위로 바꾸고,
+  // 그 서브트리만 키 수준 CAS로 복원해야 한다** — 전역 제외로 두면 ctk가 쓴 변경이 롤백되지 않는다.
+  // 제외는 경로(claudeJsonPath)와 manifest 키 둘 다로 건다: 키만 보면 CTK_CONFIG_DIR 설정 여부가 달라진 백업이,
+  // 경로만 보면 키가 바뀐 백업이 이 파일을 CAS 없이 통째 복원할 수 있다.
   for (const [key, entry] of Object.entries(entries)) {
+    if (entry.kind === "file" && (key === CLAUDE_JSON_BACKUP_KEY || path.resolve(entry.targetAbs) === path.resolve(claudeJsonPath(home)))) {
+      leftUntouchedKeys.push(key);
+      claudeJson = inspectClaudeJson(entry, backupRoot, options.enabledPluginId ?? null);
+    }
+  }
+  const toRestore = Object.entries(entries).filter(([key]) => !leftUntouchedKeys.includes(key));
+
+  for (const [key, entry] of toRestore) {
+    if (entry.kind !== "file") continue;
+    const expected = expectedCurrentShas?.[key];
+    if (expected !== undefined && existsSync(entry.targetAbs) && sha256File(entry.targetAbs) !== expected) {
+      throw new ConfigClobberedError(entry.targetAbs);
+    }
+  }
+
+  const restoredKeys: string[] = [];
+  for (const [index, [key, entry]] of toRestore.entries()) {
     try {
+      seam.onBeforeRestoreEntry?.(key);
       if (entry.kind === "file") {
         restoreFileEntry(key, entry, backupRoot, expectedCurrentShas?.[key]);
       } else {
         restoreDirectoryEntry(key, entry, backupRoot);
       }
+      restoredKeys.push(key);
     } catch (cause) {
-      if (cause instanceof ConfigClobberedError) throw cause;
-      throw new RollbackFailedError(backupRoot, new Error(`키 '${key}' 복원 실패: ${String(cause)}`));
+      if (restoredKeys.length === 0 && cause instanceof ConfigClobberedError) throw cause;
+      throw new RollbackFailedError(backupRoot, new Error(`키 '${key}' 복원 실패: ${describeCause(cause)}`), {
+        restoredKeys,
+        unrestoredKeys: toRestore.slice(index).map(([k]) => k),
+      });
     }
   }
 
   try {
-    verifyNoResidualDiff(backupRoot);
+    verifyNoResidualDiff(backupRoot, leftUntouchedKeys.map((k) => entries[k]!.targetAbs));
   } catch (cause) {
-    throw new RollbackFailedError(backupRoot, cause);
+    throw new RollbackFailedError(backupRoot, cause, { restoredKeys, unrestoredKeys: [] });
   }
+  return { leftUntouchedKeys, restoredKeys, claudeJson };
 }
 
 /**
@@ -408,7 +552,7 @@ export function findInterruptedRestores(backupsRoot: string): InterruptedRestore
       .map((d) => d.name);
   } catch {
     // 백업 루트를 못 읽는 것은 "잔존물 없음"이 아니라 판정 불가다 — 조용히 빈 배열을 주지 않는다.
-    throw new Error(`백업 루트를 읽을 수 없어 중단된 복원 여부를 판정할 수 없다: ${backupsRoot}`);
+    throw new Error(`백업 루트를 읽을 수 없어 중단된 복원 여부를 판정할 수 없다: ${describePath(backupsRoot)}`);
   }
 
   for (const runId of runDirs) {

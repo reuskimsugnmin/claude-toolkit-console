@@ -35,7 +35,7 @@ import { ClaudePCallFailedError, runClaudePForTarget } from "./run-claude-p.js";
 import {
   auditSealedLiveConfigDir,
   captureConfigDirSnapshot,
-  readClaudeJsonRawOrNull,
+  readClaudeJsonInConfigDirOrNull,
   sealedLiveAuditPassed,
   type SealedLiveAuditResult,
 } from "./tree-audit.js";
@@ -129,6 +129,14 @@ export interface RunGenSummary {
     sessionOwnedExcluded: number;
     /** `--allow-concurrent-sessions`로 위반을 눈감은 자산 수. 0이 아니면 그 실행의 config 감사는 무력했다. */
     concurrencyOverrides: number;
+    /**
+     * `.claude.json` **의미 diff 축**을 실제로 쟀는가. 프로덕션(`CTK_CONFIG_DIR` 미설정)에서 봉인 자식은
+     * `$HOME/.claude.json`에 쓰는데 이 감사는 `<configDir>/.claude.json`을 보고 트리 churn으로 게이트하므로
+     * 의미 diff가 **돌지 않는다** — 그 상태를 통과로 읽히지 않게 `unmeasured`로 남긴다(차단하지 않는다:
+     * 막으면 프로덕션 gen 전부가 멈춘다. 봉인 실측과 재심 뒤에 고친다).
+     * `measured`=격리 경로(두 경로 일치) · `unmeasured`=프로덕션 경로 · `not_applicable`=LLM 호출 없음.
+     */
+    claudeJson: "measured" | "unmeasured" | "not_applicable";
   };
   /**
    * **실측 비용.** 사전 견적으로는 알 수 없다 — 견적은 입력 토큰만 계산해 실제의 약 1/20을
@@ -300,6 +308,13 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
   const scrubbedHosts = new Set<string>();
   let sessionOwnedExcludedTotal = 0;
   let concurrencyOverridesTotal = 0;
+  const claudeJsonAxis: RunGenSummary["sealAudit"]["claudeJson"] = noLlm ? "not_applicable" : home.configDirExplicit ? "measured" : "unmeasured";
+  if (claudeJsonAxis === "unmeasured") {
+    console.warn(
+      "⚠️  봉인 감사의 .claude.json 의미 diff 축은 이 실행에서 측정되지 않는다(unmeasured) — 프로덕션 경로에서 " +
+        "자식은 $HOME/.claude.json에 쓰지만 감사는 config dir 안의 파일만 본다. config dir 트리 감사는 정상 동작한다.",
+    );
+  }
 
   /**
    * 요약을 만드는 **유일한 자리.** 정상 종료와 중단이 같은 값을 내야 장부가 갈리지 않는다 —
@@ -319,6 +334,7 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
       sealAudit: {
         sessionOwnedExcluded: sessionOwnedExcludedTotal,
         concurrencyOverrides: concurrencyOverridesTotal,
+        claudeJson: claudeJsonAxis,
       },
       indexPath,
     };
@@ -335,7 +351,7 @@ export async function runGen(options: RunGenOptions): Promise<RunGenSummary> {
       if (noLlm) {
         generated = ruleExtract(target.asset, target.sections, now);
       } else {
-        const claudeJsonBefore = readClaudeJsonRawOrNull(home.ctkConfigDir);
+        const claudeJsonBefore = readClaudeJsonInConfigDirOrNull(home.ctkConfigDir);
         const before = captureConfigDirSnapshot(home.ctkConfigDir, treeCache);
         const llmResult = await runClaudePForTarget({
           home,

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { auditSealedLiveConfigDir, captureConfigDirSnapshot, readClaudeJsonRawOrNull, sealedLiveAuditPassed, type ConfigDirSnapshot } from "../src/tree-audit.js";
+import { auditSealedLiveConfigDir, captureConfigDirSnapshot, readClaudeJsonInConfigDirOrNull, sealedLiveAuditPassed, type ConfigDirSnapshot } from "../src/tree-audit.js";
 import { SESSION_OWNED_NOT_ATTRIBUTABLE } from "@ctk/core";
 
 describe("gen/tree-audit — AC-3.7 (sealed-live 전용 Tier-2 허용목록, AC-0.11 기준)", () => {
@@ -65,11 +65,11 @@ describe("gen/tree-audit — AC-3.7 (sealed-live 전용 Tier-2 허용목록, AC-
     expect(result.claudeJsonSemantic?.overallStatus).toBe("violation");
   });
 
-  it("readClaudeJsonRawOrNull은 파일이 없으면 null, 있으면 원문을 반환한다", () => {
+  it("readClaudeJsonInConfigDirOrNull은 파일이 없으면 null, 있으면 원문을 반환한다", () => {
     dir = mkdtempSync(path.join(tmpdir(), "ctk-tree-audit-read-"));
-    expect(readClaudeJsonRawOrNull(dir)).toBeNull();
+    expect(readClaudeJsonInConfigDirOrNull(dir)).toBeNull();
     writeFileSync(path.join(dir, ".claude.json"), '{"x":1}');
-    expect(readClaudeJsonRawOrNull(dir)).toBe('{"x":1}');
+    expect(readClaudeJsonInConfigDirOrNull(dir)).toBe('{"x":1}');
   });
 });
 

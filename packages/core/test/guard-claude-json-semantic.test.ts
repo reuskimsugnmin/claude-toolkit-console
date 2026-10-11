@@ -128,3 +128,23 @@ describe("core/guard/claude-json-semantic — 보안 심사 재현 입력(자기
     expect(claudeJsonSemanticVerdict({ pluginUsage: before }, { pluginUsage: { [ID]: after } }, [], ID).overallStatus).toBe("violation");
   });
 });
+
+describe("core/guard/claude-json-semantic — 다른 세션의 pluginUsage churn(allowLiveSessionPluginUsage)", () => {
+  const v = (before: unknown, after: unknown, id: string | null = null, live = true) =>
+    claudeJsonSemanticVerdict({ pluginUsage: before }, { pluginUsage: after }, [], id, live).overallStatus;
+
+  it("기존 항목의 lastUsedAt·usageCount만 바뀌면 allowed_churn, 옵션이 꺼져 있으면 종전대로 violation", () => {
+    expect(v({ a: { usageCount: 1, lastUsedAt: 1 } }, { a: { usageCount: 2, lastUsedAt: 2 } })).toBe("allowed_churn");
+    expect(v({ a: { usageCount: 1, lastUsedAt: 1 } }, { a: { usageCount: 2, lastUsedAt: 2 } }, null, false)).toBe("violation");
+  });
+
+  it.each([
+    ["새 항목", { a: { usageCount: 1 } }, { a: { usageCount: 1 }, b: { usageCount: 0 } }],
+    ["삭제된 항목", { a: { usageCount: 1 }, b: { usageCount: 0 } }, { a: { usageCount: 1 } }],
+    ["항목 안에 새 필드", { a: { usageCount: 1 } }, { a: { usageCount: 1, x: 1 } }],
+    ["숫자가 아닌 값", { a: { usageCount: 1 } }, { a: { usageCount: "2" } }],
+    ["필드 삭제", { a: { usageCount: 1, lastUsedAt: 1 } }, { a: { usageCount: 1 } }],
+  ])("%s → violation", (_n, before, after) => {
+    expect(v(before, after)).toBe("violation");
+  });
+});

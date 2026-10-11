@@ -16,7 +16,12 @@ import {
   movePluginEnablement,
   moveSkillDir as applyMoveSkillDir,
   readClaudeJsonRawOrNull,
+  CLAUDE_JSON_BACKUP_KEY,
+  ConfigClobberedError,
+  RollbackFailedError,
+  describeClaudeJsonLeftover,
   restoreFromBackup,
+  type RestoreReport,
   verifyPluginEnablementMove,
   verifySkillDirMove,
   writeBeforeSnapshot,
@@ -218,6 +223,30 @@ function extractFailureClass(err: unknown): FailureClass {
  * 레코드를 남긴다(`rolled_back`이면 복원 성공, `failure`면 복원 자체도 실패 — `RollbackFailedError`
  * 원문이 그대로 cause 체인에 남는다. H3: "원래 실패 원인이 소실"되지 않게 한다).
  */
+interface RollbackOutcomeForRunLog {
+  claude_json: string;
+  claude_json_mcp_forbidden: boolean;
+  restored_keys: readonly string[];
+  unrestored_keys: readonly string[];
+}
+
+function attachRollbackOutcome(err: unknown, outcome: RollbackOutcomeForRunLog): void {
+  if (typeof err !== "object" || err === null) return;
+  // 동결된 오류면 defineProperty가 던진다 — 그 TypeError가 원래 오류와 저널 기록을 가리면 안 된다(재심 L-B).
+  // 부착 실패는 run-log에서 outcome이 빠질 뿐이다(`rollbackOutcomeOf`가 null을 낸다).
+  try {
+    Object.defineProperty(err, "rollbackOutcome", { value: outcome, enumerable: false });
+  } catch {
+    /* 부착 실패를 삼킨다 — 위 주석 */
+  }
+}
+
+function rollbackOutcomeOf(err: unknown): RollbackOutcomeForRunLog | null {
+  if (typeof err !== "object" || err === null) return null;
+  const v = (err as { rollbackOutcome?: RollbackOutcomeForRunLog }).rollbackOutcome;
+  return v ?? null;
+}
+
 function rollbackAndRecord(options: {
   cause: unknown;
   backupRoot: string;
@@ -230,16 +259,62 @@ function rollbackAndRecord(options: {
   /** M8 — manifest 키 → "조치 직후 우리가 남긴 sha256". restoreFromBackup이 복원 직전 이 값과
    * 실측을 대조해, 백업~롤백 사이 다른 세션이 파일을 바꿨으면 조용히 덮어쓰지 않고 중단한다. */
   expectedCurrentShas?: Readonly<Record<string, string | undefined>>;
+  /** 플러그인 이동의 대상 id — `.claude.json` 점검에서 그 `pluginUsage` enable 흔적을 허용하는 데 쓴다. */
+  enabledPluginId?: string;
 }): never {
   let result: JournalResult;
   let rollbackCause: unknown = null;
+  let report: RestoreReport | null = null;
   try {
-    restoreFromBackup(options.backupRoot, options.home, undefined, options.expectedCurrentShas);
+    report = restoreFromBackup(options.backupRoot, options.home, undefined, options.expectedCurrentShas, {
+      enabledPluginId: options.enabledPluginId ?? null,
+    });
     result = "rolled_back";
   } catch (rbErr) {
     result = "failure";
     rollbackCause = rbErr;
   }
+
+  // 롤백이 실제로 어떻게 끝났는지는 여기서만 안다 — 안내문은 이 결과에 맞춰 붙인다(감사 쪽에서 미리 단정하지 않는다).
+  const cause = options.cause as { claudeJsonSemanticViolation?: unknown; claudeJsonMcpForbidden?: unknown } | null;
+  const semanticViolation = options.cause instanceof Error && cause?.claudeJsonSemanticViolation === true;
+  const mcpForbidden = semanticViolation && cause?.claudeJsonMcpForbidden === true;
+  const backupRef = `~/${path.relative(options.home.ctkHome, options.backupRoot)}`;
+  const concurrentHint = semanticViolation
+    ? " 다른 Claude Code 세션도 .claude.json을 씁니다 — 다른 세션을 닫거나 잠시 기다린 뒤 다시 시도하세요."
+    : "";
+  // 플러그인 이동은 복원 보고에서, 스킬 이동(manifest에 .claude.json 없음)은 감사 오류의 표지에서 .claude.json 문장을 얻는다(N5).
+  const claudeJsonNote =
+    (report !== null ? describeClaudeJsonLeftover(report, backupRef) : null) ??
+    (semanticViolation
+      ? ".claude.json의 의미 위반은 ctk가 의도한 변경이 아닙니다(이 이동은 그 파일을 쓰지 않습니다 — ctk가 띄운 claude CLI 하위 프로세스 또는 다른 세션이 쓴 것) — 되돌리지 않고 그대로 두었습니다." +
+        (mcpForbidden ? " ⚠ MCP 서브트리 변경이 관측되었습니다 — 반드시 직접 확인하세요." : " 필요하면 직접 확인하세요.")
+      : null);
+  if (rollbackCause === null && options.cause instanceof Error && claudeJsonNote !== null) {
+    options.cause.message += `\n[롤백 완료] ctk가 백업한 설정 파일은 이동 전 상태로 되돌렸습니다. ${claudeJsonNote}${concurrentHint}`;
+  }
+  if (rollbackCause instanceof ConfigClobberedError) {
+    rollbackCause.message +=
+      `\n[롤백 미실행] 복원은 한 파일도 하지 않았습니다 — 이동은 적용된 상태로 남아 있습니다. ` +
+      `\`ctk scan\`으로 현재 상태를 확인하고, 다른 Claude Code 세션을 닫은 뒤 반대 방향으로 \`ctk move\`를 실행해 되돌리세요 ` +
+      `(마지막 기록이 failure라 \`ctk rollback --last\`는 거부됩니다). 백업: ${backupRef}` +
+      concurrentHint;
+  } else if (rollbackCause instanceof RollbackFailedError && rollbackCause.restoredKeys.length > 0) {
+    rollbackCause.message +=
+      `\n[롤백 부분 실행] 복원됨: ${rollbackCause.restoredKeys.join(", ")} / 미복원: ${rollbackCause.unrestoredKeys.join(", ")} — ` +
+      `현재 상태는 이동이 일부만 되돌려진 것입니다(복원된 파일은 이동 전, 미복원 파일은 이동 후 내용). ` +
+      `\`ctk scan\`으로 현재 상태를 확인하고, 다른 Claude Code 세션을 닫은 뒤 미복원 항목을 ${backupRef} 의 백업 사본으로 직접 되돌리거나 ` +
+      `반대 방향으로 \`ctk move\`를 실행하세요(\`ctk rollback --last\`는 마지막 기록이 failure라 거부됩니다).` +
+      concurrentHint;
+  }
+
+  // 지속 기록(run-log)이 읽을 수 있게 롤백 결과를 던질 오류에 붙인다 — journal은 스키마가 엄격해 이 신호를 못 싣는다.
+  attachRollbackOutcome(rollbackCause ?? options.cause, {
+    claude_json: report?.claudeJson?.status ?? (report !== null ? "absent" : "not_inspected"),
+    claude_json_mcp_forbidden: report?.claudeJson?.mcpForbidden ?? mcpForbidden,
+    restored_keys: report?.restoredKeys ?? (rollbackCause instanceof RollbackFailedError ? rollbackCause.restoredKeys : []),
+    unrestored_keys: rollbackCause instanceof RollbackFailedError ? rollbackCause.unrestoredKeys : [],
+  });
 
   try {
     const entry = options.buildEntry(result);
@@ -282,7 +357,7 @@ async function movePluginAsset(
   try {
     // ---- 1. before 스냅샷(백업·감사·저널 전부의 기준선) ----
     const configBefore = captureRootSnapshot(configRoot);
-    const claudeJsonBeforeRaw = readClaudeJsonRawOrNull(configRoot);
+    const claudeJsonBeforeRaw = readClaudeJsonRawOrNull(claudeJsonPath(home));
     const projectBefores = new Map(involvedProjectPaths.map((p) => [p, captureRootSnapshot(path.join(p, ".claude"))]));
 
     const installedPluginsAbsPath = path.join(configRoot, "plugins", "installed_plugins.json");
@@ -311,7 +386,7 @@ async function movePluginAsset(
       // H4 — `claude plugin disable/enable`이 실제로 건드리는 config_claude_json도 백업 대상에
       // 포함한다(AC-0.8 실측 — 읽기 명령만으로도 갱신된다. 롤백이 이걸 복원 못 하면 AC-2.3/2.5가
       // 구조적으로 성립하지 않는다).
-      config_claude_json: backupFile(backupRoot, "config_claude_json", claudeJsonPath(home)),
+      [CLAUDE_JSON_BACKUP_KEY]: backupFile(backupRoot, CLAUDE_JSON_BACKUP_KEY, claudeJsonPath(home)),
     };
     if (toSettingsAbs !== fromSettingsAbs) {
       backupEntries.to_settings = backupFile(backupRoot, "to_settings", toSettingsAbs);
@@ -351,6 +426,7 @@ async function movePluginAsset(
         buildEntry: buildFailureEntry,
         commitMessage: (result) => `ctk move (${result}): ${options.assetId} ${fromScope} -> ${toScope}`,
         expectedCurrentShas: expectedCurrentShasBox.value,
+        enabledPluginId: options.assetId,
       });
 
     // ---- 3. 적용 ----
@@ -369,7 +445,6 @@ async function movePluginAsset(
     }
     expectedCurrentShasBox.value = {
       from_settings: sha256FileOrUndefined(fromSettingsAbs),
-      config_claude_json: sha256FileOrUndefined(claudeJsonPath(home)),
       ...(toSettingsAbs !== fromSettingsAbs ? { to_settings: sha256FileOrUndefined(toSettingsAbs) } : {}),
     };
 
@@ -382,7 +457,7 @@ async function movePluginAsset(
       // M10 — before의 캐시를 넘겨 안 바뀐 파일은 재해시를 건너뛴다.
       const configAfter = captureRootSnapshot(configRoot, configBefore.cache);
       const configAudit = auditRoot(
-        { rootAbs: configRoot, tier1: TIER1_INTENTIONAL_WRITES, allowTier2Churn: true, enabledPluginId: options.assetId },
+        { rootAbs: configRoot, tier1: TIER1_INTENTIONAL_WRITES, allowTier2Churn: true, claudeJsonAbs: claudeJsonPath(home), enabledPluginId: options.assetId },
         configBefore,
         configAfter,
         claudeJsonBeforeRaw,
@@ -400,7 +475,7 @@ async function movePluginAsset(
           null,
         );
         if (!auditPassed(projectAudit)) {
-          throw auditFailureError(projectAudit, `project 트리 감사 위반(${projectPath})`);
+          throw auditFailureError(projectAudit, `project 트리 감사 위반(#${normalizePath(projectPath, home.ctkHome).path_hash.slice(0, 8)})`);
         }
       }
     } catch (err) {
@@ -487,6 +562,8 @@ async function moveSkillAsset(
 
   // ---- 1. before 스냅샷 ----
   const configBefore = captureRootSnapshot(configRoot);
+  // 액션 **전에** 캡처한다(예전엔 감사 호출 시점에 읽어 before==after가 됐다).
+  const claudeJsonBeforeRaw = readClaudeJsonRawOrNull(claudeJsonPath(home));
   const projectBefores = new Map(involvedProjectPaths.map((p) => [p, captureRootSnapshot(path.join(p, ".claude"))]));
 
   // ---- 2. 백업(이동 대상 스킬 디렉터리 자체 + 목적지 자리, H4: before 스냅샷도 저장) ----
@@ -549,7 +626,7 @@ async function moveSkillAsset(
   try {
     // M10 — before의 캐시를 넘겨 안 바뀐 파일은 재해시를 건너뛴다.
     const configAfter = captureRootSnapshot(configRoot, configBefore.cache);
-    const configAudit = auditRoot({ rootAbs: configRoot, tier1: skillTier1, allowTier2Churn: true }, configBefore, configAfter, readClaudeJsonRawOrNull(configRoot));
+    const configAudit = auditRoot({ rootAbs: configRoot, tier1: skillTier1, allowTier2Churn: true, claudeJsonAbs: claudeJsonPath(home) }, configBefore, configAfter, claudeJsonBeforeRaw);
     if (!auditPassed(configAudit)) {
       throw auditFailureError(configAudit, "config 트리 감사 위반");
     }
@@ -558,7 +635,7 @@ async function moveSkillAsset(
       const after = captureRootSnapshot(path.join(projectPath, ".claude"), before.cache);
       const projectAudit = auditRoot({ rootAbs: path.join(projectPath, ".claude"), tier1: skillTier1, allowTier2Churn: false }, before, after, null);
       if (!auditPassed(projectAudit)) {
-        throw auditFailureError(projectAudit, `project 트리 감사 위반(${projectPath})`);
+        throw auditFailureError(projectAudit, `project 트리 감사 위반(#${normalizePath(projectPath, home.ctkHome).path_hash.slice(0, 8)})`);
       }
     }
   } catch (err) {
@@ -643,7 +720,8 @@ export async function runMove(options: MoveOptions): Promise<MoveSummary> {
       schema_version: 1,
       _scope: "machine_dependent",
       command: "move",
-      args: { asset_id: options.assetId, to: options.to },
+      // 자기 롤백이 있었으면 그 결과(.claude.json 점검 상태·복원된/안 된 키)를 지속 기록에 남긴다 — 화면 메시지는 사라진다.
+      args: { asset_id: options.assetId, to: options.to, ...(rollbackOutcomeOf(err) ?? {}) },
       machine_id: machine.machine_id,
       started_at: startedAt.toISOString(),
       finished_at: new Date().toISOString(),

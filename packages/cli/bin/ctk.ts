@@ -344,6 +344,7 @@ async function main(): Promise<void> {
         const summary = await runRollback({ last: true });
         console.log(`ctk rollback 완료 — ${summary.assetId}(${summary.action}) 되돌림`);
         console.log(`  journal: ${summary.journalPath}`);
+        if (summary.claudeJsonNote !== null) console.log(`  ⚠️ ${summary.claudeJsonNote}`);
         return;
       }
       case "measure": {
@@ -444,6 +445,9 @@ async function main(): Promise<void> {
         // 실제로 나간 돈을 남긴다 — 지난 배치는 끝나고도 실지출을 알 수 없었다(견적만 있었다).
         console.log(`  ${describeActualCost(summary.cost)}`);
         console.log(`  인덱스: ${summary.indexPath}`);
+        if (summary.sealAudit.claudeJson === "unmeasured") {
+          console.log("  ⚠️ 봉인 감사 .claude.json 의미 diff: unmeasured (프로덕션 경로에서는 측정되지 않았다 — 통과가 아니다)");
+        }
         // ⚠️ **실패를 삼키지 않는다(안전 원칙 7).** 자산별 skip으로 범위를 좁혔다는 것이
         // "실패가 없었다"는 뜻은 아니다 — 한 건이라도 call_failed면 종료 코드로 드러낸다.
         // 그러지 않으면 배치 스크립트와 CI가 "전부 성공"으로 읽는다.

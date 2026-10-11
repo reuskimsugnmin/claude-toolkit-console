@@ -140,7 +140,15 @@ function scanView(s: Awaited<ReturnType<typeof runScan>>) {
 }
 
 function rollbackView(s: Awaited<ReturnType<typeof runRollback>>) {
-  return { asset_id: s.assetId, action: s.action };
+  // 롤백이 .claude.json을 복원하지 않고 남긴 사정(허용 밖 변경·MCP 서브트리)은 웹에서도 보여야 한다 — 빠뜨리면 CLI에서만 보인다.
+  // 메시지는 해시된 경로와 home-relative backup_ref만 담는다(절대경로 없음).
+  return {
+    asset_id: s.assetId,
+    action: s.action,
+    claude_json_status: s.claudeJsonStatus,
+    claude_json_mcp_forbidden: s.claudeJsonMcpForbidden,
+    claude_json_note: s.claudeJsonNote,
+  };
 }
 
 function moveView(s: Awaited<ReturnType<typeof runMove>>) {

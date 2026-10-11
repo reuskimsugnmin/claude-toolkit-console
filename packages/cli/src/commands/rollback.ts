@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { buildRollbackJournalEntry, manifestSha256Of, restoreFromBackup } from "@ctk/actuator";
+import { RollbackFailedError, buildRollbackJournalEntry, describeClaudeJsonLeftover, manifestSha256Of, restoreFromBackup } from "@ctk/actuator";
 import { resolveHomeContext } from "@ctk/probe";
 import { FAILURE_CLASSES, parseJournalEntry, type FailureClass, type JournalEntry, type RunLogEntry } from "@ctk/core";
 import { acquireLock, commitAll, writeJournalEntry, writeRunLog } from "@ctk/sync";
@@ -42,6 +42,11 @@ export interface RollbackSummary {
   action: JournalEntry["action"];
   backupRef: string;
   journalPath: string;
+  /** `.claude.json`을 복원하지 않고 남긴 사정 중 사람이 봐야 할 것(허용 밖 변경 등). 없으면 null. */
+  claudeJsonNote: string | null;
+  /** `.claude.json` 점검 상태 — manifest에 항목이 없으면 "absent". */
+  claudeJsonStatus: "absent" | "ok" | "violation" | "unjudgeable";
+  claudeJsonMcpForbidden: boolean;
 }
 
 function listJournalFilesSorted(catalogPath: string): string[] {
@@ -159,7 +164,7 @@ export async function runRollback(_options: RollbackOptions): Promise<RollbackSu
     }
 
     const backupRootAbs = backupRefToAbs(home.ctkHome, entry.backup_ref);
-    restoreFromBackup(backupRootAbs, home, entry.backup_manifest_sha256);
+    const restoreReport = restoreFromBackup(backupRootAbs, home, entry.backup_manifest_sha256, undefined, { enabledPluginId: entry.asset_id });
 
     const rollbackEntry = buildRollbackJournalEntry({
       originalAction: entry.action,
@@ -179,7 +184,14 @@ export async function runRollback(_options: RollbackOptions): Promise<RollbackSu
       schema_version: 1,
       _scope: "machine_dependent",
       command: "rollback",
-      args: { asset_id: entry.asset_id, original_action: entry.action },
+      // journal은 스키마가 엄격해 .claude.json 점검 신호를 못 싣는다 — 지속 기록은 run-log다.
+      args: {
+        asset_id: entry.asset_id,
+        original_action: entry.action,
+        claude_json: restoreReport.claudeJson?.status ?? "absent",
+        claude_json_mcp_forbidden: restoreReport.claudeJson?.mcpForbidden ?? false,
+        restored_keys: restoreReport.restoredKeys,
+      },
       machine_id: machine.machine_id,
       started_at: startedAt.toISOString(),
       finished_at: new Date().toISOString(),
@@ -187,13 +199,21 @@ export async function runRollback(_options: RollbackOptions): Promise<RollbackSu
       failure_class: null,
     });
 
-    return { assetId: entry.asset_id, action: entry.action, backupRef: entry.backup_ref, journalPath };
+    return {
+      assetId: entry.asset_id,
+      action: entry.action,
+      backupRef: entry.backup_ref,
+      journalPath,
+      claudeJsonNote: describeClaudeJsonLeftover(restoreReport, entry.backup_ref),
+      claudeJsonStatus: restoreReport.claudeJson?.status ?? "absent",
+      claudeJsonMcpForbidden: restoreReport.claudeJson?.mcpForbidden ?? false,
+    };
   } catch (err) {
     writeRunLogSafely(catalogPath, {
       schema_version: 1,
       _scope: "machine_dependent",
       command: "rollback",
-      args: {},
+      args: err instanceof RollbackFailedError ? { restored_keys: err.restoredKeys, unrestored_keys: err.unrestoredKeys } : {},
       machine_id: machine.machine_id,
       started_at: startedAt.toISOString(),
       finished_at: new Date().toISOString(),

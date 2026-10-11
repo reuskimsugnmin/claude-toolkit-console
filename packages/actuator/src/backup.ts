@@ -10,7 +10,7 @@ import {
   type BackupManifest as CoreBackupManifest,
   type FileEntry,
 } from "@ctk/core";
-import { atomicWriteFile } from "./guard/atomic-write.js";
+import { atomicWriteFile, describePath } from "./guard/atomic-write.js";
 
 /**
  * actuator/src/backup.ts — 수정 대상 파일/디렉터리를 타임스탬프 디렉터리로 백업한다(AC-2.3).
@@ -33,6 +33,9 @@ import { atomicWriteFile } from "./guard/atomic-write.js";
  * - `writeManifest`는 이제 manifest 바이트의 sha256도 반환한다 — 호출자(cli/move.ts)가 이를
  *   journal 레코드에 `backup_manifest_sha256`으로 실어 롤백 시 무결성 대조에 쓴다(AC-2.13).
  */
+
+/** `.claude.json` 백업 항목의 manifest 키 — 백업하는 쪽(move)과 복원에서 제외하는 쪽(rollback)이 같은 값을 쓴다. */
+export const CLAUDE_JSON_BACKUP_KEY = "config_claude_json";
 
 export type BackupFileEntry = CoreBackupFileEntry;
 export type BackupDirEntry = CoreBackupDirEntry;
@@ -61,7 +64,7 @@ export function backupFile(backupRoot: string, key: string, sourceAbs: string): 
   }
   const stat = statSync(sourceAbs);
   if (!stat.isFile()) {
-    throw new Error(`backupFile 대상이 파일이 아니다: ${sourceAbs}`);
+    throw new Error(`backupFile 대상이 파일이 아니다: ${describePath(sourceAbs)}`);
   }
   const storedRelPath = path.join(key, path.basename(sourceAbs));
   const destAbs = path.join(backupRoot, storedRelPath);
@@ -70,7 +73,7 @@ export function backupFile(backupRoot: string, key: string, sourceAbs: string): 
   const sha256 = sha256File(sourceAbs);
   const backedUpSha256 = sha256File(destAbs);
   if (sha256 !== backedUpSha256) {
-    throw new Error(`backupFile 사후 검증 실패 — 백업 사본이 원본과 sha256 불일치: ${sourceAbs}`);
+    throw new Error(`backupFile 사후 검증 실패 — 백업 사본이 원본과 sha256 불일치: ${describePath(sourceAbs)}`);
   }
   return { kind: "file", targetAbs: sourceAbs, existed: true, sha256, storedRelPath };
 }
@@ -82,7 +85,7 @@ export function backupDirectory(backupRoot: string, key: string, sourceAbs: stri
   }
   const stat = statSync(sourceAbs);
   if (!stat.isDirectory()) {
-    throw new Error(`backupDirectory 대상이 디렉터리가 아니다: ${sourceAbs}`);
+    throw new Error(`backupDirectory 대상이 디렉터리가 아니다: ${describePath(sourceAbs)}`);
   }
   const storedRelPath = key;
   const destAbs = path.join(backupRoot, storedRelPath);
@@ -94,7 +97,7 @@ export function backupDirectory(backupRoot: string, key: string, sourceAbs: stri
   const backedUpByPath = new Map(backedUpFiles.map((f) => [f.path, f.sha256]));
   for (const f of sourceFiles) {
     if (backedUpByPath.get(f.path) !== f.sha256) {
-      throw new Error(`backupDirectory 사후 검증 실패 — ${f.path}의 sha256이 원본과 불일치: ${sourceAbs}`);
+      throw new Error(`backupDirectory 사후 검증 실패 — ${f.path}의 sha256이 원본과 불일치: ${describePath(sourceAbs)}`);
     }
   }
   const files = sourceFiles.map((f) => ({ relPath: f.path, sha256: f.sha256 })).sort((a, b) => a.relPath.localeCompare(b.relPath));
@@ -194,7 +197,7 @@ export function pruneBackupRuns(backupsRoot: string, keep = 10): { removed: stri
       .sort(); // run_id는 ISO8601 접두라 사전순 = 시간순
   } catch {
     // 못 읽으면 "정리할 것이 없다"가 아니라 판정 불가다(안전 원칙 5).
-    throw new Error(`백업 루트를 읽을 수 없어 보존 정책을 적용할 수 없다: ${backupsRoot}`);
+    throw new Error(`백업 루트를 읽을 수 없어 보존 정책을 적용할 수 없다: ${describePath(backupsRoot)}`);
   }
 
   const candidates = runIds.slice(0, Math.max(0, runIds.length - keep));
