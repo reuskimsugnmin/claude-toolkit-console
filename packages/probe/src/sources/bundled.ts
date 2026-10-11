@@ -188,6 +188,12 @@ interface DirScanResult {
   frontmatterUnmeasured: number;
   /** 보안 재심 L-3 — 원문이 일반 파일이 아니어서(FIFO·소켓·디바이스) 열지 않은 건수. */
   notRegularFileSkipped: number;
+  /**
+   * `notRegularFileSkipped`로 센 항목의 **OS 이름**(스킬은 디렉터리명, 평면 kind는 `.md` 뺀 파일명).
+   * FIFO는 frontmatter를 못 읽어 자칭 name을 모르므로 **이름이 OS 이름과 같은 자산만** 매칭된다
+   * (`findBundledToolPath`의 `notRegularMatches`) — 자칭 name이 달랐던 자산은 `source_missing`에 남는다.
+   */
+  notRegularNames: string[];
 }
 
 /**
@@ -214,6 +220,7 @@ function scanBundledSkills(pluginDirAbs: string): DirScanResult {
   let unsafeNamesSkipped = 0;
   let frontmatterUnmeasured = 0;
   let notRegularFileSkipped = 0;
+  const notRegularNames: string[] = [];
 
   for (const dirent of readDirSafe(skillsDirAbs)) {
     if (dirent.isSymbolicLink()) {
@@ -241,13 +248,19 @@ function scanBundledSkills(pluginDirAbs: string): DirScanResult {
     if (!skillMdStat.isFile()) {
       // 센다(L-3) — 이 건너뜀이 `scanFrontmatter` 앞에 있어 아래 `not_a_regular_file` 증가가 경합 때만
       // 닿았고 카운터와 per-parent 경고가 죽어 있었다. 디렉터리 `SKILL.md`는 공격 신호가 아니라 세지 않는다.
-      if (!skillMdStat.isDirectory()) notRegularFileSkipped++;
+      if (!skillMdStat.isDirectory()) {
+        notRegularFileSkipped++;
+        notRegularNames.push(dirent.name);
+      }
       continue;
     }
     const scan = scanFrontmatter(skillMdAbs);
     if (!scan.ok) {
       // "일반 파일 아님"은 공격 신호이고 "읽기 실패"는 경합·권한이다 — 전자만 센다(L-3).
-      if (scan.reason === "not_a_regular_file") notRegularFileSkipped++;
+      if (scan.reason === "not_a_regular_file") {
+        notRegularFileSkipped++;
+        notRegularNames.push(dirent.name);
+      }
       continue;
     }
     // ⚠️ 판정 불가면 `frontmatter`가 **빈 객체**로 온다(fail-closed) — 아래 `claimedName`이
@@ -263,7 +276,7 @@ function scanBundledSkills(pluginDirAbs: string): DirScanResult {
     found.push({ suffix, absPath: skillDirAbs, description: frontmatter.description });
   }
 
-  return { found, symlinksSkipped, unsafeNamesSkipped, frontmatterUnmeasured, notRegularFileSkipped };
+  return { found, symlinksSkipped, unsafeNamesSkipped, frontmatterUnmeasured, notRegularFileSkipped, notRegularNames };
 }
 
 interface FlatMdScanResult extends DirScanResult {
@@ -287,6 +300,7 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
   let nestedUnmeasured = 0;
   let frontmatterUnmeasured = 0;
   let notRegularFileSkipped = 0;
+  const notRegularNames: string[] = [];
 
   for (const dirent of readDirSafe(kindDirAbs)) {
     if (dirent.isSymbolicLink()) {
@@ -305,6 +319,7 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
       // 심볼릭 링크·디렉터리는 위에서 이미 갈렸다 — 여기까지 온 비일반 파일은 FIFO·소켓·디바이스다.
       // 이 건너뜀이 센 뒤가 아니라 세기 전에 있어 카운터와 per-parent 경고가 죽어 있었다(L-3).
       notRegularFileSkipped++;
+      notRegularNames.push(dirent.name.slice(0, -".md".length));
       continue;
     }
     const fileAbs = path.join(kindDirAbs, dirent.name);
@@ -317,12 +332,18 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
       continue;
     }
     if (!stat.isFile()) {
-      if (!stat.isDirectory() && !stat.isSymbolicLink()) notRegularFileSkipped++; // 경합 경로 — 위와 같은 축.
+      if (!stat.isDirectory() && !stat.isSymbolicLink()) {
+        notRegularFileSkipped++; // 경합 경로 — 위와 같은 축.
+        notRegularNames.push(dirent.name.slice(0, -".md".length));
+      }
       continue;
     }
     const scan = scanFrontmatter(fileAbs);
     if (!scan.ok) {
-      if (scan.reason === "not_a_regular_file") notRegularFileSkipped++;
+      if (scan.reason === "not_a_regular_file") {
+        notRegularFileSkipped++;
+        notRegularNames.push(dirent.name.slice(0, -".md".length));
+      }
       continue;
     }
     // 판정 불가면 빈 객체 — `claimedName`이 `baseName`(파일명)으로 떨어진다(fail-closed).
@@ -338,16 +359,16 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
     found.push({ suffix, absPath: fileAbs, description: frontmatter.description });
   }
 
-  return { found, symlinksSkipped, unsafeNamesSkipped, nestedUnmeasured, frontmatterUnmeasured, notRegularFileSkipped };
+  return { found, symlinksSkipped, unsafeNamesSkipped, nestedUnmeasured, frontmatterUnmeasured, notRegularFileSkipped, notRegularNames };
 }
 
 /** M-1 — kind 디렉터리 자체가 거부되면 리프를 아예 열지 않는다(readdirSync 자체를 안 부른다). */
 function emptyDirScanResult(): DirScanResult {
-  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, frontmatterUnmeasured: 0, notRegularFileSkipped: 0 };
+  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, frontmatterUnmeasured: 0, notRegularFileSkipped: 0, notRegularNames: [] };
 }
 
 function emptyFlatMdScanResult(): FlatMdScanResult {
-  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, nestedUnmeasured: 0, frontmatterUnmeasured: 0, notRegularFileSkipped: 0 };
+  return { found: [], symlinksSkipped: 0, unsafeNamesSkipped: 0, nestedUnmeasured: 0, frontmatterUnmeasured: 0, notRegularFileSkipped: 0, notRegularNames: [] };
 }
 
 interface DedupedKindResult {
@@ -595,7 +616,16 @@ export function createBundledToolLocationCache(): BundledToolLocationCache {
  * 하나의 캐시를 만들어 반복 호출에 넘겨야 한다(`planGenTargets`가 이렇게 쓴다).
  */
 export type BundledToolLookup =
-  | { ok: true; locations: BundledToolLocation[] }
+  | {
+      ok: true;
+      locations: BundledToolLocation[];
+      /**
+       * 같은 스캔에서 `name`과 OS 이름이 같으면서 **일반 파일이 아니어서 열지 않은** 원문의 수.
+       * 호출자는 `locations`가 0건이어도 이 값이 1 이상이면 "없음"이 아니라 "있는데 읽을 수 없음"으로
+       * 판정해야 한다(위생 거부). FIFO는 자칭 name을 못 읽으므로 OS 이름으로만 매칭한다.
+       */
+      notRegularMatches: number;
+    }
   /**
    * 부모의 `installPath` 검증이 실패했다 — **`ok: true` + 빈 배열과 다른 축이다.**
    *
@@ -648,6 +678,7 @@ export function findBundledToolPath(
   return {
     ok: true,
     locations: scan.found.filter((tool) => tool.suffix === name).map((tool) => ({ absPath: tool.absPath, containmentRoot })),
+    notRegularMatches: scan.notRegularNames.filter((n) => n === name).length,
   };
 }
 
