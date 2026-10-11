@@ -65,6 +65,8 @@ interface SkillDirScan {
   frontmatterUnmeasured: number;
   /** 보안 재심 L-3 — `SKILL.md`가 일반 파일이 아니어서(FIFO·소켓·디바이스) 열지 않은 건수. */
   notRegularFileSkipped: number;
+  /** 위 건수의 디렉터리명 — `lookupSkillDirsById`가 id(=디렉터리명 폴백)로 매칭한다. */
+  notRegularNames: string[];
   /** 보안 재심 L-4 — id 후보가 `:`를 담아 건너뛴 건수(번들 자식 id 참칭 방지). */
   unsafeIdSkipped: number;
 }
@@ -74,11 +76,12 @@ function readSkillDir(skillsRootAbs: string, scope: "user" | "project", projectP
   try {
     dirents = readdirSync(skillsRootAbs, { withFileTypes: true });
   } catch {
-    return { found: [], frontmatterUnmeasured: 0, notRegularFileSkipped: 0, unsafeIdSkipped: 0 };
+    return { found: [], frontmatterUnmeasured: 0, notRegularFileSkipped: 0, notRegularNames: [], unsafeIdSkipped: 0 };
   }
   const found: DiscoveredSkill[] = [];
   let frontmatterUnmeasured = 0;
   let notRegularFileSkipped = 0;
+  const notRegularNames: string[] = [];
   let unsafeIdSkipped = 0;
   for (const dirent of dirents) {
     if (!dirent.isDirectory()) continue;
@@ -98,7 +101,11 @@ function readSkillDir(skillsRootAbs: string, scope: "user" | "project", projectP
     if (!scan.ok) {
       // 보안 재심 L-3 — "일반 파일 아님"은 M-1 방어가 막는 **공격 신호**인데, 예전에는
       // "SKILL.md 없음"(정상)과 똑같이 조용히 버려졌다. **막는 것과 보이는 것은 다른 축이다.**
-      if (scan.reason === "not_a_regular_file") notRegularFileSkipped++;
+      if (scan.reason === "not_a_regular_file") {
+        notRegularFileSkipped++;
+        // 아래 일반 경로의 `:` 기각(L-4)과 같은 축 — 번들 자식 id 형태의 이름은 독립 스킬 id 후보가 아니다.
+        if (!dirent.name.includes(":")) notRegularNames.push(dirent.name);
+      }
       continue; // 유효한 스킬 디렉터리가 아니다.
     }
     if (scan.unmeasured !== null) frontmatterUnmeasured++;
@@ -126,7 +133,7 @@ function readSkillDir(skillsRootAbs: string, scope: "user" | "project", projectP
     }
     found.push({ id, dirName: dirent.name, absPath: skillDirAbs, description: frontmatter.description, scope, projectPath });
   }
-  return { found, frontmatterUnmeasured, notRegularFileSkipped, unsafeIdSkipped };
+  return { found, frontmatterUnmeasured, notRegularFileSkipped, notRegularNames, unsafeIdSkipped };
 }
 
 /**
@@ -138,15 +145,30 @@ function readSkillDir(skillsRootAbs: string, scope: "user" | "project", projectP
  * (추정으로 채우지 않는다, CLAUDE.md 안전 원칙과 동형).
  */
 export function findSkillDirsById(home: HomeContext, assetId: string): DiscoveredSkill[] {
+  return lookupSkillDirsById(home, assetId).found;
+}
+
+/**
+ * `findSkillDirsById`의 단일 관문 — 같은 순회에서 **일반 파일이 아니어서 열지 않은** 후보 수도 센다.
+ *
+ * `notRegularCount`는 `readSkillDir`의 `notRegularFileSkipped` 결과와 같은 출처이되, FIFO `SKILL.md`는
+ * frontmatter를 못 읽어 자칭 name을 모르므로 **디렉터리명이 `assetId`와 같은 것만** 센다. 즉 자칭 name이
+ * 디렉터리명과 달랐던 스킬이 FIFO로 바뀌면 여기서 매칭되지 않아 호출자는 종전처럼 "없음"으로 본다
+ * (알려진 한계 — 열지 않고는 정체를 증명할 수 없다).
+ */
+export function lookupSkillDirsById(home: HomeContext, assetId: string): { found: DiscoveredSkill[]; notRegularCount: number } {
   const discovered: DiscoveredSkill[] = [];
+  let notRegularCount = 0;
   for (const root of skillsRoots(home)) {
     // ⚠️ 여기서는 `frontmatterUnmeasured`를 세지 않는다 — 이 함수는 **자산 하나를 되찾는**
     // 조회 경로이고 건수를 보고할 채널이 없다. 판정 불가의 결과(자칭 name 대신 디렉터리 이름)는
     // `readSkillDir`이 이미 적용했으므로 여기서 다시 판단할 것이 없고, 건수는 전수 수집
     // 경로(`collectSkills` → `scan.ts` warnings)가 보고한다. **한 신호를 두 곳에서 세지 않는다.**
-    discovered.push(...readSkillDir(root.path, root.scope, root.projectPath).found);
+    const scan = readSkillDir(root.path, root.scope, root.projectPath);
+    discovered.push(...scan.found);
+    notRegularCount += scan.notRegularNames.filter((n) => n === assetId).length;
   }
-  return discovered.filter((d) => d.id === assetId);
+  return { found: discovered.filter((d) => d.id === assetId), notRegularCount };
 }
 
 /**

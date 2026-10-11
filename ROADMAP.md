@@ -776,9 +776,17 @@
     - [x] **L-4**(선재 결함) — 자칭 name에는 `:` 기각이 있는데 폴백 `dirent.name`에는 없어,
       `skills/omc:skill:ask/`가 번들 자식 id와 충돌해 **`ctk scan` 전체를 죽였다**(빠져나갈 길
       없는 fail-closed DoS). 그 스킬 하나만 건너뛴다
-  - **남은 것(이번 범위 밖)**: frontmatter 판정 불가·FIFO 차단을 **웹에서 자산별로** 보여주려면
-    `classifyAssetDocState`처럼 조회 시점에 계산해야 한다(머신 종속 사실이라 카탈로그에 저장
-    불가). CLI warnings로는 드러나지만 화면에는 아직 없다
+  - **남은 것 — 2026-10-12 처리**: 계획 `.omc/plans/b4-remainder-web-signals.md`(critic 승인·수정 7건)
+    - **FIFO는 "안 보임"이 아니라 오분류였다** — 카탈로그 자산의 원본이 FIFO가 되면 조회가 그것을 버려
+      `source_missing`이 됐고 웹은 "원본 없음 → `doctor --drift`"라는 **틀린 처방**을 줬다. 같은 조회 한 번이
+      FIFO 수를 함께 돌려주게 하고(`lookupSkillDirsById` · `findBundledToolPath.notRegularMatches`, 관문 하나)
+      `blocked/asset_source_not_a_file`로 가른다. 일반 원본과 섞여도 막는다(내용 동일성 증명 불가 — `ambiguous_source`와 같은 논리)
+    - **번들 FIFO 카운터가 죽어 있었다**(critic 발견) — 두 스캐너가 세기 **전에** 건너뛰어 L-3이 번들 축에서
+      조용히 다시 열려 있었다. 테스트가 결과만 보고 신호를 단언하지 않아 통과했다
+    - **frontmatter 판정 불가의 웹 표시는 보류 — 모집단 0.** 카운터 수정 뒤 독립·번들 전수 실측에서 0건
+      (양성 대조군으로 도구가 0 아닌 값을 냄을 확인). 신호가 관측되면 계획서 Steps 3–4로 재개한다
+    - **알려진 불일치(보안 재심 L-a)**: `move`는 FIFO 신호를 보지 않는다 — 일반 사본 + 같은 id의 FIFO가 있으면
+      `gen`은 막고 `move`는 일반 사본을 옮긴다. 아무것도 열지 않아 위험은 없고, 맞추려면 actuator 변경이라 별도 심사
 
 - [ ] **B5. `Tag` 신설 — 「스키마의 척추」를 코드와 일치시킨다** (B4-c 갈래 (a))
 

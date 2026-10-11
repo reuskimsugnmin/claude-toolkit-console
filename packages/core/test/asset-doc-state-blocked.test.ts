@@ -67,3 +67,14 @@ describe("describeAssetDocState — blocked은 사유별로 다른 처방을 준
     }
   });
 });
+
+describe("describeAssetDocState — FIFO 원본의 문구는 source_missing의 문구와 다르다", () => {
+  it("asset_source_not_a_file은 '일반 파일 아님'이고 '원본 없음 · ctk doctor --drift'가 아니다", () => {
+    const fifo = describeAssetDocState(blocked("asset_source_not_a_file"));
+    expect(fifo.label).toContain("일반 파일 아님");
+    const missing = describeAssetDocState({ kind: "source_missing" });
+    expect(missing.label).toBe("원본 없음");
+    expect(missing.action).toContain("ctk doctor --drift"); // 양성 대조군 — 아래 부정 단언이 공허하지 않다.
+    expect(`${fifo.label} ${fifo.detail} ${fifo.action}`).not.toContain("doctor --drift");
+  });
+});

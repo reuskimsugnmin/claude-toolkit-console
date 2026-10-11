@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -121,4 +121,53 @@ describe("probe/sources/bundled — FIFO SKILL.md은 스캔을 영구 블록하�
     // 별개 — 이건 vitest가 이 it 블록에 거는 상한이다).
     15000,
   );
+
+  // L-3 — 건너뜀이 세기 전에 있어 `notRegularFileSkipped`와 per-parent 경고가 죽어 있었다.
+  // 카운터는 `reasons`의 "원문이 일반 파일이 아니어서 … N건" 문구로만 밖에 보인다 — 그 문구를 센다.
+  function notRegularCount(report: ChildReport | null, kind: string): number {
+    const line = report?.reasons.find((r) => r.startsWith(`${kind}/: 원문이 일반 파일이 아니어서`));
+    return line ? Number(/ (\d+)건/.exec(line)?.[1]) : 0;
+  }
+
+  function setupParent(): { parentId: string; pluginDir: string } {
+    fixture = buildHome();
+    const parentId = "demo-plugin@synth-marketplace";
+    const pluginDir = makePluginDir(fixture.home, "demo-plugin");
+    writeInstalledPlugins(fixture.home, { [parentId]: pluginDir });
+    return { parentId, pluginDir };
+  }
+
+  it("skills: FIFO SKILL.md는 센다 — 심볼릭 SKILL.md·디렉터리 SKILL.md는 세지 않는다", () => {
+    const { parentId, pluginDir } = setupParent();
+    const mk = (n: string): string => {
+      const d = path.join(pluginDir, "skills", n);
+      mkdirSync(d, { recursive: true });
+      return d;
+    };
+    execFileSync("mkfifo", [path.join(mk("fifo-skill"), "SKILL.md")]);
+    writeFileSync(path.join(pluginDir, "target.md"), "x\n", "utf8");
+    symlinkSync(path.join(pluginDir, "target.md"), path.join(mk("link-skill"), "SKILL.md"));
+    mkdirSync(path.join(mk("dir-skill"), "SKILL.md"));
+
+    const { report, timedOut } = runCollectBundledInChildProcess(fixture.home, parentId);
+    expect(timedOut).toBe(false);
+    expect(notRegularCount(report, "skills")).toBe(1);
+  }, 15000);
+
+  for (const kind of ["commands", "agents"]) {
+    it(`${kind}: FIFO *.md는 센다 — 심볼릭·디렉터리·비 .md FIFO는 세지 않는다`, () => {
+      const { parentId, pluginDir } = setupParent();
+      const dir = path.join(pluginDir, kind);
+      mkdirSync(dir, { recursive: true });
+      execFileSync("mkfifo", [path.join(dir, "fifo.md")]);
+      execFileSync("mkfifo", [path.join(dir, "fifo.txt")]); // 후보가 아닌 이름
+      writeFileSync(path.join(pluginDir, "target.md"), "x\n", "utf8");
+      symlinkSync(path.join(pluginDir, "target.md"), path.join(dir, "link.md"));
+      mkdirSync(path.join(dir, "dir.md"));
+
+      const { report, timedOut } = runCollectBundledInChildProcess(fixture.home, parentId);
+      expect(timedOut).toBe(false);
+      expect(notRegularCount(report, kind)).toBe(1);
+    }, 15000);
+  }
 });
