@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { afterAll, describe, expect, it } from "vitest";
 
 const tempHomes: string[] = [];
@@ -23,6 +24,36 @@ afterAll(() => {
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
+/**
+ * `detached` 옵션을 쓰는 코드의 줄 번호를 돌려준다 (R5).
+ *
+ * 처음에는 `/detached\s*:\s*true/` 정규식으로 원문을 훑었는데, 그 패턴을 인용한 **주석**까지
+ * 잡았다. AST로 바꾸면 주석·문자열은 노드가 아니라 범위가 코드로 좁아지고, 대신 정규식이
+ * 놓치던 형태(`detached: flag`, `"detached": !0`, 단축 속성, 대입)는 넓게 잡는다.
+ * `detached: false`만 명시적 무해로 통과시킨다.
+ */
+function findDetachedUses(source: string, fileName: string): number[] {
+  const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+  const lines: number[] = [];
+  const isDetachedName = (n: ts.Node): boolean =>
+    (ts.isIdentifier(n) || ts.isStringLiteral(n)) && n.text === "detached";
+  const isAssignTarget = (n: ts.Node): boolean =>
+    ts.isBinaryExpression(n.parent) &&
+    n.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    n.parent.left === n;
+  const visit = (n: ts.Node): void => {
+    const hit =
+      (ts.isPropertyAssignment(n) && isDetachedName(n.name) && n.initializer.kind !== ts.SyntaxKind.FalseKeyword) ||
+      (ts.isShorthandPropertyAssignment(n) && n.name.text === "detached") ||
+      (ts.isPropertyAccessExpression(n) && n.name.text === "detached" && isAssignTarget(n)) ||
+      (ts.isElementAccessExpression(n) && isDetachedName(n.argumentExpression) && isAssignTarget(n));
+    if (hit) lines.push(sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1);
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return lines;
+}
 
 function tracked(): string[] {
   return execFileSync("git", ["ls-files"], { cwd: repoRoot, encoding: "utf8" })
@@ -64,8 +95,26 @@ describe("데몬 불변식 — 데몬화 플래그를 노출하지 않는다", (
   it("서브프로세스를 detached로 띄우지 않는다", () => {
     const offenders = tracked()
       .filter((f) => f.endsWith(".ts") && !f.includes("/test/"))
-      .filter((f) => /detached\s*:\s*true/.test(readFileSync(path.join(repoRoot, f), "utf8")));
+      .flatMap((f) =>
+        findDetachedUses(readFileSync(path.join(repoRoot, f), "utf8"), f).map((line) => `${f}:${line}`),
+      );
     expect(offenders).toEqual([]);
+  });
+
+  it("검출기가 공허하지 않다 — 코드는 잡고 주석은 놓친다", () => {
+    // 위 단언이 "아무것도 못 잡아서 통과"하는 상태와 구분한다. 1~3줄은 잡히면 안 되고(R5),
+    // 4~7줄은 잡혀야 하며, 8줄(`false`)은 무해다.
+    const source = [
+      "// detached: true",
+      "/* detached: true */",
+      'const s = "detached: true";',
+      "spawn(a, [], { detached: true });",
+      "spawn(a, [], { detached: flag });",
+      "spawn(a, [], { detached });",
+      "o.detached = true;",
+      "spawn(a, [], { detached: false });",
+    ].join("\n");
+    expect(findDetachedUses(source, "synthetic.ts")).toEqual([4, 5, 6, 7]);
   });
 });
 

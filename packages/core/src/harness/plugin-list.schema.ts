@@ -42,6 +42,9 @@ export const PluginListEntrySchema = z
     noteDetails: z.array(z.object({ type: z.string(), plugin: z.string().optional() }).strict()).optional(),
     // CLI 2.1.286 실측(2026-10-02) — 사용자 설정을 받는 플러그인에만 `hasUserConfig: true`가 붙는다(일부 플러그인만). 읽지 않는다.
     hasUserConfig: z.boolean().optional(),
+    // CLI 2.1.296 실측(2026-10-12) — 로컬 디렉터리 마켓플레이스에서 설치한 플러그인에만 붙는다. `readFromFolder`는 소스 폴더의 **절대경로**라 카탈로그로 흘리면 AC-1.7 위반이다 — 읽지 않는다.
+    readFromFolder: z.string().optional(),
+    folderVersion: z.string().optional(),
   })
   .strict()
   .superRefine((entry, ctx) => {

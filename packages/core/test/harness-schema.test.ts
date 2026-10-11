@@ -89,7 +89,7 @@ describe("plugin-list.schema — 착수 조건 C1 (AC-0.3 정정 스키마)", ()
     }
   });
 
-  it("CLI 2.1.284~287의 projectEnabled·notes·noteDetails·hasUserConfig를 받아들인다(실측 형태)", () => {
+  it("CLI 2.1.284~296의 projectEnabled·notes·noteDetails·hasUserConfig·readFromFolder·folderVersion을 받아들인다(실측 형태)", () => {
     const entry = {
       id: "demo-plugin@demo-marketplace",
       version: "1.0.0",
@@ -102,9 +102,13 @@ describe("plugin-list.schema — 착수 조건 C1 (AC-0.3 정정 스키마)", ()
       noteDetails: [{ type: "ineffective-disable" }, { type: "dependencies-not-installed", plugin: "dep-plugin@demo-marketplace" }], // plugin: CLI 2.1.287
       projectEnabled: true,
       hasUserConfig: true, // CLI 2.1.286
+      readFromFolder: "/synthetic/src/x", // CLI 2.1.296
+      folderVersion: "0.0.1", // CLI 2.1.296
     };
     expect(PluginListEntrySchema.safeParse(entry).success).toBe(true);
     expect(PluginListEntrySchema.safeParse({ ...entry, hasUserConfig: "yes" }).success).toBe(false);
+    expect(PluginListEntrySchema.safeParse({ ...entry, folderVersion: 1 }).success).toBe(false);
+    expect(PluginListEntrySchema.safeParse({ ...entry, readFromFolder: true }).success).toBe(false);
     expect(PluginListEntrySchema.safeParse({ ...entry, noteDetails: [{ type: "x", extra: 1 }] }).success).toBe(false);
     expect(PluginListEntrySchema.safeParse({ ...entry, noteDetails: [{ type: "x", plugin: 1 }] }).success).toBe(false);
   });
