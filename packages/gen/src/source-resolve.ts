@@ -6,14 +6,14 @@ import {
   createBundledToolLocationCache,
   findBundledToolPath,
   findPluginInstallPath,
-  findSkillDirsById,
+  lookupSkillDirsById,
   skillsRoots,
   type BundledChildKind,
   type BundledToolLocation,
   type BundledToolLocationCache,
   type HomeContext,
 } from "@ctk/probe";
-import { DEFAULT_MAX_ASSET_SOURCE_BYTES, InstallPathRejectedError, readAssetSourceFileSafely } from "./file-hygiene.js";
+import { AssetSourceNotAFileError, DEFAULT_MAX_ASSET_SOURCE_BYTES, InstallPathRejectedError, readAssetSourceFileSafely } from "./file-hygiene.js";
 
 /**
  * 스킬 원본 링크의 **봉쇄 루트 목록** — `probe`의 `skillsRoots()`를 그대로 쓴다.
@@ -87,11 +87,17 @@ function sha256(text: string): string {
  * 다중 디렉터리일 때 **전부 읽어 내용 해시를 비교한다.** 하나라도 위생에 걸리면 예외가 그대로
  * 올라가 그 자산은 `blocked`가 된다 — 안전 축에서는 가장 엄격한 판정을 취한다(링크가 아닌
  * 사본을 골라 우회하지 않는다). `findSkillDirsById`가 돌려주는 디렉터리는 `readSkillDir`이
- * SKILL.md를 이미 읽어본 것들이므로 부재는 경합일 때만 나고, 그때는 위생 계층이
- * `AssetSourceMissingError`로 분류한다.
+ * SKILL.md를 이미 읽어본 것들이므로 `existsSync` 부재는 경합일 때만 난다.
+ *
+ * ⚠️ **"후보 0건"은 곧 "없음"이 아니다** — `SKILL.md`가 FIFO·소켓·디바이스라 `probe`가 열지 않고
+ * 건너뛴 경우도 0건이다. 그 수(`notRegularCount`)를 같은 조회에서 받아, 일반 후보가 없으면 던지고
+ * (`blocked/asset_source_not_a_file`), **일반 후보와 섞여 있어도 던진다**(D2) — 열 수 없는 사본은
+ * 내용 동일성을 증명할 수 없으므로 `ambiguous_source`와 같은 논리로 막는다. 자칭 name이 디렉터리명과
+ * 다른 스킬이 FIFO가 된 경우는 매칭 불가라 `source_missing`으로 남는다(`lookupSkillDirsById` 주석).
  */
 function skillSource(home: HomeContext, asset: Asset): ResolvedAssetSource {
-  const dirs = findSkillDirsById(home, asset.id);
+  const { found: dirs, notRegularCount } = lookupSkillDirsById(home, asset.id);
+  if (notRegularCount > 0) throw new AssetSourceNotAFileError(asset.id);
   if (dirs.length === 0) return { resolved: false, reason: "source_missing" };
 
   const contents: string[] = [];
@@ -208,6 +214,8 @@ function bundledChildSource(
     return { resolved: false, reason: "source_missing" };
   }
   const locations: BundledToolLocation[] = lookup.locations;
+  // 일반 후보 0건이든 섞여 있든(D2) 열 수 없는 사본이 있으면 막는다 — `skillSource`와 같은 계약.
+  if (lookup.notRegularMatches > 0) throw new AssetSourceNotAFileError(parentId);
   if (locations.length === 0) return { resolved: false, reason: "source_missing" };
 
   // 보안 심사 H-1 — 라벨은 파일명(`path.basename`)에서 뽑지 않는다. 서드파티가 짓는 파일명은
