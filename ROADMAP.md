@@ -802,11 +802,21 @@
 ### v1.1 후보
 
 - [ ] **R7. MCP 프로젝트별 토글 쓰기**
-  - **선결 ①**: `enabledMcpServers`/`disabledMcpServers` 두 키가 동시 존재할 때의 우선순위와
-    각 키의 대상 범위 확정. 모르면 **쓰기가 곧 오작동**이다
-  - **선결 ②**: `~/.claude.json` 단일 대형 JSON 편집의 안전 절차 — 한 파일에 전 프로젝트 상태가
-    모여 있어 부분 손상의 폭발 반경이 크다. 원자적 쓰기 + 의미 diff 화이트리스트를 MCP
-    서브트리에도 적용하는 설계가 선행돼야 한다
+  - **선결 ① — 전제가 틀렸다(2026-10-12 실측, CLI 2.1.296, 무료·격리 홈).** 우선순위 질문은 성립하지
+    않는다: `enabledMcpServers`는 내장 `computer-use`에만 쓰이고, 그 밖의 서버는 `projects[k].disabledMcpServers`에
+    이름이 있을 때만 꺼진다(양쪽에 있으면 Disabled). 플러그인 서버는 `plugin:<p>:<s>`로만 매칭된다.
+    **별개 축**: `.mcp.json` 승인(`enabledMcpjsonServers` 등)은 settings 파일에 있다. ⚠️ `claude mcp list`는
+    읽기 명령인데 **쓴다**(승인 키 이관·백업) — 검증 수단으로 쓰지 않는다. 프로젝트 키는 realpath여야 한다
+  - **선결 ② — 실측 중 더 근본적인 결함이 나왔고 닫았다.** actuator의 `.claude.json` 의미 diff가 프로덕션에서
+    **실제 파일(`$HOME/.claude.json`)이 아닌 `$HOME/.claude/.claude.json`을 봤고** 트리 churn에 게이트돼
+    **한 번도 돌지 않았다**(격리 테스트는 두 경로가 일치해 통과). 고치자 동시 세션 churn이 오탐 롤백을 만들고
+    롤백이 반쯤 멈추는 결함(재심 H1)이 드러났다 — 측정된 live churn 허용 · 전 항목 사전 CAS · `.claude.json`은
+    **어떤 롤백도 통째로 복원하지 않고 보고만 한다**(다른 세션 쓰기 보존). 보안 재심 4회
+  - **R7이 이어서 할 것**: 계획 `.omc/plans/r7-mcp-toggle.md`(critic 수정 후 승인 · 필수 변경 10건). ctk가
+    `.claude.json`을 직접 쓰게 되면 위 롤백 제외를 **액션별 소유 서브트리 + 키 단위 CAS 복원**으로 바꿔야 한다
+    (코드 주석 `rollback.ts`)
+  - **후속(별도)**: gen 봉인 감사도 같은 결함 — 프로덕션에서 `.claude.json` 축은 지금 **`unmeasured`로 드러낼 뿐**
+    측정하지 않는다. 고치려면 실제 파일의 봉인 churn 실측 + 봉인 재심이 필요하다
 
 ### v2 후보
 
