@@ -329,7 +329,7 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
             // 뭉갠 것이 아니다). 표본이 없으니 중앙값·최대값은 null로 남는다.
             cost: summarizeGenCost([], 0),
             urlScrub: { removed: 0, hosts: [] }, // 실행이 없었으므로 제거도 없다.
-            sealAudit: { sessionOwnedExcluded: 0, concurrencyOverrides: 0 },
+            sealAudit: { sessionOwnedExcluded: 0, concurrencyOverrides: 0, claudeJson: "not_applicable" },
             indexPath: "",
           };
         }
@@ -401,6 +401,8 @@ export async function runGenCli(options: RunGenCliOptions): Promise<RunGenSummar
         // 통과한 실행에서도 감사 집계를 남긴다(보안 재심 M3) — "조용히 지움"을 정상 경로에서도 막는다.
         session_owned_excluded: summary.sealAudit.sessionOwnedExcluded,
         concurrency_overrides: summary.sealAudit.concurrencyOverrides,
+        // "unmeasured"는 통과가 아니다 — 프로덕션 경로에서 .claude.json 의미 diff 축이 안 돌았다는 기록(gen/src/index.ts).
+        claude_json_semantic: summary.sealAudit.claudeJson,
         allow_concurrent_sessions: options.allowConcurrentSessions === true,
       },
       machine_id: machine.machine_id,

@@ -1,13 +1,15 @@
 # AC-0.4 결과 (자동 생성)
 
+> 2026-10-12: 실제 커넥터·플러그인·서버 이름을 합성 자리표시자로 바꿨다(공개 저장소 위생 — 설치 목록 금지). 개수·형태·분류는 원본과 같다.
+
 ## ⓐ 경로 실증 — 파일 직독이 실제로 상태를 담고 있는가
 
 - `~/.claude.json` 루트 `mcpServers` (user 스코프, `claude mcp add -s user`로 등록된 것으로 추정):
-  `['notebooklm', 'supabase-staging']`
+  `['server-a', 'server-b']`
 - `projects.<path>.mcpServers` (project-local `.mcp.json` 유래 엔트리)가 존재하는 프로젝트:
-  `[{'project': '<project-14>', 'mcpServers': ['playwright']}]`
+  `[{'project': '<project-14>', 'mcpServers': ['server-c']}]`
 - **수동 대조**: `claude mcp list` 실행 결과(아래 원문 캡처, 이 스크립트 실행과 같은 세션에서 채취)와
-  파일 직독 결과를 육안 대조했다. `claude mcp list`는 root `mcpServers`(`notebooklm`, `supabase-staging`,
+  파일 직독 결과를 육안 대조했다. `claude mcp list`는 root `mcpServers`(`server-a`, `server-b`,
   접두어 없음) + `plugin:<plugin>:<server>` 접두 항목 + `claude.ai <Name>` 접두 항목의 **합집합**을 보여준다.
   파일 직독으로 재구성한 집합(root `mcpServers` + 프로젝트별 `mcpServers` + `enabledMcpServers`/
   `disabledMcpServers`에 등장하는 이름)이 이 합집합을 완전히 커버했다 — **판정: ⓐ PASS, 경로가 실제로
@@ -21,13 +23,13 @@
 - `enabledMcpServers`와 `disabledMcpServers`가 **동시에 존재하는 프로젝트 3건** 실측:
   - `<project-14>`
     - enabled: `['computer-use']`
-    - disabled: `['claude.ai Atlassian Rovo', 'claude.ai Figma', 'claude.ai Gmail', 'claude.ai Google Drive', 'claude.ai Netlify', 'claude.ai Notion', 'claude.ai Slack', 'claude.ai Supabase', 'playwright']`
+    - disabled: `['claude.ai Connector-A', 'claude.ai Connector-C', 'claude.ai Connector-D', 'claude.ai Connector-F', 'claude.ai Connector-G', 'claude.ai Connector-H', 'claude.ai Connector-J', 'claude.ai Connector-K', 'server-c']`
   - `<project-15>`
     - enabled: `['computer-use']`
-    - disabled: `['claude.ai Atlassian Rovo', 'claude.ai Context7', 'claude.ai Figma', 'claude.ai Gmail', 'claude.ai Google Calendar', 'claude.ai Google Drive', 'claude.ai Netlify', 'claude.ai Notion', 'claude.ai PlayMCP', 'claude.ai Slack', 'claude.ai Supabase', 'plugin:atlassian:atlassian', 'plugin:playwright:playwright']`
+    - disabled: `['claude.ai Connector-A', 'claude.ai Connector-B', 'claude.ai Connector-C', 'claude.ai Connector-D', 'claude.ai Connector-E', 'claude.ai Connector-F', 'claude.ai Connector-G', 'claude.ai Connector-H', 'claude.ai Connector-I', 'claude.ai Connector-J', 'claude.ai Connector-K', 'plugin:plugin-a:server-d', 'plugin:plugin-b:server-c']`
   - `<project-2>`
     - enabled: `['computer-use']`
-    - disabled: `['claude.ai Atlassian Rovo', 'claude.ai Context7', 'claude.ai Netlify', 'claude.ai PlayMCP', 'plugin:product-legal:Asana', 'plugin:product-legal:Atlassian', 'plugin:product-legal:Linear']`
+    - disabled: `['claude.ai Connector-A', 'claude.ai Connector-B', 'claude.ai Connector-G', 'claude.ai Connector-I', 'plugin:plugin-c:server-f', 'plugin:plugin-c:server-e', 'plugin:plugin-c:server-g']`
 - **같은 항목 이름이 두 리스트에 동시에 들어있는 사례(진짜 우선순위 충돌)**: `[]` — **0건**.
 - **결론: 우선순위 규칙은 사실상 무의미하다.** 두 필드는 겹치지 않는 항목 집합을 기록하는
   **append형 토글 이력**이다(무엇을 켰는지 / 무엇을 껐는지 서로 다른 항목에 대해 각각 기록) —
@@ -44,24 +46,24 @@
 
 ```
 {
-  "claude.ai Atlassian Rovo": "claude_ai_connector",
-  "claude.ai Context7": "claude_ai_connector",
-  "claude.ai Figma": "claude_ai_connector",
-  "claude.ai Gmail": "claude_ai_connector",
-  "claude.ai Google Calendar": "claude_ai_connector",
-  "claude.ai Google Drive": "claude_ai_connector",
-  "claude.ai Netlify": "claude_ai_connector",
-  "claude.ai Notion": "claude_ai_connector",
-  "claude.ai PlayMCP": "claude_ai_connector",
-  "claude.ai Slack": "claude_ai_connector",
-  "claude.ai Supabase": "claude_ai_connector",
+  "claude.ai Connector-A": "claude_ai_connector",
+  "claude.ai Connector-B": "claude_ai_connector",
+  "claude.ai Connector-C": "claude_ai_connector",
+  "claude.ai Connector-D": "claude_ai_connector",
+  "claude.ai Connector-E": "claude_ai_connector",
+  "claude.ai Connector-F": "claude_ai_connector",
+  "claude.ai Connector-G": "claude_ai_connector",
+  "claude.ai Connector-H": "claude_ai_connector",
+  "claude.ai Connector-I": "claude_ai_connector",
+  "claude.ai Connector-J": "claude_ai_connector",
+  "claude.ai Connector-K": "claude_ai_connector",
   "computer-use": "other_builtin_feature",
-  "playwright": "project_local_dot_mcp_json",
-  "plugin:atlassian:atlassian": "plugin_provided_mcp",
-  "plugin:playwright:playwright": "plugin_provided_mcp",
-  "plugin:product-legal:Asana": "plugin_provided_mcp",
-  "plugin:product-legal:Atlassian": "plugin_provided_mcp",
-  "plugin:product-legal:Linear": "plugin_provided_mcp"
+  "server-c": "project_local_dot_mcp_json",
+  "plugin:plugin-a:server-d": "plugin_provided_mcp",
+  "plugin:plugin-b:server-c": "plugin_provided_mcp",
+  "plugin:plugin-c:server-f": "plugin_provided_mcp",
+  "plugin:plugin-c:server-e": "plugin_provided_mcp",
+  "plugin:plugin-c:server-g": "plugin_provided_mcp"
 }
 ```
 

@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
+import { hashPath } from "@ctk/core";
 
 /**
  * actuator/src/guard/atomic-write.ts — **첫 커밋**(계획 Pre-mortem A 선제 조치: "쓰기 중 프로세스가
@@ -40,10 +41,32 @@ import path from "node:path";
  * 종료 시 디렉터리 엔트리가 유실될 수 있다). rename 후 부모 디렉터리 fd를 열어 fsync한다.
  */
 
+/**
+ * 오류 메시지용 경로 표기 — 절대경로 원문 대신 `basename#<path_hash 앞 8자>`. 메시지는 stderr·run-log·PR로 샐 수 있어
+ * 홈 경로·프로젝트 경로를 싣지 않는다(L2/N4). 사람이 파일을 식별하기엔 basename+hash로 충분하고,
+ * 복구에 필요한 위치는 journal의 backup_ref가 따로 알려준다.
+ */
+export function describePath(abs: string): string {
+  return `${path.basename(abs)}#${hashPath(abs).slice(0, 8)}`;
+}
+
+/**
+ * 원인(cause)을 메시지에 실을 때의 표기. fs 오류(`code` 있음)는 경로를 담고, `SyntaxError`는 파일 내용 조각을 인용한다
+ * (settings.json의 env 값이 샐 수 있다) — 둘 다 `이름(코드)`만 싣는다. 그 밖의 오류는 이 패키지가 직접 던진 것이라
+ * 메시지가 이미 정리돼 있다.
+ */
+export function describeCause(cause: unknown): string {
+  if (!(cause instanceof Error)) return typeof cause;
+  const code = (cause as { code?: unknown }).code;
+  if (typeof code === "string") return `${cause.name}(${code})`;
+  if (cause instanceof SyntaxError) return cause.name;
+  return cause.message;
+}
+
 export class AtomicWriteVerifyError extends Error {
   readonly absPath: string;
   constructor(absPath: string, cause: unknown) {
-    super(`원자적 쓰기 후 재파싱 검증 실패(${absPath}): ${String(cause)}`);
+    super(`원자적 쓰기 후 재파싱 검증 실패(${describePath(absPath)}): ${describeCause(cause)}`);
     this.name = "AtomicWriteVerifyError";
     this.absPath = absPath;
     this.cause = cause;
@@ -91,7 +114,7 @@ export function atomicWriteFile(absPath: string, content: string, options: Atomi
       const expectedBytes = Buffer.byteLength(content, "utf8");
       const writtenBytes = writeSync(fd, content);
       if (writtenBytes !== expectedBytes) {
-        throw new Error(`쓰기가 불완전하다(기대 ${expectedBytes}바이트, 실제 ${writtenBytes}바이트): ${tmpPath}`);
+        throw new Error(`쓰기가 불완전하다(기대 ${expectedBytes}바이트, 실제 ${writtenBytes}바이트): ${describePath(tmpPath)}`);
       }
       fsyncSync(fd);
     } finally {

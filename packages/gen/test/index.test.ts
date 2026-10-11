@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { REMOVED_URL_MARKER, type Asset } from "@ctk/core";
 import type { HomeContext } from "@ctk/probe";
 import { ensureGitRepo, readCatalogIndex, upsertAsset, rebuildCatalogIndex } from "@ctk/sync";
@@ -133,6 +133,48 @@ describe("gen/index — runGen 전체 배선 (plan → 생성 → citation-check
 
     expect(summary.results).toEqual([{ assetId: "demo-skill", outcome: "fresh" }]);
     expect(summary.stoppedEarly).toBe(false);
+  });
+
+  it.each([
+    ["격리 경로(configDirExplicit=true)", true, "measured"],
+    ["프로덕션 경로(configDirExplicit=false) — .claude.json 의미 diff 축이 돌지 않는다", false, "unmeasured"],
+  ] as const)("M2 — %s: sealAudit.claudeJson=%s 로 기록되고, unmeasured는 통과로 읽히지 않게 경고한다", async (_name, explicit, expected) => {
+    init();
+    setupSkill("demo-skill", "PDF를 마크다운으로 바꾼다");
+    seedCatalog(skillAsset("demo-skill"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const summary = await runGen({
+        home: { ...home, configDirExplicit: explicit },
+        catalogRoot,
+        assets: [skillAsset("demo-skill")],
+        maxBudgetUsd: 0.2,
+        timeoutSec: 30,
+        noLlm: false,
+        verifiedCliVersion: "2.1.238",
+        sealedCwd,
+        interactive: true,
+        allowManagedPolicy: false,
+        spawnFn: (async () => ({ exitCode: 0, stdout: VALID_LLM_STDOUT, stderr: "", timedOut: false, preflightVersionMatch: "match" as const })) as never,
+      });
+      expect(summary.results).toEqual([{ assetId: "demo-skill", outcome: "fresh" }]); // 막지 않는다
+      expect(summary.sealAudit.claudeJson).toBe(expected);
+      const warned = warn.mock.calls.some((c) => String(c[0]).includes("unmeasured"));
+      expect(warned).toBe(expected === "unmeasured");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("M2 — LLM을 부르지 않는 실행(noLlm)은 not_applicable이다", async () => {
+    init();
+    setupSkill("demo-skill", "PDF를 마크다운으로 바꾼다");
+    seedCatalog(skillAsset("demo-skill"));
+    const summary = await runGen({
+      home: { ...home, configDirExplicit: false }, catalogRoot, assets: [skillAsset("demo-skill")],
+      maxBudgetUsd: 0.2, timeoutSec: 30, noLlm: true, sealedCwd, interactive: true, allowManagedPolicy: false,
+    } as never);
+    expect(summary.sealAudit.claudeJson).toBe("not_applicable");
   });
 
   it("config dir을 허용목록 밖에서 건드리는 응답은 SealedLiveConfigDirAuditViolationError로 전체 중단한다(AC-3.7)", async () => {

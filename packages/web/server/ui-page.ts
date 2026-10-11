@@ -427,7 +427,9 @@ function showResult(text, failed) {
 
 function showOutcome(label, outcome) {
   if (outcome.ok) {
-    showResult(label + " 완료\\n" + JSON.stringify(outcome.data, null, 2), false);
+    // 롤백이 남긴 .claude.json 사정은 JSON 덤프에 묻지 않고 맨 앞에 경고로 띄운다.
+    const note = outcome.data && typeof outcome.data.claude_json_note === "string" ? outcome.data.claude_json_note : null;
+    showResult((note !== null ? "⚠ " + note + "\\n" : "") + label + " 완료\\n" + JSON.stringify(outcome.data, null, 2), note !== null && outcome.data.claude_json_mcp_forbidden === true);
     return true;
   }
   const why = FAILURE_TEXT[outcome.code] || outcome.code || "알 수 없는 실패";

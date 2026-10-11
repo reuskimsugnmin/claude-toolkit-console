@@ -1,5 +1,4 @@
 import { readFileSync } from "node:fs";
-import path from "node:path";
 import { collectTree, type TreeCollectCache } from "@ctk/probe";
 import {
   AC_2_7_C_FORBIDDEN_RULES,
@@ -21,16 +20,26 @@ import {
  */
 export class ForbiddenPathWriteError extends Error {
   readonly failureClass = "forbidden_path_write" as const;
-  constructor(message: string) {
+  /** `.claude.json` 의미 diff 위반이 원인에 포함됐는가 — 롤백 결과를 아는 호출자가 안내문을 고를 때 쓴다. */
+  readonly claudeJsonSemanticViolation: boolean;
+  /** 그 의미 위반에 MCP 서브트리 변경이 있었는가(AC-2.7-c) — 안내문에서 가장 먼저 사람이 봐야 하는 신호. */
+  readonly claudeJsonMcpForbidden: boolean;
+  constructor(message: string, claudeJsonSemanticViolation = false, claudeJsonMcpForbidden = false) {
     super(message);
+    this.claudeJsonSemanticViolation = claudeJsonSemanticViolation;
+    this.claudeJsonMcpForbidden = claudeJsonMcpForbidden;
     this.name = "ForbiddenPathWriteError";
   }
 }
 
 export class WhitelistViolationError extends Error {
   readonly failureClass = "whitelist_violation" as const;
-  constructor(message: string) {
+  readonly claudeJsonSemanticViolation: boolean;
+  readonly claudeJsonMcpForbidden: boolean;
+  constructor(message: string, claudeJsonSemanticViolation = false, claudeJsonMcpForbidden = false) {
     super(message);
+    this.claudeJsonSemanticViolation = claudeJsonSemanticViolation;
+    this.claudeJsonMcpForbidden = claudeJsonMcpForbidden;
     this.name = "WhitelistViolationError";
   }
 }
@@ -44,12 +53,14 @@ export function auditFailureError(result: RootAuditResult, contextMessage: strin
   const anyForbidden =
     result.verdict.violations.some((v) => v.matchedRule !== undefined) ||
     (result.claudeJsonSemantic?.violations.some((v) => v.mcpForbidden) ?? false);
+  // 복구 안내는 여기 없다 — 롤백이 실제로 어떻게 끝났는지는 호출자(cli/move.ts rollbackAndRecord)만 안다.
+  // 여기서 "롤백됐다"고 단정하면 ConfigClobbered(복원 0건)일 때 거짓이 된다.
+  const semanticViolation = result.claudeJsonSemantic !== null && result.claudeJsonSemantic.overallStatus === "violation";
   const detail = `${contextMessage}: ${JSON.stringify(result.verdict.violations)}${
-    result.claudeJsonSemantic !== null && result.claudeJsonSemantic.overallStatus === "violation"
-      ? ` / .claude.json 의미 위반: ${JSON.stringify(result.claudeJsonSemantic.violations)}`
-      : ""
+    semanticViolation ? ` / .claude.json 의미 위반: ${JSON.stringify(result.claudeJsonSemantic!.violations)}` : ""
   }`;
-  return anyForbidden ? new ForbiddenPathWriteError(detail) : new WhitelistViolationError(detail);
+  const mcp = result.claudeJsonSemantic?.violations.some((v) => v.mcpForbidden) ?? false;
+  return anyForbidden ? new ForbiddenPathWriteError(detail, semanticViolation, mcp) : new WhitelistViolationError(detail, semanticViolation, mcp);
 }
 
 /**
@@ -75,18 +86,57 @@ export function auditFailureError(result: RootAuditResult, contextMessage: strin
  * 시작 전에 캡처해 넘긴다.
  */
 
-export const DEFAULT_CLAUDE_JSON_CHURN_KEYS: readonly string[] = [];
+/**
+ * 실제 `$HOME/.claude.json`에서 **다른 살아 있는 세션**이 바꾸는 최상위 키 — 실측(2026-10-12, CLI 2.1.296).
+ * 방법: 실제 파일의 키 경로만 비교. (1) 다른 세션이 도는 300초 수동 관찰 — `pluginUsage.*.{lastUsedAt,usageCount}`,
+ * `promptQueueUseCount`. (2) 새 대화형 세션 **시작**을 포함한 240초 — 아래 키들(`projects.*` 변경은 관측되지 않음).
+ * ⚠️ **종료 시 churn(예: `numStartups`)은 미측정이다 — 위반으로 두는 것이 설계다**(복구 안내는
+ * `auditFailureError` 참조). `pluginUsage`는 여기 넣지 않는다(통째로 열면 새 항목 삽입이 통과한다) —
+ * core의 좁은 규칙(`allowLiveSessionPluginUsage`)이 따로 다룬다.
+ * gen의 `SEALED_LIVE_CLAUDE_JSON_ALLOWED_CHURN_KEYS`와 값이 겹쳐도 **의미가 다르다**(봉인 자식의 격리 파일 vs
+ * 실제 파일의 외부 세션) — 합치지 않는다.
+ */
+// ⚠️ 수용한 위험(N3): 이 키들 아래의 **서브트리 전체**는 감사되지 않고 롤백 뒤에도 남는다. 쓰는 주체는 신뢰하는
+// CLI·다른 세션이며, 이 키들을 바꿀 수 있는 쓰기 주체는 이미 settings.json도 직접 고칠 수 있다.
+export const LIVE_SESSION_CLAUDE_JSON_CHURN_KEYS: readonly string[] = [
+  "promptQueueUseCount",
+  "additionalModelOptionsAnsweredAt",
+  "additionalModelOptionsCache",
+  "cachedExperimentData",
+  "cachedExperimentFeatures",
+  "cachedGrowthBookFeatures",
+  "cachedGrowthBookFeaturesAt",
+  "clientDataCacheSlots",
+  "replBridgePlaceholders",
+];
 
-export interface AuditRootConfig {
+interface AuditRootConfigBase {
   /** 감사 대상 절대경로 루트("config"='<config>' 자체, "project"='<project>/.claude'). */
   rootAbs: string;
   /** Tier-1(ctk 소유, 정확 일치) 허용 규칙 — 액션마다 동적으로 구성(예: settings.json, skills/<name>/**). */
   tier1: readonly AllowlistRule[];
-  /** true면 이 루트에 TIER2_CHURN_ALLOWLIST를 추가 적용하고 `.claude.json` 의미 diff도 돈다. config 루트만 true. */
-  allowTier2Churn: boolean;
   /** 플러그인 `move`가 enable하는 자산 id — `.claude.json`의 그 `pluginUsage` 항목 흔적만 허용한다. 그 외 경로는 생략. */
   enabledPluginId?: string;
 }
+
+/**
+ * `allowTier2Churn: true`(config 루트)면 `claudeJsonAbs`가 **컴파일 타임에 필수**다 — 경로 없이 Tier-2를
+ * 열면 의미 diff가 어느 파일도 못 본 채 통과하기 때문이다(그래서 런타임 가드는 두지 않는다. 도달 불가).
+ */
+export type AuditRootConfig = AuditRootConfigBase &
+  (
+    | {
+        /** true면 이 루트에 TIER2_CHURN_ALLOWLIST를 추가 적용하고 `.claude.json` 의미 diff도 돈다. config 루트만 true. */
+        allowTier2Churn: true;
+        /**
+         * 실제 `.claude.json`의 절대경로 — 반드시 `@ctk/probe`의 `claudeJsonPath(home)`에서 온 값이다
+         * (프로덕션 `$HOME/.claude.json`, 격리 `<config>/.claude.json`). `rootAbs`에서 파생하지 않는다
+         * (루트 안에 있다는 보장이 없다).
+         */
+        claudeJsonAbs: string;
+      }
+    | { allowTier2Churn: false; claudeJsonAbs?: undefined }
+  );
 
 export interface RootAuditSnapshot {
   entries: FileEntry[];
@@ -121,13 +171,17 @@ function fsErrorCode(err: unknown): string | undefined {
 }
 
 /**
+ * ⚠️ 인자는 **`.claude.json` 파일의 절대경로**다(`@ctk/probe`의 `claudeJsonPath(home)` — 유일한 출처).
+ * 예전엔 config 루트를 받아 `<루트>/.claude.json`을 읽었는데, 프로덕션(`configDirExplicit=false`)의
+ * 실제 파일은 `$HOME/.claude.json`이라 엉뚱한(대개 없는) 파일을 감사했다.
+ *
  * M2 수정 — 이전에는 모든 오류(ENOENT뿐 아니라 EISDIR·EACCES 등)를 "파일 없음"으로 뭉갰다.
  * "없음"과 "읽기 실패"를 구분한다(CLAUDE.md 안전 원칙 5) — ENOENT만 null(정상적인 부재)로
  * 취급하고, 그 외 오류는 그대로 던진다.
  */
-export function readClaudeJsonRawOrNull(rootAbs: string): string | null {
+export function readClaudeJsonRawOrNull(claudeJsonAbs: string): string | null {
   try {
-    return readFileSync(path.join(rootAbs, ".claude.json"), "utf8");
+    return readFileSync(claudeJsonAbs, "utf8");
   } catch (err) {
     if (fsErrorCode(err) === "ENOENT") return null;
     throw err;
@@ -136,7 +190,7 @@ export function readClaudeJsonRawOrNull(rootAbs: string): string | null {
 
 export interface RootAuditResult {
   verdict: TreeDiffVerdict;
-  /** config 루트에서 `.claude.json`이 churn으로 잡혔을 때만 채워진다. 그 외에는 null. */
+  /** `.claude.json` 바이트가 before와 달라졌을 때만 채워진다. 그 외에는 null. */
   claudeJsonSemantic: ClaudeJsonSemanticVerdict | null;
   /** M3 — before/after 수집 중 **읽기 실패**가 있었으면 true. `auditPassed`가 무조건 실패로
    * 취급한다(fail-closed).
@@ -150,49 +204,63 @@ export interface RootAuditResult {
   incompleteObservation: boolean;
 }
 
-function claudeJsonTouchedAsChurn(v: TreeDiffVerdict): boolean {
-  const all = [...v.added, ...v.modified];
-  return all.some((entry) => entry.path === ".claude.json" && entry.status === "allowed_churn");
-}
-
 /**
  * M2 수정 — 이전 구현(`readJsonOrEmpty`)은 "파일 없음"과 "파일이 있는데 깨졌다"를 똑같이
  * `{}`로 뭉갰다. before가 `{}`(부재)이고 after도 손상돼 `{}`로 읽히면 deep-equal이 성립해
  * **손상이 감사를 조용히 통과**했다(R7 시나리오 그 자체). ENOENT만 정상적인 부재로 취급하고,
  * 그 외(JSON 구문 오류 등)는 `WhitelistViolationError`로 던져 감사가 실패로 떨어지게 한다.
+ * before 원문도 같은 경로로 파싱한다(손상된 before가 평문 SyntaxError로 새지 않게).
  */
-function readJsonOrThrowOnCorruption(rootAbs: string): unknown {
-  const raw = readClaudeJsonRawOrNull(rootAbs);
+function parseJsonOrThrowOnCorruption(raw: string | null, when: "before" | "after"): unknown {
   if (raw === null) return {};
   try {
     return JSON.parse(raw) as unknown;
   } catch (cause) {
+    // 절대경로도 `String(cause)`도 싣지 않는다 — V8의 SyntaxError 메시지는 파일 내용 조각을 담는다.
     throw new WhitelistViolationError(
-      `${path.join(rootAbs, ".claude.json")} 파싱 실패(손상 의심) — 감사를 통과시키지 않는다: ${String(cause)}`,
+      `.claude.json(${when}) 파싱 실패(손상 의심, ${cause instanceof Error ? cause.name : typeof cause}) — 감사를 통과시키지 않는다`,
     );
   }
 }
 
 /**
+ * `.claude.json` 의미 diff의 **단일 관문** — 사후 감사(`auditRoot`)와 롤백의 "복원 생략" 판단
+ * (`rollback.ts`)이 같은 판정을 쓴다. 판정 사본을 두지 않는다.
+ */
+export function judgeClaudeJson(
+  beforeValue: unknown,
+  afterValue: unknown,
+  enabledPluginId: string | null,
+  allowedChurnKeys: readonly string[] = LIVE_SESSION_CLAUDE_JSON_CHURN_KEYS,
+): ClaudeJsonSemanticVerdict {
+  return claudeJsonSemanticVerdict(beforeValue, afterValue, allowedChurnKeys, enabledPluginId, true);
+}
+
+/**
  * 한 루트를 판정한다. `claudeJsonBeforeRaw`는 config 루트에서만 의미가 있다(project 루트는
  * `allowTier2Churn:false`라 애초에 검사하지 않으므로 `null`을 넘기면 된다) — 액션 시작 **전에**
- * `readClaudeJsonRawOrNull(config.rootAbs)`로 미리 캡처해서 넘긴다.
+ * `readClaudeJsonRawOrNull(config.claudeJsonAbs)`로 미리 캡처해서 넘긴다.
  */
 export function auditRoot(
   config: AuditRootConfig,
   before: RootAuditSnapshot,
   after: RootAuditSnapshot,
   claudeJsonBeforeRaw: string | null,
-  claudeJsonAllowedChurnKeys: readonly string[] = DEFAULT_CLAUDE_JSON_CHURN_KEYS,
+  claudeJsonAllowedChurnKeys: readonly string[] = LIVE_SESSION_CLAUDE_JSON_CHURN_KEYS,
 ): RootAuditResult {
   const allowlist = config.allowTier2Churn ? [...config.tier1, ...TIER2_CHURN_ALLOWLIST] : config.tier1;
   const verdict = treeDiffVerdict(before.entries, after.entries, allowlist, AC_2_7_C_FORBIDDEN_RULES);
 
   let claudeJsonSemantic: ClaudeJsonSemanticVerdict | null = null;
-  if (config.allowTier2Churn && claudeJsonTouchedAsChurn(verdict)) {
-    const beforeValue = claudeJsonBeforeRaw !== null ? (JSON.parse(claudeJsonBeforeRaw) as unknown) : {};
-    const afterValue = readJsonOrThrowOnCorruption(config.rootAbs);
-    claudeJsonSemantic = claudeJsonSemanticVerdict(beforeValue, afterValue, claudeJsonAllowedChurnKeys, config.enabledPluginId ?? null);
+  if (config.allowTier2Churn) {
+    // 트리 churn 판정이 아니라 **실제 파일의 바이트 비교**로 게이트한다 — 프로덕션에서 이 파일은
+    // `$HOME/.claude.json`이라 config 루트 트리 밖에 있어 트리 diff에는 영영 나타나지 않는다.
+    const afterRaw = readClaudeJsonRawOrNull(config.claudeJsonAbs);
+    if (afterRaw !== claudeJsonBeforeRaw) {
+      const beforeValue = parseJsonOrThrowOnCorruption(claudeJsonBeforeRaw, "before");
+      const afterValue = parseJsonOrThrowOnCorruption(afterRaw, "after");
+      claudeJsonSemantic = judgeClaudeJson(beforeValue, afterValue, config.enabledPluginId ?? null, claudeJsonAllowedChurnKeys);
+    }
   }
 
   // M3 — 수집 자체가 불완전했으면(읽기 실패) "변경 없음"으로 보여도 신뢰할 수 없다 —
