@@ -238,7 +238,12 @@ function scanBundledSkills(pluginDirAbs: string): DirScanResult {
     // 스캐너는 SKILL.md가 하위 디렉터리에 있어 `lstatSync`로 따로 얻은 stat에 대해 `isFile()`을
     // 본 적이 없었다 — 한 파일 안에서 두 스캐너의 축이 갈려 있었다. `SKILL.md`가 FIFO면
     // `readFileSync`가 영구 블록된다(EXIT=124로 실증) — 열기 전에 일반 파일인지 확인한다.
-    if (!skillMdStat.isFile()) continue;
+    if (!skillMdStat.isFile()) {
+      // 센다(L-3) — 이 건너뜀이 `scanFrontmatter` 앞에 있어 아래 `not_a_regular_file` 증가가 경합 때만
+      // 닿았고 카운터와 per-parent 경고가 죽어 있었다. 디렉터리 `SKILL.md`는 공격 신호가 아니라 세지 않는다.
+      if (!skillMdStat.isDirectory()) notRegularFileSkipped++;
+      continue;
+    }
     const scan = scanFrontmatter(skillMdAbs);
     if (!scan.ok) {
       // "일반 파일 아님"은 공격 신호이고 "읽기 실패"는 경합·권한이다 — 전자만 센다(L-3).
@@ -295,7 +300,13 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
       }
       continue;
     }
-    if (!dirent.isFile() || !dirent.name.endsWith(".md")) continue;
+    if (!dirent.name.endsWith(".md")) continue;
+    if (!dirent.isFile()) {
+      // 심볼릭 링크·디렉터리는 위에서 이미 갈렸다 — 여기까지 온 비일반 파일은 FIFO·소켓·디바이스다.
+      // 이 건너뜀이 센 뒤가 아니라 세기 전에 있어 카운터와 per-parent 경고가 죽어 있었다(L-3).
+      notRegularFileSkipped++;
+      continue;
+    }
     const fileAbs = path.join(kindDirAbs, dirent.name);
     // 보안 심사 M-1과 같은 축 — top-level Dirent.isFile()이 이미 참이지만, 읽기 직전에 한 번 더
     // lstat으로 확인한다(TOCTOU 창을 줄인다·크기도 이 호출로 함께 얻는다).
@@ -305,7 +316,10 @@ function scanFlatMdKind(kindDirAbs: string): FlatMdScanResult {
     } catch {
       continue;
     }
-    if (!stat.isFile()) continue;
+    if (!stat.isFile()) {
+      if (!stat.isDirectory() && !stat.isSymbolicLink()) notRegularFileSkipped++; // 경합 경로 — 위와 같은 축.
+      continue;
+    }
     const scan = scanFrontmatter(fileAbs);
     if (!scan.ok) {
       if (scan.reason === "not_a_regular_file") notRegularFileSkipped++;
