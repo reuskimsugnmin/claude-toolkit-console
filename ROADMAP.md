@@ -12,8 +12,8 @@
 | **현재 버전** | v1 완료 (2026-08-23) · **B1 완료 (2026-08-27)** · **B4 완료 (2026-08-31)** · **B3 완료 (2026-09-01)** |
 | **머지된 PR** | 51건 (`gh pr list --state merged --limit 200 --json number -q length`) |
 | **작업 단위** | 완료 **128** · 부분 0 · 미착수 **6** — 세는 법은 아래 각주 (2026-10-12 재집계 — 120으로 뒤처져 있었다) |
-| **테스트** | 1669 passed + 5 skipped(유료 게이트) · 로컬 실패 2 (2026-10-12) |
-| **알려진 로컬 실패** | `move-rollback.test.ts` 1건 — 살아 있는 Claude Code 세션이 `.claude.json`의 `pluginUsage`를 갱신해 actuator 의미 diff에 걸린다. CI(세션 없음)는 통과 · **`ac26-injection.test.ts`** — CLI 2.1.296 드리프트(폴더 마켓플레이스 플러그인의 `readFromFolder`·`folderVersion`), 미수정 |
+| **테스트** | 1671 passed + 5 skipped(유료 게이트) (2026-10-12 로컬 전량 통과 — `move-rollback`은 세션 타이밍에 따라 갈린다) |
+| **알려진 로컬 실패** | `move-rollback.test.ts` 1건 — 살아 있는 Claude Code 세션이 `.claude.json`의 `pluginUsage`를 갱신해 actuator 의미 diff에 걸린다. CI(세션 없음)는 통과 |
 | **표준 검증** | `pnpm verify` — 7개 게이트(B1이 `gate:asset-kind` 추가). ⚠️ `&&` 체인이라 **알려진 로컬 실패가 뒤 게이트를 막는다** — 로컬에서는 개별로 돌린다 |
 
 범례: `[x]` 완료 · `[ ]` 미착수 · `[~]` 부분 완료(범위가 좁혀졌거나 일부 축이 미측정)

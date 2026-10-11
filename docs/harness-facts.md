@@ -33,6 +33,11 @@
   CLI 2.1.287(같은 날 자동 업데이트)은 의존 플러그인이 빠진 항목에 `noteDetails` `{type:"dependencies-not-installed",
   plugin:"<의존 id>"}`를 붙인다 — `plugin`은 **그 항목 자신이 아닌** 의존 대상이다. 관측: 실제 출력의 `noteDetails` 키·타입
   형태를 집계하고 `plugin`을 항목 id와 대조. 같은 방식으로 `scan`이 멈춰 드러났다.
+  CLI 2.1.296(2026-10-12)은 **로컬 디렉터리 마켓플레이스**(`marketplace add <dir>`)에서 설치한 플러그인에만 `readFromFolder`
+  (소스 폴더의 **절대경로** 문자열)와 `folderVersion`(문자열)을 붙인다. 관측: 격리 홈에서 합성 디렉터리 마켓플레이스를
+  add→install한 뒤 `plugin list --json` 덤프 — 실제 머신의 마켓플레이스 설치분에는 0건. 파급: `scan`이 strict 실패로 멈춘다
+  (실제 머신은 해당 플러그인이 없어 통과했고 `ac26-injection` 테스트가 먼저 잡았다). `installPath` 캐시는 여전히 채워져
+  번들 탐색에는 영향이 없다. 경로 값이라 읽지 않는다 — `probe`는 엔트리를 필드 단위로만 꺼내 카탈로그로 흘리지 않는다.
 - `mcpServers`는 서버명을 키로 하는 **객체**다(배열 아님). 스파이크가 빈 배열만 관측해
   배열로 오판한 전례가 있다 — **빈 값은 타입을 알려주지 않는다.**
 - MCP 서버의 출처는 넷이다: `~/.claude.json` 루트 `mcpServers`(user) · 프로젝트 엔트리
