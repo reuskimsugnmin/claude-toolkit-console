@@ -6,6 +6,8 @@ import { machineDependentTag, schemaVersion } from "./common.js";
  *
  * AC-0.4ⓑ 실측: `enabledMcpServers`/`disabledMcpServers`는 "MCP 서버"만 담지 않는다 — 최소 4개
  * 기원(플러그인 제공 MCP·claude.ai 커넥터·project-local `.mcp.json`·내장 기능 토글)이 섞여 있다.
+ * (2026-10-12 정정: 두 키는 대칭이 아니다 — 끄는 상태는 `disabledMcpServers`, `enabledMcpServers`는
+ * `computer-use` 전용. `probe/sources/mcp.ts` 머리 주석 참조.)
  * 이름 패턴으로 kind를 확정하지 않는다 — "로컬에서 정의를 찾을 수 있는가"로 판정하고, 이름 패턴은
  * 판정의 *근거*가 아니라 *출처 라벨*(classification_source)로만 남긴다.
  *

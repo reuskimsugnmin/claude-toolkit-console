@@ -27,13 +27,19 @@ import { listKnownProjectPaths, readClaudeJsonFile } from "./known-projects.js";
  * - `claude.ai <Name>` → **비-Asset**, `classification_source:"name_pattern"`.
  * - 그 외(예: `computer-use`) → **비-Asset**, `classification_source:"unclassified"`.
  *
- * AC-0.4ⓑ 실측 결과(spikes/results/AC-0.4.md, Step 0에서 이미 확정): ①우선순위 — 동시 존재 시
- * 두 필드는 겹치지 않는 append형 토글 이력이라 진짜 충돌(같은 이름이 양쪽에 존재) 사례가 0건이었다.
- * 그래도 방어적으로 충돌을 감지하면 `mcp_state_source:"both"` + `mcp_enabled_state:null`로 남긴다.
- * ②대상 범위 — 위 4개 기원 분류로 이미 반영됨. **③(`*McpjsonServers`)은 여전히 판정불가** —
- * 16개 프로젝트 표본 전부 빈 배열이었고 이 스캔에서도 값을 발견하면 `mcp_state_unverified`
- * 성격의 정보로만 남긴다(`Installation.mcp_enabled_state`/`mcp_state_source` 스키마에는 이
- * 세 번째 차원을 위한 자리가 없다 — v1 Ontology가 애초에 이 필드를 모델링하지 않는다).
+ * **상태 축 (2026-10-12 실측, CLI 2.1.296 — 번들 판정 함수 원문 + 격리 HOME, r7-prereq F1·F2).**
+ * 하네스의 판정은 `isDisabled(name) = name==="computer-use" ? !enabledMcpServers.includes(name)
+ * : disabledMcpServers.includes(name)` 한 줄이다. 즉 `enabledMcpServers`는 **내장 `computer-use`
+ * 한 이름에만** 의미가 있고, 그 외 모든 서버는 `disabledMcpServers`에 있으면 Disabled다(같은 이름이
+ * 양쪽에 있어도 Disabled — 우선순위 질문 자체가 없다). 플러그인 서버는 `plugin:<p>:<s>` 형태로만
+ * 매칭된다(베어 서버명은 무효). 그래서 여기서는 `computer-use` 외 이름의 `enabledMcpServers`를
+ * 읽지 않으며, 양쪽에 있는 이름은 `disabledMcpServers` 출처의 disabled로 판정한다.
+ * ⚠️ 예전 이 주석은 AC-0.4(2026-08)의 "append형 토글 이력" 결론을 인용해 `enabledMcpServers`를
+ * 일반 enabled 신호로 읽고 `both` 충돌 경로를 뒀다 — 그 결론은 위 실측으로 정정됐다(결과 파일은
+ * 현재 플레이스홀더). `McpStateSource`의 `"both"` 값은 이미 저장된 스냅샷이 쓰므로 스키마에 남기되
+ * probe는 더 만들지 않는다. `disabledMcpServers`에 없는 이름의 상태는 `null`(판정 안 함 — 특히
+ * `.mcp.json` 서버는 승인 전이면 Pending이라 "enabled"로 단정할 수 없다).
+ * ③(`*McpjsonServers`, 승인 축)은 이 파일이 읽지 않는다 — 현재 위치는 settings 계층이다.
  */
 
 export interface McpSourceResult {
@@ -59,6 +65,9 @@ export interface CollectMcpOptions {
    * `plugin:<name>:<server>` 토글의 classification_source 판정에 쓴다. */
   installedPluginNames: ReadonlySet<string>;
 }
+
+/** 하네스가 `enabledMcpServers`를 상태 신호로 읽는 유일한 이름(내장, 기본 꺼짐). */
+const COMPUTER_USE = "computer-use";
 
 interface ServerDefinition {
   name: string;
@@ -161,20 +170,22 @@ export function collectMcp(options: CollectMcpOptions): McpSourceResult {
     const projectEntry = claudeJson?.projects?.[projectPath];
     const enabledNames = new Set(projectEntry?.enabledMcpServers ?? []);
     const disabledNames = new Set(projectEntry?.disabledMcpServers ?? []);
-    const allNames = new Set<string>([...enabledNames, ...disabledNames]);
+    // 하네스가 enabledMcpServers를 참조하는 이름은 computer-use뿐이다(위 헤더) — 그 외 이름은
+    // disabledMcpServers에서만 관측한다.
+    const allNames = new Set<string>(disabledNames);
+    if (enabledNames.has(COMPUTER_USE)) allNames.add(COMPUTER_USE);
     const projectPathHash = normalizePath(projectPath, home.ctkHome).path_hash;
 
     for (const name of allNames) {
-      const isEnabled = enabledNames.has(name);
+      const isEnabled = name === COMPUTER_USE && enabledNames.has(name);
       const isDisabled = disabledNames.has(name);
-      const conflict = isEnabled && isDisabled;
 
       if (definedNames.has(name)) {
         // 정의를 찾은 MCP 자산 — 해당 프로젝트의 Installation 초안에 mcp_enabled_state를 채운다.
         // 그 프로젝트 스코프로 이미 만든 초안이 있으면 거기에 병합하고, 없으면(예: user 스코프
         // 서버를 프로젝트 단위로 토글) install_scope:null인 새 초안을 추가한다.
-        const state: McpEnabledState | null = conflict ? null : isEnabled ? "enabled" : "disabled";
-        const source: McpStateSource = conflict ? "both" : isEnabled ? "enabledMcpServers" : "disabledMcpServers";
+        const state: McpEnabledState = isEnabled ? "enabled" : "disabled";
+        const source: McpStateSource = isEnabled ? "enabledMcpServers" : "disabledMcpServers";
         const key = draftKey(name, projectPathHash);
         const existing = drafts.get(key);
         if (existing) {
@@ -192,8 +203,7 @@ export function collectMcp(options: CollectMcpOptions): McpSourceResult {
         continue;
       }
 
-      // 정의를 못 찾은 이름 — 비-Asset 토글 관측(결정 7). 충돌이면 각 source_field별로 원문 그대로
-      // 보존한다(버리지 않는다 — append-only 원칙).
+      // 정의를 못 찾은 이름 — 비-Asset 토글 관측(결정 7). computer-use는 두 리스트를 각각 원문 그대로 보존한다.
       const classification = classifyToggleName(name, installedPluginNames);
       if (isEnabled) {
         toggles.push({

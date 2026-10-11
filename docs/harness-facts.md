@@ -45,6 +45,12 @@
 - `~/.claude.json`의 프로젝트 엔트리에 `enabledMcpServers`/`disabledMcpServers`가 있고
   **실사용 중이다.** 단 MCP 전용이 아니라 claude.ai 커넥터·`computer-use` 같은 내장 기능까지
   담는 범용 토글 목록이다 — 이름 패턴이 아니라 **로컬에 정의가 있는가**로 자산 여부를 판정한다.
+  **⚠️ 의미 정정(2026-10-12, CLI 2.1.296 — 번들 정독 + 격리 홈 실측, 무료).** 두 키는 대칭이 아니다:
+  `enabledMcpServers`는 내장 `computer-use`에만 쓰이고, 그 밖의 서버는 `disabledMcpServers`에 이름이
+  있을 때만 꺼진다(양쪽에 있으면 Disabled — 우선순위 질문은 성립하지 않는다). 플러그인 서버는
+  `plugin:<p>:<s>`로만 매칭된다. `.mcp.json` 승인(`*McpjsonServers`·`enableAllProjectMcpServers`)은 settings
+  파일의 **별개 축**이고, 읽기 명령 `claude mcp list`가 그 키를 이관·백업하며 **쓴다.**
+  파급: probe가 enabled-only 이름을 `enabled`로 표시하던 해석을 고쳤다(`probe/sources/mcp.ts`).
 - `~/.claude.json`에 `skillUsage`·`pluginUsage`(`{usageCount, lastUsedAt}`, `lastUsedAt`은
   **epoch ms** — ISO 문자열이 아니다)가 이미 있다. `pluginUsage`의 키는 `name@marketplace`
   (Asset.id와 동형) · `skillUsage`의 키는 스킬 이름 베어 형태다(실측, 2026-08-21, 실제
@@ -309,7 +315,7 @@ cwd를 임시 루트 아래(`<tmpdir>/ctk-agent-probe-cwd-<uid>`)로 옮겨 해�
 | 자산 유형 | 스코프가 사는 곳 | 끄는 방법 |
 |---|---|---|
 | 플러그인 | **설치 스코프**는 `~/.claude/plugins/installed_plugins.json` · **활성 여부**는 `settings.json`의 `enabledPlugins`(값은 boolean뿐) | `claude plugin disable -s user\|project\|local` |
-| MCP 서버 | `~/.claude.json` 루트 `mcpServers`(user) · 프로젝트 엔트리 `mcpServers`(local) · `.mcp.json`(project) · 플러그인 번들 | **CLI 명령 없음.** 단 상태는 프로젝트별 `enabledMcpServers`/`disabledMcpServers`에 기록됨 — `/mcp` UI로 토글 |
+| MCP 서버 | `~/.claude.json` 루트 `mcpServers`(user) · 프로젝트 엔트리 `mcpServers`(local) · `.mcp.json`(project) · 플러그인 번들 | **CLI 명령 없음.** 끄는 상태는 프로젝트별 `disabledMcpServers` 하나(`enabledMcpServers`는 `computer-use` 전용) — `/mcp` UI로 토글 |
 | 전역 스킬 | `~/.claude/skills/<name>/` 존재 여부 | **명령 없음** — 디렉터리 이동 |
 | CLI 도구 | PATH | 해당 없음 (상시 토큰 0) |
 

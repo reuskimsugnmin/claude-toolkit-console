@@ -7,7 +7,8 @@ import { z } from "zod";
  * `.passthrough()`로 무관한 키를 통과시키고, MCP 소스로 쓰는 필드만 구조를 강제한다:
  * - 루트 `mcpServers` — user 스코프 MCP 서버 정의 (결정 7 · AC-0.4ⓐ)
  * - `projects.<path>.mcpServers` — 프로젝트별 로컬 MCP 서버 정의("local" install_scope로 매핑)
- * - `projects.<path>.{enabledMcpServers,disabledMcpServers}` — 프로젝트별 토글 이력(AC-0.4ⓑ①②)
+ * - `projects.<path>.{enabledMcpServers,disabledMcpServers}` — 프로젝트별 토글 상태(AC-0.4ⓑ①②; 2026-10-12
+ *   정정 — 이력이 아니라 현재 상태이고, 끄는 축은 `disabledMcpServers`, `enabledMcpServers`는 `computer-use` 전용)
  * - `projects.<path>.{enabledMcpjsonServers,disabledMcpjsonServers}` — AC-0.4ⓑ③ 판정불가
  *   (16개 프로젝트 전부 빈 배열, `mcp_state_unverified`로 남긴다). 구조만 파싱하고 값 해석은 하지 않는다.
  * - 루트 `skillUsage`/`pluginUsage` — Step 3(AC-4.9) 교차검증 소스. 실측(2026-08-21, 실제
