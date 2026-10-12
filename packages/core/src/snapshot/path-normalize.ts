@@ -9,6 +9,31 @@ export function hashPath(rawAbsolutePath: string): string {
   return createHash("sha256").update(rawAbsolutePath).digest("hex").slice(0, 16);
 }
 
+export type HashPrefixMatch =
+  | { kind: "one"; path: string }
+  | { kind: "none" }
+  /** `prefixes`: 후보마다 서로를 가르는 **더 긴** 최단 접두사(같은 순서) — 사용자에게 다시 고르게 할 때 쓴다. */
+  | { kind: "ambiguous"; prefixes: string[] };
+
+/**
+ * `hashPath(경로)`가 `prefix`로 시작하는 경로를 찾는다 — 정확히 하나면 `one`, 없으면 `none`, 여럿이면
+ * `ambiguous`(첫 일치를 고르지 않는다). 소문자 hex 1~16자가 아닌 접두사(빈 문자열 포함)는 `none`이다. 같은 경로가 중복돼도 한 후보로 센다.
+ */
+export function matchHashPrefix(paths: readonly string[], prefix: string): HashPrefixMatch {
+  if (!/^[0-9a-f]{1,16}$/.test(prefix)) return { kind: "none" };
+  const hits = [...new Set(paths)].filter((p) => hashPath(p).startsWith(prefix));
+  const [first, ...rest] = hits;
+  if (first === undefined) return { kind: "none" };
+  if (rest.length === 0) return { kind: "one", path: first };
+  const hashes = hits.map(hashPath);
+  const prefixes = hashes.map((h) => {
+    let n = prefix.length + 1;
+    while (n < h.length && hashes.some((o) => o !== h && o.startsWith(h.slice(0, n)))) n++;
+    return h.slice(0, n);
+  });
+  return { kind: "ambiguous", prefixes };
+}
+
 export interface NormalizedPath {
   /** 홈 상대 표기 (예: "~/projects/foo"). 정규화 불가하면 null */
   home_relative: string | null;

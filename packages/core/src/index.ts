@@ -45,6 +45,9 @@ export * from "./snapshot/id.js";
 export * from "./snapshot/freshness.js";
 export * from "./snapshot/path-normalize.js";
 
+export * from "./mcp/names.js";
+export * from "./mcp-toggle.js";
+
 export * from "./catalog/layout.js";
 export * from "./workflow-doc/leaks.js";
 export * from "./workflow-doc/markers.js";

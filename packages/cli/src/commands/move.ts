@@ -40,7 +40,7 @@ import {
   type InstalledPluginEntry,
   type InstallScope,
   type JournalResult,
-  hashPath,
+  matchHashPrefix,
 } from "@ctk/core";
 import { acquireLock, parseCatalogIndex, writeJournalEntry, commitAll } from "@ctk/sync";
 import { writeRunLogSafely } from "../run-log-safe.js";
@@ -156,7 +156,7 @@ function resolveProjectPath(home: HomeContext, index: number | undefined, expect
   const known = listKnownProjectPaths(home);
   const projectPath = known[index];
   if (projectPath === undefined) throw new ProjectIndexOutOfRangeError(index, known.length);
-  if (expectedHashPrefix !== undefined && !hashPath(projectPath).startsWith(expectedHashPrefix)) {
+  if (expectedHashPrefix !== undefined && matchHashPrefix([projectPath], expectedHashPrefix).kind !== "one") {
     throw new ProjectListChangedError();
   }
   return projectPath;

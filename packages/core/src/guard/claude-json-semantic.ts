@@ -90,17 +90,65 @@ function classify(
   return { path, status, mcpForbidden: false };
 }
 
+/**
+ * 마스킹된 프로젝트 서브키 경로 — **이 포맷의 유일한 생산자다.** 판정기가 보고하는 경로와
+ * `isExactMcpToggleVerdict`(mcp-toggle.ts)가 기대하는 경로가 같은 함수에서 나와야 한쪽만
+ * 고쳐져 서로 어긋나지 않는다(사본은 코드처럼 생기지 않은 자리 — 템플릿 문자열 — 에서 생긴다).
+ */
+export function maskedProjectPath(projectKey: string, subkey?: string): string {
+  const entry = `projects.#${hashPath(projectKey).slice(0, 8)}`;
+  return subkey === undefined ? entry : `${entry}.${subkey}`;
+}
+
+export type McpToggleOp = "disable" | "enable";
+
+/** MCP 토글 한 건의 예외 신청 — 이 키의 `disabledMcpServers`에서 이 이름 하나를 이 방향으로 바꾼 diff만 통과시킨다. */
+export interface McpToggleException {
+  projectKey: string;
+  name: string;
+  op: McpToggleOp;
+}
+
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+
+/**
+ * `disabledMcpServers`의 변경이 **`name` 하나를 `op` 방향으로 토글한 흔적과 정확히 일치하는가**
+ * (통과 축은 완전 일치 — 원소 순서·다른 이름·문자열 아닌 원소는 전부 불일치).
+ * disable: `after == [...(before ?? []), name]` 이고 `name ∉ before`. enable: `before`가 배열이고
+ * `name ∈ before` 이며 `after == before.filter(≠name)`.
+ */
+export function isMcpDisableToggleTouch(before: unknown, after: unknown, name: string, op: McpToggleOp): boolean {
+  if (before !== undefined && !isStringArray(before)) return false;
+  if (!isStringArray(after)) return false;
+  const present = before?.includes(name) === true;
+  if (op === "disable" ? present : !present) return false;
+  const expected = op === "disable" ? [...(before ?? []), name] : (before ?? []).filter((x) => x !== name);
+  return expected.length === after.length && expected.every((x, i) => x === after[i]);
+}
+
 function diffProjectEntry(
-  projectPathHash: string,
+  projectKey: string,
   before: Record<string, unknown>,
   after: Record<string, unknown>,
   allowedChurnKeys: ReadonlySet<string>,
   out: ClaudeJsonPathVerdict[],
+  /** 이 프로젝트 키에 **적용 가능한** 토글 예외만 온다(키가 양쪽에 있고 plain object일 때 — 호출자가 확인). */
+  mcpToggle: McpToggleException | null,
 ): void {
   const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
   for (const key of keys) {
     if (deepEqual(own(before, key), own(after, key))) continue;
-    const path = `projects.#${projectPathHash}.${key}`;
+    const path = maskedProjectPath(projectKey, key);
+    if (
+      key === "disabledMcpServers" &&
+      mcpToggle !== null &&
+      isMcpDisableToggleTouch(own(before, key), own(after, key), mcpToggle.name, mcpToggle.op)
+    ) {
+      out.push({ path, status: "allowed_churn", mcpForbidden: false });
+      continue;
+    }
     out.push(classify(path, MCP_PROJECT_SUBTREE_KEYS.has(key), allowedChurnKeys, `projects.*.${key}`));
   }
 }
@@ -191,6 +239,8 @@ export function claudeJsonSemanticVerdict(
   enabledPluginId: string | null = null,
   /** true면 `pluginUsage`의 **다른** 기존 항목이 `lastUsedAt`·`usageCount`만 바꾼 것(다른 살아 있는 세션의 흔적)을 churn으로 본다. 실측 근거는 호출자가 책임진다. */
   allowLiveSessionPluginUsage = false,
+  /** `ctk mcp`만 넘긴다 — 그 프로젝트 키의 `disabledMcpServers` 한 이름 토글만 예외. 나머지 MCP 서브키는 그대로 위반. */
+  mcpToggle: McpToggleException | null = null,
 ): ClaudeJsonSemanticVerdict {
   const allowSet = new Set(allowedChurnKeys);
   const changed: ClaudeJsonPathVerdict[] = [];
@@ -214,6 +264,10 @@ export function claudeJsonSemanticVerdict(
     changed.push(classify(key, MCP_ROOT_FORBIDDEN_KEYS.has(key), allowSet, key));
   }
 
+  // 최상위 `projects`의 형 변경([]↔{} 등)도 엔트리 비교에서는 `{}`로 읽혀 사라진다.
+  if (!(isPlainObject(own(beforeObj, "projects")) && isPlainObject(own(afterObj, "projects"))) && !deepEqual(own(beforeObj, "projects"), own(afterObj, "projects"))) {
+    changed.push({ path: "projects", status: "violation", mcpForbidden: false });
+  }
   const beforeProjects = isPlainObject(beforeObj.projects) ? beforeObj.projects : {};
   const afterProjects = isPlainObject(afterObj.projects) ? afterObj.projects : {};
   const projectKeys = new Set([...Object.keys(beforeProjects), ...Object.keys(afterProjects)]);
@@ -221,13 +275,23 @@ export function claudeJsonSemanticVerdict(
     const beforeEntry = own(beforeProjects, projectPath);
     const afterEntry = own(afterProjects, projectPath);
     if (deepEqual(beforeEntry, afterEntry)) continue;
-    const hash = hashPath(projectPath).slice(0, 8);
+    // 엔트리의 생성·삭제·형 변경은 서브키 diff로 보이지 않는다(부재·비객체를 `{}`로 읽으면 빈 엔트리의 변화가
+    // 사라진다) — 엔트리 단위 위반으로 직접 올린다. `own()`은 없는 키에 undefined를 주므로 plain-object 검사가 곧 존재 검사다.
+    if (!isPlainObject(beforeEntry) || !isPlainObject(afterEntry)) {
+      // 새로 생기거나 사라지는 엔트리가 MCP 서브키를 담고 있으면 예전처럼 mcpForbidden이다(호출자가 사유를 가른다).
+      const mcpForbidden = [beforeEntry, afterEntry].some((e) => isPlainObject(e) && Object.keys(e).some((k) => MCP_PROJECT_SUBTREE_KEYS.has(k)));
+      changed.push({ path: maskedProjectPath(projectPath), status: "violation", mcpForbidden });
+      continue;
+    }
+    // 예외는 키가 **양쪽에 있고 둘 다 plain object일 때만** 열린다(risk 4) — 위 분기가 이미 보장한다.
+    const toggleApplies = mcpToggle !== null && mcpToggle.projectKey === projectPath;
     diffProjectEntry(
-      hash,
-      isPlainObject(beforeEntry) ? beforeEntry : {},
-      isPlainObject(afterEntry) ? afterEntry : {},
+      projectPath,
+      beforeEntry,
+      afterEntry,
       allowSet,
       changed,
+      toggleApplies ? mcpToggle : null,
     );
   }
 
