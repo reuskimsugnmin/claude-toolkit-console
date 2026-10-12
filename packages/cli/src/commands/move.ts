@@ -31,20 +31,19 @@ import {
 } from "@ctk/actuator";
 import { claudeJsonPath, findSkillDirsById, listKnownProjectPaths, resolveHomeContext, type HomeContext } from "@ctk/probe";
 import {
-  FAILURE_CLASSES,
+  extractFailureClass,
   TIER1_INTENTIONAL_WRITES,
   normalizePath,
   parseInstalledPluginsFile,
   snapshotIdFsSafe,
   type AssetKind,
-  type FailureClass,
   type InstalledPluginEntry,
   type InstallScope,
   type JournalResult,
-  type RunLogEntry,
   hashPath,
 } from "@ctk/core";
-import { acquireLock, parseCatalogIndex, writeJournalEntry, commitAll, writeRunLog } from "@ctk/sync";
+import { acquireLock, parseCatalogIndex, writeJournalEntry, commitAll } from "@ctk/sync";
+import { writeRunLogSafely } from "../run-log-safe.js";
 import { readLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
 import { CatalogNotInitializedError } from "./scan.js";
 
@@ -200,22 +199,6 @@ export class UnregisteredPluginMoveError extends Error {
     );
     this.name = "UnregisteredPluginMoveError";
   }
-}
-
-const FAILURE_CLASS_SET = new Set<string>(FAILURE_CLASSES);
-
-/** 던져진 오류가 알려진 `failure_class`를 싣고 있으면 그대로 쓰고, 아니면 "unclassified"로 남긴다. */
-function extractFailureClass(err: unknown): FailureClass {
-  if (
-    typeof err === "object" &&
-    err !== null &&
-    "failureClass" in err &&
-    typeof (err as { failureClass: unknown }).failureClass === "string" &&
-    FAILURE_CLASS_SET.has((err as { failureClass: string }).failureClass)
-  ) {
-    return (err as { failureClass: FailureClass }).failureClass;
-  }
-  return "unclassified";
 }
 
 /**
@@ -734,11 +717,3 @@ export async function runMove(options: MoveOptions): Promise<MoveSummary> {
   }
 }
 
-/** run-log 기록 자체의 실패가 원본 오류를 삼키지 않도록 격리한다(H3). */
-function writeRunLogSafely(catalogPath: string, entry: RunLogEntry): void {
-  try {
-    writeRunLog(catalogPath, entry);
-  } catch {
-    // best-effort — 원본 성공/실패 결과에 영향을 주지 않는다.
-  }
-}

@@ -21,7 +21,7 @@ import {
   writeRunLog,
   writeSnapshot,
 } from "@ctk/sync";
-import { FAILURE_CLASSES, type Asset, type AssetKind, type FailureClass, type Installation, type RunLogEntry, type Toggle } from "@ctk/core";
+import { extractFailureClass, type Asset, type AssetKind, type Installation, type RunLogEntry, type Toggle } from "@ctk/core";
 import { readLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
 
 export class CatalogNotInitializedError extends Error {
@@ -88,22 +88,6 @@ function countAssetKinds(assets: Asset[]): Record<AssetKind, number> {
   const counts: Record<AssetKind, number> = { plugin: 0, skill: 0, mcp: 0, cli: 0, agent: 0, command: 0 };
   for (const asset of assets) counts[asset.kind]++;
   return counts;
-}
-
-const FAILURE_CLASS_SET = new Set<string>(FAILURE_CLASSES);
-
-/** 던져진 오류가 알려진 `failure_class`를 싣고 있으면 그대로 쓰고, 아니면 "unclassified"로 남긴다. */
-function extractFailureClass(err: unknown): FailureClass {
-  if (
-    typeof err === "object" &&
-    err !== null &&
-    "failureClass" in err &&
-    typeof (err as { failureClass: unknown }).failureClass === "string" &&
-    FAILURE_CLASS_SET.has((err as { failureClass: string }).failureClass)
-  ) {
-    return (err as { failureClass: FailureClass }).failureClass;
-  }
-  return "unclassified";
 }
 
 function countScopes(installations: Installation[]): Record<string, number> {

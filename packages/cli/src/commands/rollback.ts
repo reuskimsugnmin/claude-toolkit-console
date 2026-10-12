@@ -2,8 +2,9 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { RollbackFailedError, buildRollbackJournalEntry, describeClaudeJsonLeftover, manifestSha256Of, restoreFromBackup } from "@ctk/actuator";
 import { resolveHomeContext } from "@ctk/probe";
-import { FAILURE_CLASSES, parseJournalEntry, type FailureClass, type JournalEntry, type RunLogEntry } from "@ctk/core";
-import { acquireLock, commitAll, writeJournalEntry, writeRunLog } from "@ctk/sync";
+import { extractFailureClass, parseJournalEntry, type JournalEntry } from "@ctk/core";
+import { acquireLock, commitAll, writeJournalEntry } from "@ctk/sync";
+import { writeRunLogSafely } from "../run-log-safe.js";
 import { readLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
 import { CatalogNotInitializedError } from "./scan.js";
 
@@ -110,29 +111,6 @@ function backupRefToAbs(homeDir: string, homeRelative: string): string {
     throw new InvalidBackupRefError(homeRelative);
   }
   return abs;
-}
-
-const FAILURE_CLASS_SET = new Set<string>(FAILURE_CLASSES);
-
-function extractFailureClass(err: unknown): FailureClass {
-  if (
-    typeof err === "object" &&
-    err !== null &&
-    "failureClass" in err &&
-    typeof (err as { failureClass: unknown }).failureClass === "string" &&
-    FAILURE_CLASS_SET.has((err as { failureClass: string }).failureClass)
-  ) {
-    return (err as { failureClass: FailureClass }).failureClass;
-  }
-  return "unclassified";
-}
-
-function writeRunLogSafely(catalogPath: string, entry: RunLogEntry): void {
-  try {
-    writeRunLog(catalogPath, entry);
-  } catch {
-    // best-effort — 원본 성공/실패 결과에 영향을 주지 않는다.
-  }
 }
 
 export async function runRollback(_options: RollbackOptions): Promise<RollbackSummary> {

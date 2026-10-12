@@ -162,6 +162,27 @@ export default tseslint.config(
     },
   },
 
+  // ── cli: failure_class 열거를 직접 읽지 않는다 — 읽는 자리는 core의 failureClassOf/extractFailureClass
+  // 하나뿐이다(R7 Step 2). 사본이 생기면 core의 정정이 사본에 닿지 않는다(복사본 3벌이 있었다).
+  // cli에는 다른 no-restricted-imports 설정이 없다 — 생기면 같은 rule 객체로 합친다(flat config는 교체한다).
+  {
+    files: ["packages/cli/src/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@ctk/core",
+              importNames: ["FAILURE_CLASSES", "FailureClassSchema"],
+              message: "failure_class는 core의 failureClassOf/extractFailureClass로만 읽는다 — 열거를 직접 순회하는 사본을 만들지 않는다",
+            },
+          ],
+        },
+      ],
+    },
+  },
+
   // ── 전역: claude 서브프로세스는 spawn-claude.ts 래퍼만 호출할 수 있다.
   {
     files: ["packages/**/src/**/*.ts"],
