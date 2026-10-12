@@ -406,6 +406,33 @@ pnpm ctk rollback --last
 실행 전 자동 백업하고, 검증에 실패하면 즉시 롤백합니다. MCP 자산과 CLI 도구는 이동 대상이
 아닙니다(각각 별도 사유로 거부됩니다).
 
+### `mcp` — 프로젝트별 MCP 서버 끄기·켜기
+
+```sh
+pnpm ctk mcp                                  # 프로젝트 목록 (hash8  이름)
+pnpm ctk mcp disable --asset <자산id> [--project-hash <hex> | --project <경로>]
+pnpm ctk mcp enable  --asset <자산id> [--project-hash <hex> | --project <경로>]
+```
+
+한 프로젝트에서만 MCP 서버를 끕니다. `~/.claude.json`의
+`projects[<프로젝트>].disabledMcpServers`에서 **그 이름 하나만** 넣거나 뺍니다. 파일의 다른 부분은
+건드리지 않습니다.
+
+- **프로젝트 선택**: `--project-hash`(목록의 해시 앞부분, 8자 이상)나 `--project <경로>` 중 하나만 씁니다.
+  둘 다 생략하면 현재 디렉터리의 git 루트입니다. git 밖이면 현재 디렉터리입니다.
+- **키가 있어야 합니다**: 하네스가 그 프로젝트의 키를 이미 만들어 둔 경우만 씁니다(그 디렉터리에서
+  세션을 한 번 열거나 `claude mcp add-json -s local`로 서버를 추가). `ctk`는 키를 만들지 않습니다.
+  `ctk mcp`에 프로젝트가 없으면 그렇다고 출력합니다.
+- **재시작**: 실행 중인 그 프로젝트의 Claude Code 세션은 재시작해야 반영됩니다. 명령이 매번 이 사실을 출력합니다.
+- **되돌리기**: 쓰기 뒤에는 자동 되돌림이 없습니다. 출력되는 반대 명령(`enable` ↔ `disable`)을 씁니다.
+  `pnpm ctk rollback --last`는 토글을 되돌리지 않고 거부하며 그 반대 명령을 안내합니다.
+- **범위**: `claude.ai` 커넥터와 `computer-use`는 거부합니다. 플러그인 MCP 서버는 그 프로젝트에 부모
+  플러그인이 설치돼 있을 때만 끌 수 있습니다. `.mcp.json`의 서버는 끌 수 있지만, 아직 승인되지 않았으면
+  `Pending`으로 표시되고 승인 설정은 바꾸지 않습니다.
+
+> ⚠️ **토글이 journal의 마지막 기록이면 `rollback --last`는 그보다 앞선 `move`를 되돌리지 못합니다.**
+> 이 경우 `rollback --last`는 토글 때문에 거부됩니다.
+
 ### `doctor` — 진단
 
 ```sh
