@@ -473,9 +473,9 @@ function restoreInternal(
 
   const leftUntouchedKeys: string[] = [];
   let claudeJson: ClaudeJsonLeftover | null = null;
-  // R7 주의: 지금은 ctk가 이 파일을 직접 쓰지 않으므로(남기는 것은 CLI가 만든 무해한 pluginUsage 흔적뿐) 파일 전체를
-  // 복원에서 뺀다. **R7(ctk가 .claude.json을 직접 쓴다)이 오면 이 전역 제외를 액션별 소유 서브트리 단위로 바꾸고,
-  // 그 서브트리만 키 수준 CAS로 복원해야 한다** — 전역 제외로 두면 ctk가 쓴 변경이 롤백되지 않는다.
+  // R7 주의: 이 파일 전체를 복원에서 뺀다 — `ctk mcp`가 쓰는 것은 한 프로젝트 키의 `disabledMcpServers` 하나뿐인 소유
+  // 서브트리이고, 그 되돌림은 이 복원기가 아니라 역방향 `ctk mcp` 동사가 한다(키 수준 CAS가 거기 있다). 따라서 `ctk mcp`
+  // 토글 뒤의 `ctk rollback`은 이 파일을 복원하지 않는다(cli가 `toggle_mcp_project`를 먼저 거부한다).
   // 제외는 경로(claudeJsonPath)와 manifest 키 둘 다로 건다: 키만 보면 CTK_CONFIG_DIR 설정 여부가 달라진 백업이,
   // 경로만 보면 키가 바뀐 백업이 이 파일을 CAS 없이 통째 복원할 수 있다.
   for (const [key, entry] of Object.entries(entries)) {

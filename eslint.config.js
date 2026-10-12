@@ -177,6 +177,11 @@ export default tseslint.config(
               importNames: ["FAILURE_CLASSES", "FailureClassSchema"],
               message: "failure_class는 core의 failureClassOf/extractFailureClass로만 읽는다 — 열거를 직접 순회하는 사본을 만들지 않는다",
             },
+            {
+              name: "@ctk/actuator",
+              importNames: ["applyMcpToggleWithSeam", "restoreFromBackupWithSeam", "McpToggleTestSeam", "RestoreTestSeam"],
+              message: "*WithSeam·TestSeam은 테스트 전용 이음매다 — 제품 코드는 applyMcpToggle/restoreFromBackup만 쓴다",
+            },
           ],
         },
       ],

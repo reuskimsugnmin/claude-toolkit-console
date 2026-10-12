@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { machineDependentTag, schemaVersion } from "./common.js";
 
-/** v1 이관 범위 — 플러그인 enablement 수정과 스킬 디렉터리 이동만 (스펙 Constraints). */
-export const JournalActionSchema = z.enum(["move_plugin_enablement", "move_skill_dir", "rollback"]);
+/** v1 이관 범위 — 플러그인 enablement 수정과 스킬 디렉터리 이동 + R7 MCP 프로젝트 토글 (스펙 Constraints). */
+export const JournalActionSchema = z.enum(["move_plugin_enablement", "move_skill_dir", "rollback", "toggle_mcp_project"]);
 export type JournalAction = z.infer<typeof JournalActionSchema>;
 
 export const JournalResultSchema = z.enum(["success", "failure", "rolled_back"]);
@@ -32,6 +32,19 @@ export const JournalEntrySchema = z
     timestamp: z.string().datetime(),
   })
   .strict();
+
+/**
+ * `toggle_mcp_project` 레코드의 `before`/`after` 모양 — 쓰는 쪽(actuator)과 읽는 쪽(cli rollback 힌트)이 공용한다.
+ * 프로젝트는 원문 경로가 아니라 `hashPath` 16자 hex만 담는다(공개 저장소 위생·동기화 데이터 저장소 위생).
+ */
+export const McpToggleJournalStateSchema = z
+  .object({
+    harness_name: z.string().min(1),
+    project_path_hash: z.string().regex(/^[0-9a-f]{16}$/),
+    disabled: z.boolean(),
+  })
+  .strict();
+export type McpToggleJournalState = z.infer<typeof McpToggleJournalStateSchema>;
 
 export type JournalEntry = z.infer<typeof JournalEntrySchema>;
 

@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildMcpToggleJournalEntry,
   buildPluginEnablementJournalEntry,
   buildRollbackJournalEntry,
   buildSkillDirJournalEntry,
   PathNormalizeFailedError,
 } from "../src/journal.js";
-import { JournalEntrySchema } from "@ctk/core";
+import { JournalEntrySchema, McpToggleJournalStateSchema, hashPath } from "@ctk/core";
 
 const HOME = "/synthetic/home";
 
@@ -73,5 +74,34 @@ describe("actuator/journal — before/after 필수, 반환만 한다(P1-5)", () 
         result: "success",
       }),
     ).toThrow(PathNormalizeFailedError);
+  });
+
+  describe("toggle_mcp_project (R7) — 프로젝트는 해시만, 쓰는 쪽과 읽는 쪽이 같은 strict 스키마", () => {
+    const hash = hashPath("/synthetic/projects/alpha");
+    const base = {
+      assetId: "synthetic-echo",
+      machineId: "m1",
+      homeDir: HOME,
+      backupRootAbs: `${HOME}/.ctk-backups/run1`,
+      manifestSha256: "a".repeat(64),
+      result: "success" as const,
+    };
+    it("레코드가 JournalEntrySchema와 McpToggleJournalStateSchema를 통과하고 경로 원문이 없다", () => {
+      const entry = buildMcpToggleJournalEntry({
+        ...base,
+        before: { harness_name: "synthetic-echo", project_path_hash: hash, disabled: false },
+        after: { harness_name: "synthetic-echo", project_path_hash: hash, disabled: true },
+      });
+      expect(() => JournalEntrySchema.parse(entry)).not.toThrow();
+      expect(entry.action).toBe("toggle_mcp_project");
+      expect(McpToggleJournalStateSchema.parse(entry.after)).toEqual({ harness_name: "synthetic-echo", project_path_hash: hash, disabled: true });
+      expect(JSON.stringify(entry)).not.toContain("/synthetic/projects");
+    });
+    it("해시 자리에 경로 원문을 넣으면 쓰기 전에 거부하고, 모르는 필드도 strict로 거부한다", () => {
+      const bad = { harness_name: "x", project_path_hash: "/synthetic/projects/alpha", disabled: true };
+      expect(() => buildMcpToggleJournalEntry({ ...base, before: bad, after: bad })).toThrow();
+      expect(McpToggleJournalStateSchema.safeParse({ harness_name: "x", project_path_hash: hash, disabled: true, path: "/p" }).success).toBe(false);
+      expect(McpToggleJournalStateSchema.safeParse({ harness_name: "x", project_path_hash: hash.toUpperCase(), disabled: true }).success).toBe(false);
+    });
   });
 });

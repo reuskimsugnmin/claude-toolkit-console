@@ -8,6 +8,7 @@ const R7_CLASSES = [
   "claude_json_post_write_unmeasured",
   "backup_failed",
   "journal_write_failed",
+  "claude_json_write_failed",
 ] as const;
 
 describe("failureClassOf / extractFailureClass", () => {

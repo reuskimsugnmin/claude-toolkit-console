@@ -11,6 +11,7 @@ export * from "./backup.js";
 export * from "./apply/plugin-enablement.js";
 export * from "./apply/skill-dir.js";
 export * from "./apply/mcp-reject.js";
+export * from "./apply/mcp-toggle.js";
 export * from "./audit.js";
 export * from "./verify.js";
 export * from "./rollback.js";

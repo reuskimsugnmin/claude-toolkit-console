@@ -1,4 +1,4 @@
-import { normalizePath, type InstallScope, type JournalAction, type JournalEntry, type JournalResult } from "@ctk/core";
+import { McpToggleJournalStateSchema, normalizePath, type InstallScope, type JournalAction, type JournalEntry, type JournalResult, type McpToggleJournalState } from "@ctk/core";
 
 /**
  * actuator/src/journal.ts — `before`/`after`가 필수인 감사 레코드를 **반환만 한다**(P1-5).
@@ -99,6 +99,36 @@ export function buildSkillDirJournalEntry(options: BuildSkillDirJournalOptions):
     machine_id: options.machineId,
     before: { ...options.before },
     after: { ...options.after },
+    backup_ref,
+    backup_manifest_sha256: options.manifestSha256,
+    result: options.result,
+    timestamp: options.timestamp ?? new Date().toISOString(),
+  };
+}
+
+export interface BuildMcpToggleJournalOptions {
+  assetId: string;
+  machineId: string;
+  homeDir: string;
+  before: McpToggleJournalState;
+  after: McpToggleJournalState;
+  backupRootAbs: string;
+  manifestSha256: string;
+  result: JournalResult;
+  timestamp?: string;
+}
+
+/** R7 — `ctk mcp` 토글 레코드. before/after는 읽는 쪽과 같은 strict 스키마로 **쓰기 전에** 검증한다(경로 원문 유입 차단). */
+export function buildMcpToggleJournalEntry(options: BuildMcpToggleJournalOptions): JournalEntry {
+  const backup_ref = homeRelativeOrThrow(options.backupRootAbs, options.homeDir, "backup_ref");
+  return {
+    schema_version: 1,
+    _scope: "machine_dependent",
+    action: "toggle_mcp_project",
+    asset_id: options.assetId,
+    machine_id: options.machineId,
+    before: { ...McpToggleJournalStateSchema.parse(options.before) },
+    after: { ...McpToggleJournalStateSchema.parse(options.after) },
     backup_ref,
     backup_manifest_sha256: options.manifestSha256,
     result: options.result,
