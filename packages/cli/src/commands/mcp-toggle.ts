@@ -16,7 +16,6 @@ import {
 } from "@ctk/core";
 import { acquireLock, commitAll, readCatalogIndexOrNull, writeJournalEntry, type CatalogIndexEntry } from "@ctk/sync";
 import { readLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
-import { parseStrictFlags } from "../flags.js";
 import { McpToggleRefusedError, selectProject, type ProjectSelector } from "../project-select.js";
 import { writeRunLogSafely } from "../run-log-safe.js";
 import { CatalogNotInitializedError } from "./scan.js";
@@ -64,13 +63,6 @@ export class McpToggleFailedError extends Error {
     this.failureClass = failureClass;
     this.guard = guard;
   }
-}
-
-/** `ctk mcp <동사> ...` 인자(동사 뒤) 파싱 — 알려진 플래그 쌍만 허용한다(flags.ts). 거부면 null. */
-export function parseMcpFlags(args: readonly string[]): { assetId: string; projectHash?: string; project?: string } | null {
-  const f = parseStrictFlags(args, ["--asset", "--project-hash", "--project"]);
-  const assetId = f?.["--asset"];
-  return f === null || assetId === undefined ? null : { assetId, projectHash: f["--project-hash"], project: f["--project"] };
 }
 
 const RESTART_NOTICE = "해당 프로젝트에서 실행 중인 Claude Code 세션은 재시작해야 반영된다.";

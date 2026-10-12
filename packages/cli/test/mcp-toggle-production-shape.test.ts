@@ -458,6 +458,13 @@ describe("cli — ctk mcp 프로덕션 형태(CTK_CONFIG_DIR 미설정)", () => 
     expect(lines.every((l) => /^[0-9a-f]{8} {2}\S/.test(l))).toBe(true);
   });
 
+  it("`ctk mcp` 단독 — 알려진 프로젝트가 0건이면 빈 출력 대신 0건을 말로 적는다", async () => {
+    writeFileSync(jsonAbs, JSON.stringify({ projects: {} }, null, 2), "utf8");
+    const run = await ctk("mcp");
+    expect(run.exitCode).toBe(0);
+    expect(run.out).toContain("알려진 프로젝트가 없다");
+  });
+
   it.each([
     [["mcp", "toggle", "--asset", "user-srv"]],
     [["mcp", "disable"]],

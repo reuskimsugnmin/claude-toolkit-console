@@ -36,7 +36,7 @@ import { runVerifyAc1, NotYetScannedError } from "../src/commands/verify-ac1.js"
 import { runVerifyAc3, SkillSourceNotFoundError } from "../src/commands/verify-ac3.js";
 import { runMove, AssetNotFoundError, NoOpMoveError, ProjectIndexOutOfRangeError } from "../src/commands/move.js";
 import { runRollback, NoRollbackTargetError } from "../src/commands/rollback.js";
-import { runMcpToggle, formatMcpToggleSummary, parseMcpFlags } from "../src/commands/mcp-toggle.js";
+import { runMcpToggle, formatMcpToggleSummary } from "../src/commands/mcp-toggle.js";
 import { listProjectLines, printable } from "../src/project-select.js";
 import { resolveHomeContext } from "@ctk/probe";
 import { measurementFailureHint, runMeasure } from "../src/commands/measure.js";
@@ -357,18 +357,24 @@ async function main(): Promise<void> {
         // `ctk mcp` 단독 → 프로젝트 목록(인덱스 없이 `hash8  이름`). `disable|enable`은 --project-hash/--project 중 하나(생략 시 cwd의 git 루트).
         const [verb] = rest;
         if (verb === undefined) {
-          for (const line of listProjectLines(resolveHomeContext())) console.log(line);
+          const lines = listProjectLines(resolveHomeContext());
+          // 빈 출력은 "목록 없음"과 "실패"를 구분하지 못한다 — 0건을 말로 적는다(안전 원칙 7).
+          // 하네스는 그 디렉터리에서 세션을 열거나 local 서버를 추가할 때 키를 만든다(user 스코프 추가로는 안 생긴다).
+          if (lines.length === 0) console.log("알려진 프로젝트가 없다 — 그 프로젝트에서 Claude Code를 한 번 연 뒤 다시 실행한다.");
+          for (const line of lines) console.log(line);
           return;
         }
         // 알려진 `--flag <값>` 쌍만 받는다 — 오타·`--x=y`·반복·위치 인자를 무시하면 선택자가 "없음"으로 읽혀 cwd 프로젝트로 바뀐다(flags.ts).
-        const flags = parseMcpFlags(rest.slice(1));
-        if ((verb !== "disable" && verb !== "enable") || flags === null) {
+        // 플래그 목록은 여기(호출 지점)에 둔다 — README 계약 테스트가 bin의 리터럴로 플래그 존재를 확인한다(move와 같다).
+        const mf = parseStrictFlags(rest.slice(1), ["--asset", "--project-hash", "--project"]);
+        const assetId = mf?.["--asset"];
+        if ((verb !== "disable" && verb !== "enable") || mf === null || assetId === undefined) {
           console.error("사용법: ctk mcp  |  ctk mcp <disable|enable> --asset <id> [--project-hash <hex> | --project <경로>]");
           console.error("  `ctk mcp`는 프로젝트 목록(hash8  이름)을 보인다. 프로젝트를 생략하면 현재 디렉터리의 git 루트다.");
           process.exitCode = 1;
           return;
         }
-        const summary = await runMcpToggle({ op: verb, ...flags });
+        const summary = await runMcpToggle({ op: verb, assetId, projectHash: mf["--project-hash"], project: mf["--project"] });
         for (const line of formatMcpToggleSummary(summary)) console.log(printable(line));
         return;
       }
