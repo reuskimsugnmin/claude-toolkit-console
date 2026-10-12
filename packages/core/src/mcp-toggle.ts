@@ -107,6 +107,7 @@ export type McpToggleRefusalReason =
   | "plugin_not_installed_for_project"
   | "plugin_name_ambiguous"
   | "plugin_synced_unmeasured"
+  | "plugin_manifest_unmeasured"
   | "server_not_in_plugin";
 
 export type McpToggleTarget =
@@ -178,7 +179,10 @@ export function resolveMcpToggleTarget(input: McpToggleTargetInput): McpToggleTa
     return refuse("plugin_not_installed_for_project", "부모 플러그인이 이 프로젝트에 설치돼 있지 않다 — 써도 아무 효과가 없다. 설치된 프로젝트를 고른다.");
   }
   if (bundledMcpAssetIds === null) {
-    return refuse("plugin_synced_unmeasured", "동기화 플러그인의 매니페스트를 읽지 못해 서버 존재를 확인할 수 없다.");
+    // 원인이 다르면 처방도 다르다 — 동기화 플러그인은 계정 manifest, 그 외는 설치 디렉터리의 .mcp.json이다.
+    return forProject.every((r) => r.scope === "synced")
+      ? refuse("plugin_synced_unmeasured", "동기화 플러그인의 매니페스트를 읽지 못해 서버 존재를 확인할 수 없다.")
+      : refuse("plugin_manifest_unmeasured", "플러그인 설치 디렉터리의 .mcp.json을 읽지 못해(경로 거부·형태 오류 포함) 서버 존재를 확인할 수 없다.");
   }
   if (!bundledMcpAssetIds.has(asset.id)) {
     return refuse("server_not_in_plugin", "설치된 플러그인 버전에 이 서버가 없다 — `ctk scan`으로 카탈로그를 새로 고친다.");

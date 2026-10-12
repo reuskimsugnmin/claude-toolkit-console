@@ -71,6 +71,7 @@ export const FAILURE_CLASSES = [
   "claude_json_post_write_unmeasured", // 쓰기 후 .claude.json을 읽을 수 없거나 파싱할 수 없어 결과를 판정하지 못했다 — 성공으로 읽지 않는다
   "backup_failed", // 백업 생성 자체가 던졌다 — 수정 이전에 중단, 원본 불변
   "journal_write_failed", // 조치는 적용됐으나 journal 기록/커밋이 실패했다 — 되돌림 안내를 직접 출력한다
+  "journal_commit_failed", // 조치와 journal 파일 쓰기는 됐으나 카탈로그 커밋이 실패했다 — journal은 디스크에 있다(미커밋)
   "claude_json_write_failed", // 원자적 쓰기가 던졌고 파일은 여전히 S0과 같다 — 아무것도 바뀌지 않았다, 원인은 detail
   "unclassified",
 ] as const;

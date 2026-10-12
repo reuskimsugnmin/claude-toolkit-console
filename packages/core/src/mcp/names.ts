@@ -16,6 +16,14 @@ export function formatPluginMcpName(pluginName: string, serverName: string): str
   return `plugin:${pluginName}:${serverName}`;
 }
 
+/**
+ * 플러그인이 번들한 하위 툴의 자산 id — `<부모id>:<kind>:<이름>`. 만드는 쪽(probe 번들 수집)과 검증하는 쪽(`ctk mcp`가 동기화된
+ * 인덱스 행의 id↔name 일치를 확인)이 이 함수 하나를 쓴다 — 형식을 두 곳에 적으면 한쪽 정정이 다른 쪽에 닿지 않는다.
+ */
+export function bundledAssetId(parentId: string, kind: string, suffix: string): string {
+  return `${parentId}:${kind}:${suffix}`;
+}
+
 export function classifyToggleName(
   name: string,
   installedPluginNames: ReadonlySet<string>,

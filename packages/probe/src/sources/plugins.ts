@@ -11,6 +11,7 @@ import {
   type Asset,
   type Installation,
   type PluginDetails,
+  type RegistryScope,
   type RepoLink,
 } from "@ctk/core";
 import type { HomeContext } from "../home.js";
@@ -285,6 +286,19 @@ export type PluginInstallPathEntry = { path: string } | { rejected: string } | {
 /** 번들 수집이 쓰는 조회 — synced 쪽을 못 읽었을 때 그 실패를 `@synced` id에만 싣기 위해 Map 대신 쓴다. */
 export interface PluginInstallPathIndex {
   get(assetId: string): PluginInstallPathEntry | undefined;
+  /**
+   * 설치돼 있다고 확인되는 id 전부 — 레지스트리 ∪ synced를 **`pluginInstallPathEntry`를 지나** 거른다(우선순위 규칙을 여기서 다시 쓰지 않는다).
+   * synced manifest를 못 읽었으면 synced id는 열거할 수 없어 빠진다 — 그 실패는 `get`이 `@synced` id에만 싣는다(0건이 아니라 미측정).
+   */
+  ids(): string[];
+  /** `ids()`의 id별 설치 스코프. 레지스트리는 엔트리마다(project/local은 `projectPath` 포함), synced는 계정 전체라 한 건. */
+  scopes(assetId: string): PluginInstallScope[];
+}
+
+export interface PluginInstallScope {
+  scope: RegistryScope;
+  /** project/local 스코프에서만 값이 있다 — 호출자가 해시로 바꾼 뒤 버린다(경로 원문을 기록하지 않는다). */
+  projectPath: string | null;
 }
 
 /** synced 읽기 실패를 **synced id에만** 남긴다(보안 심사 M3) — 사유에 경로·계정 이름을 싣지 않는다. */
@@ -301,15 +315,28 @@ function readSyncedOrFailure(home: HomeContext): Map<string, PluginInstallPathEn
   }
 }
 
-function readRegistryInstallPaths(home: HomeContext): Map<string, PluginInstallPathEntry> | null {
+interface RegistryRead {
+  paths: Map<string, PluginInstallPathEntry>;
+  scopes: Map<string, PluginInstallScope[]>;
+}
+
+/** 파일 없음 → null, 파싱 실패 → 던진다. 경로 축과 스코프 축을 **한 번의 파싱**에서 만든다(두 번 읽으면 둘이 갈라질 수 있다). */
+function readRegistry(home: HomeContext): RegistryRead | null {
   const raw = readJsonOrNull(path.join(home.ctkConfigDir, "plugins", "installed_plugins.json"));
   if (raw === null) return null;
-  const result = new Map<string, PluginInstallPathEntry>();
+  const paths = new Map<string, PluginInstallPathEntry>();
+  const scopes = new Map<string, PluginInstallScope[]>();
   for (const [id, entries] of Object.entries(parseInstalledPluginsFile(raw).plugins)) {
     const first = entries[0];
-    if (first !== undefined) result.set(id, { path: first.installPath });
+    if (first === undefined) continue;
+    paths.set(id, { path: first.installPath });
+    scopes.set(id, entries.map((e) => ({ scope: e.scope, projectPath: e.projectPath ?? null })));
   }
-  return result;
+  return { paths, scopes };
+}
+
+function readRegistryInstallPaths(home: HomeContext): Map<string, PluginInstallPathEntry> | null {
+  return readRegistry(home)?.paths ?? null;
 }
 
 /**
@@ -406,14 +433,26 @@ export function readSyncedPluginInstallPaths(home: HomeContext): Map<string, Plu
  * 동일 정책 — 어느 설치를 "정답"으로 볼지가 번들 내용에 영향을 주지 않는다).
  */
 export function listPluginInstallPaths(home: HomeContext): PluginInstallPathIndex {
-  const registry = readRegistryInstallPaths(home) ?? new Map<string, PluginInstallPathEntry>();
+  const reg = readRegistry(home);
+  const registry = reg?.paths ?? new Map<string, PluginInstallPathEntry>();
+  const registryScopes = (id: string): PluginInstallScope[] => reg?.scopes.get(id) ?? [];
   // synced를 못 읽어도 레지스트리 플러그인의 편입은 계속된다(재심 M3 잔여) — 실패는 @synced id에만 실린다.
   const synced = readSyncedOrFailure(home);
   if (!(synced instanceof Map)) {
-    return { get: (id) => (id.endsWith(SYNCED_ID_SUFFIX) ? synced : registry.get(id)) };
+    return {
+      get: (id) => (id.endsWith(SYNCED_ID_SUFFIX) ? synced : registry.get(id)),
+      ids: () => [...registry.keys()].filter((id) => !id.endsWith(SYNCED_ID_SUFFIX)),
+      scopes: (id) => (id.endsWith(SYNCED_ID_SUFFIX) ? [] : registryScopes(id)),
+    };
   }
   // 레지스트리가 없어도 synced는 있을 수 있다 — 조기 반환하면 synced만 있는 머신이 통째로 빠진다.
-  return { get: (id) => pluginInstallPathEntry(registry, synced, id) };
+  const get = (id: string) => pluginInstallPathEntry(registry, synced, id);
+  return {
+    get,
+    ids: () => [...new Set([...registry.keys(), ...synced.keys()])].filter((id) => get(id) !== undefined),
+    scopes: (id) =>
+      get(id) === undefined ? [] : id.endsWith(SYNCED_ID_SUFFIX) ? [{ scope: "synced", projectPath: null }] : registryScopes(id),
+  };
 }
 
 /**

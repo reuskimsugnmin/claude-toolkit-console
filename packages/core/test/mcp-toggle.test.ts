@@ -197,6 +197,11 @@ describe("resolveMcpToggleTarget — 적격성 8거부 + 허용", () => {
   it("7 plugin_synced_unmeasured: 매니페스트를 못 읽음(null)", () => {
     expect(reason(resolveMcpToggleTarget(base({ asset: child, installedPlugins: [plugin("pm@mk", "synced")], bundledMcpAssetIds: null })))).toBe("plugin_synced_unmeasured");
   });
+  it("7b plugin_manifest_unmeasured: 동기화가 아닌 플러그인의 .mcp.json을 못 읽음(null) — synced와 다른 사유", () => {
+    for (const scope of ["user", "project", "local"] as const) {
+      expect(reason(resolveMcpToggleTarget(base({ asset: child, installedPlugins: [plugin("pm@mk", scope, scope === "user" ? null : H)], bundledMcpAssetIds: null })))).toBe("plugin_manifest_unmeasured");
+    }
+  });
   it("8 server_not_in_plugin", () => {
     expect(reason(resolveMcpToggleTarget(base({ asset: child, installedPlugins: [plugin("pm@mk", "user")], bundledMcpAssetIds: new Set(["pm@mk:mcp:other"]) })))).toBe("server_not_in_plugin");
   });
