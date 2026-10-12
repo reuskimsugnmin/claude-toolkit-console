@@ -62,14 +62,14 @@ function assertKeyShape(key: string): void {
   }
   if (real !== key) {
     throw real.toLowerCase() === key.toLowerCase()
-      ? new McpToggleRefusedError("key_case_differs", "프로젝트 키와 실제 디렉터리 이름이 대소문자만 다르다 — 하네스가 어느 쪽을 키로 쓰는지 실측 전이라 거부한다.")
+      ? new McpToggleRefusedError("key_case_differs", "프로젝트 키와 실제 디렉터리 이름이 대소문자만 다르다 — 하네스는 디스크의 대소문자를 키로 쓰므로(실측) 이 키는 하네스가 읽지 않는다. 쓰지 않았다.")
       : new McpToggleRefusedError("key_not_realpath", "프로젝트 키가 realpath가 아니다(심볼릭 링크 등) — 하네스 키와 다를 수 있어 거부한다.");
   }
   const nearest = nearestGitDir(key);
   if (nearest !== null && nearest !== key) {
     throw new McpToggleRefusedError(
       "git_root_above_key",
-      "이 프로젝트 위쪽에 .git이 있다(저장소 루트가 아님) — 하네스가 이 키를 상위 루트로 접는지 실측 전이라 거부한다.",
+      "이 프로젝트 위쪽에 .git이 있다(저장소 루트가 아님) — 하네스는 가장 가까운 .git 루트를 키로 쓰므로(실측) 이 키는 하네스가 읽지 않는다. 쓰지 않았다.",
     );
   }
 }

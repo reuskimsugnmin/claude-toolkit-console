@@ -308,16 +308,17 @@ describe("cli — ctk mcp 프로덕션 형태(CTK_CONFIG_DIR 미설정)", () => 
       expectNoWrite(0);
     });
 
-    it("실제 디렉터리 이름과 대소문자만 다른 키면 거부", async () => {
+    it("실제 디렉터리 이름과 대소문자만 다른 키면 거부 — 대소문자 무시 FS는 key_case_differs, 구분 FS는 key_not_on_disk", async () => {
       mkdirSync(path.join(root, "CaseDir", ".git"), { recursive: true });
       const caseKey = path.join(root, "casedir");
-      if (realpathSync.native(caseKey) === caseKey) return; // 대소문자를 구분하는 파일시스템 — 이 모양이 생기지 않는다
+      // 조용히 return하면 Linux CI에서 "통과"가 미측정을 가린다 — 두 FS 모두 거부를 단정한다(축마다 기대 가드가 다르다).
+      const caseInsensitive = existsSync(caseKey);
       const v = JSON.parse(s0) as { projects: Record<string, unknown> };
       v.projects[caseKey] = v.projects[dirA];
       s0 = JSON.stringify(v, null, 2);
       writeFileSync(jsonAbs, s0, "utf8");
       const err = await refusal(runMcpToggle({ op: "disable", assetId: "user-srv", project: caseKey }));
-      expect(err.guard).toBe("key_case_differs");
+      expect(err.guard).toBe(caseInsensitive ? "key_case_differs" : "key_not_on_disk");
       expectNoWrite(0);
     });
 
