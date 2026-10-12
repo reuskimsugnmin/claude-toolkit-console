@@ -9,10 +9,10 @@
 
 | | |
 |---|---|
-| **현재 버전** | v1 완료 (2026-08-23) · **B1 완료 (2026-08-27)** · **B4 완료 (2026-08-31)** · **B3 완료 (2026-09-01)** |
-| **머지된 PR** | 51건 (`gh pr list --state merged --limit 200 --json number -q length`) |
-| **작업 단위** | 완료 **128** · 부분 0 · 미착수 **6** — 세는 법은 아래 각주 (2026-10-12 재집계 — 120으로 뒤처져 있었다) |
-| **테스트** | 1671 passed + 5 skipped(유료 게이트) (2026-10-12 로컬 전량 통과 — `move-rollback`은 세션 타이밍에 따라 갈린다) |
+| **현재 버전** | v1 완료 (2026-08-23) · **B1 완료 (2026-08-27)** · **B4 완료 (2026-08-31)** · **B3 완료 (2026-09-01)** · **R7 완료 (2026-10-12)** |
+| **머지된 PR** | 55건 (`gh pr list --state merged --limit 200 --json number -q length`) |
+| **작업 단위** | 완료 **129** · 부분 0 · 미착수 **5** — 세는 법은 아래 각주 (2026-10-12 R7 완료 반영 — 직전 128 · 6) |
+| **테스트** | 1918 passed + 5 skipped(유료 게이트) (2026-10-12 로컬 전량 통과 — `move-rollback`은 세션 타이밍에 따라 갈린다) |
 | **알려진 로컬 실패** | `move-rollback.test.ts` 1건 — 살아 있는 Claude Code 세션이 `.claude.json`의 `pluginUsage`를 갱신해 actuator 의미 diff에 걸린다. CI(세션 없음)는 통과 |
 | **표준 검증** | `pnpm verify` — 7개 게이트(B1이 `gate:asset-kind` 추가). ⚠️ `&&` 체인이라 **알려진 로컬 실패가 뒤 게이트를 막는다** — 로컬에서는 개별로 돌린다 |
 
@@ -816,22 +816,26 @@
 
 ### v1.1 후보
 
-- [ ] **R7. MCP 프로젝트별 토글 쓰기**
-  - **선결 ① — 전제가 틀렸다(2026-10-12 실측, CLI 2.1.296, 무료·격리 홈).** 우선순위 질문은 성립하지
-    않는다: `enabledMcpServers`는 내장 `computer-use`에만 쓰이고, 그 밖의 서버는 `projects[k].disabledMcpServers`에
-    이름이 있을 때만 꺼진다(양쪽에 있으면 Disabled). 플러그인 서버는 `plugin:<p>:<s>`로만 매칭된다.
-    **별개 축**: `.mcp.json` 승인(`enabledMcpjsonServers` 등)은 settings 파일에 있다. ⚠️ `claude mcp list`는
-    읽기 명령인데 **쓴다**(승인 키 이관·백업) — 검증 수단으로 쓰지 않는다. 프로젝트 키는 realpath여야 한다
-  - **선결 ② — 실측 중 더 근본적인 결함이 나왔고 닫았다.** actuator의 `.claude.json` 의미 diff가 프로덕션에서
-    **실제 파일(`$HOME/.claude.json`)이 아닌 `$HOME/.claude/.claude.json`을 봤고** 트리 churn에 게이트돼
-    **한 번도 돌지 않았다**(격리 테스트는 두 경로가 일치해 통과). 고치자 동시 세션 churn이 오탐 롤백을 만들고
-    롤백이 반쯤 멈추는 결함(재심 H1)이 드러났다 — 측정된 live churn 허용 · 전 항목 사전 CAS · `.claude.json`은
-    **어떤 롤백도 통째로 복원하지 않고 보고만 한다**(다른 세션 쓰기 보존). 보안 재심 4회
-  - **R7이 이어서 할 것**: 계획 `.omc/plans/r7-mcp-toggle.md`(critic 수정 후 승인 · 필수 변경 10건). ctk가
-    `.claude.json`을 직접 쓰게 되면 위 롤백 제외를 **액션별 소유 서브트리 + 키 단위 CAS 복원**으로 바꿔야 한다
-    (코드 주석 `rollback.ts`)
-  - **후속(별도)**: gen 봉인 감사도 같은 결함 — 프로덕션에서 `.claude.json` 축은 지금 **`unmeasured`로 드러낼 뿐**
-    측정하지 않는다. 고치려면 실제 파일의 봉인 churn 실측 + 봉인 재심이 필요하다
+- [x] **R7. MCP 프로젝트별 토글 쓰기** (2026-10-12 · PR-2 · 계획 `.omc/plans/r7-mcp-toggle.md` v3.1 · 실측 `docs/harness-facts.md` 「R7」)
+  - **완료**: `ctk mcp`(목록) · `ctk mcp <disable|enable> --asset <id> [--project-hash <hex> | --project <경로>]`.
+    프로젝트의 `disabledMcpServers`에서 **이름 하나만** 넣거나 뺀다. 쓰기 전에 계획과 판정을 만들고 백업한 뒤
+    CAS로 확인하고 쓴다. 쓴 뒤에는 자동 되돌림이 없고 출력되는 반대 명령이 되돌림이다. `ctk rollback`은 토글을 거부한다.
+  - **보안 게이트 A/B/C**(`security-reviewer` 대상). 주요 결함은 고쳤다:
+    의미 판정이 빈 프로젝트 엔트리를 보지 못함(닫음) · 공용 `atomicWriteFile`의 임시 파일이 0644로 만들어진 뒤 chmod됨(0600 `O_EXCL`로 바꿈) ·
+    동기화된 인덱스의 하네스 이름을 그대로 신뢰함(probe 불변식에 묶음) · `move`의 오타 플래그가 조용히 기본값으로 떨어짐(엄격 플래그).
+  - **선행(PR #54 · #55)**: 의미 diff가 실제 `$HOME/.claude.json`이 아닌 경로를 보던 배선 결함을 닫았다. 「선결 ①」의 전제는
+    틀렸다 — 두 키는 대칭이 아니고 축이 다르다(F1).
+  - **미룬 것**:
+    - 승인 축(`*McpjsonServers`) 토글 — 계획 D5
+    - 웹 콘솔 노출
+    - `*McpjsonServers` probe
+    - `rollback.ts`의 심볼릭 링크 검사를 rename 앞(~:254)으로 옮기기
+    - 나머지 `ctk.ts` FAIL 분기가 `printable()`을 거치지 않음(게이트 C I-3)
+    - run-log 파일명의 ms 충돌
+    - 실행 중 세션의 덮어쓰기 확인(L3) — 대화형 세션이 필요해 미측정
+    - L2 유료 확인 — 승인됨, PR 이후 한 번 실행
+  - **별도 추적**: gen 봉인 감사도 같은 결함이 있다 — 프로덕션에서 `.claude.json` 축은 지금 `unmeasured`로 드러낼 뿐 측정하지 않는다.
+    고치려면 실제 파일의 봉인 churn 실측과 봉인 재심이 필요하다.
 
 ### v2 후보
 

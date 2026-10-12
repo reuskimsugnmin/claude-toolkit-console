@@ -1635,3 +1635,100 @@ skill 양쪽에 있으나 **문서가 `Skill(...)`로 적어 둔 덕에 kind가 
 - ⚠️ **`scripts/hygiene-check.mjs`가 경로 축을 본다는 근거는 부분적으로만 성립한다** — 그 스크립트와
   `findRawPathLeaks`의 정규식이 다르고(부정 lookbehind 유무), "실행 머신의 홈·hostname 리터럴" 축은
   **CI 러너에서는 아무것도 지키지 않는다**(그 머신 값으로 계산되기 때문). **정본의 전제도 축이다.**
+
+## R7 — MCP 프로젝트별 토글의 쓰기 전제 (2026-10-12 실측, CLI 2.1.296 · 무료)
+
+**관측 방법(공통)**: `env -i HOME=$T/home` 격리 홈 · 합성 stdio 서버(`command`는 `true`·`echo`) · 유료 호출 0회.
+`$T`는 임시 디렉터리이고 실험 뒤 삭제했다. 실제 `~/.claude.json`·실제 프로젝트는 쓰지 않았다.
+「설정·상태 파일」 절의 **두 축·두 키**(F1)는 위에 이미 있으므로 여기서 반복하지 않는다.
+
+### 우선순위와 표시 — 승인 축은 trust에 따라 조용히 무시된다
+
+- **관측**: `.mcp.json` 서버가 **미승인**이면 `disabledMcpServers`에 있어도 **Pending**으로 뜬다(Disabled가
+  아니다 — 승인 판정이 먼저다). 승인됐고 `disabledMcpServers`에 있으면 Disabled다. `enabledMcpjsonServers`와
+  `disabledMcpjsonServers`에 동시에 있으면 **Rejected**(거부 우선). user 설정이 거부하고 local 설정이 승인하면
+  병합 뒤 **Rejected**다. `enableAllProjectMcpServers: true`와 거부가 겹치면 목록에서 숨겨진다.
+  **trust 미수락** 프로젝트에서는 local/project 설정의 승인이 **무시돼 Pending**이다 —
+  `hasTrustDialogAccepted`를 `false`에서 `true`로 바꾸자 승인이 적용됐다. user 설정의 승인은 trust와 무관했다.
+- **플러그인 서버**: `disabledMcpServers`에서 **`plugin:<plugin>:<server>`** 형태만 매칭된다. 베어 서버명은 무효다
+  (합성 로컬 마켓플레이스 플러그인으로 관측).
+- **파급**: 승인 축 쓰기는 "썼다 ≠ 적용됐다"다 — 쓴 뒤 검증이 필요하다. 이번 R7 범위는 승인 축을 쓰지 않는다
+  (`disabledMcpServers` 한 키만 쓴다).
+
+### 프로젝트 키 — 틀리면 조용한 no-op
+
+- **관측**: git 저장소 안에서는 키가 **git 루트의 realpath**다 — 하위 디렉터리에서 실행해도 루트 키를 쓴다.
+  git 밖에서는 키가 **cwd 그 자체**다(상위 디렉터리 키를 상속하지 않는다).
+- **관측**: realpath가 아닌 키(macOS `/tmp` → `/private/tmp`)로 쓴 엔트리는 **무시되고 오류가 없다.**
+  `{disabledMcpServers: [...]}` 한 키만 있는 엔트리도 유효하다.
+- **관측 (대소문자)**: `$HOME`이 git 저장소인 상태에서 그 하위 비-저장소 디렉터리에서 실행하면 키는 **`$HOME`**이다
+  (가장 가까운 `.git`으로 접힌다). `$T/casedir`로 들어가 디스크상 `$T/CaseDir`인 경우 키는 **`$T/CaseDir`**(디스크의
+  대소문자)다. Node의 `realpathSync`(JS 구현)는 입력한 대소문자를 유지하고 `realpathSync.native`는 디스크 대소문자를
+  돌려준다 — ctk는 `.native`를 쓴다.
+- **파급**: ctk는 키를 **계산해 만들지 않는다.** `projects`에 이미 있는 키만 대상으로 한다. 키를 계산하면
+  "쓰기 성공 · 효과 0"이 나온다(안전 원칙 7). 그래서 `ctk mcp`는 키가 없으면 거부하고, 프로젝트가 하나도 없으면
+  그렇다고 출력한다.
+
+### 키는 누가 만드는가
+
+- **관측**: `claude mcp add-json -s user`는 `projects` 엔트리를 **만들지 않는다.** `-s local`(또는 그 디렉터리에서
+  세션을 여는 것)은 만든다. 이 키로 ctk가 할 수 있는 것은 "있으면 쓴다"뿐이다.
+- **관측 (CLI 쓰기 목록)**: `mcp add -s user`는 루트 `mcpServers`와 백업을 쓴다. `mcp add -s local`은
+  `projects[<realpath>]`를 만들고 기본 필드로 **빈** `enabledMcpjsonServers`·`disabledMcpjsonServers`를 넣는다.
+  `mcp add -s project`는 `<project>/.mcp.json`만 쓴다. `mcp reset-project-choices`는 `disabledMcpServers`를 남긴다.
+  **CLI에는 `enable`/`disable` 서브명령이 없다** — 토글은 대화형 `/mcp`에만 있다.
+- **관측 (읽기처럼 보이는 쓰기)**: `claude mcp list`는 레거시 승인 키가 있으면 `<project>/.claude/settings.local.json`로
+  옮기고 원래 키를 **삭제**하며 백업을 만들고, `$HOME/.config/git/ignore`에 `**/.claude/settings.local.json`을 더한다.
+  이주 대상이 없으면 `.claude.json`은 바뀌지 않는다.
+- **파급**: `claude mcp list`·`get`을 쓰기 뒤 검증으로 쓰면 감사 루트 밖을 쓴다. ctk는 그 명령을 검증 수단으로 쓰지 않는다.
+  ctk가 레거시 위치에 승인 키를 쓰면 다음 CLI 실행이 그 키를 옮겨 버린다.
+
+### 직렬화 — 바이트가 같아야 쓴다
+
+- **관측**: 실제 `.claude.json`과 CLI 백업 6개 전부 `JSON.stringify(v, null, 2)`로 왕복했다(**끝 개행 없음**).
+  `+"\n"`을 붙이면 전부 불일치했다.
+- **파급**: ctk는 이 조건이 아니면 `claude_json_format_unrecognized`로 거부한다(첫 다른 바이트의 오프셋을 함께 낸다).
+  바이트 단위 동일도 요구한다 — 잘못된 UTF-8은 U+FFFD로 디코드되어 **조용히 다시 쓰이기** 때문이다.
+  파싱된 값을 다시 직렬화해 쓰지 않는다(원문 `JSON.parse` 값만 쓴다).
+
+### CLI의 쓰기 방식 — 흉내 낼 수 있는 것과 없는 것
+
+- **관측 (번들 판독)**: 임시파일 `.tmp.<pid>.<12 hex>` → rename, **심볼릭 링크 경유 쓰기를 거부**, 기존 권한을 보존한다.
+  백업은 `<name>.backup.<epoch ms>`이고 일정 간격 이상일 때만 만들며 **최대 5개**를 유지한다.
+  `storage_v5_backend` 문자열이 있어 설정 저장 백엔드가 바뀔 수 있다 — **`.claude.json`이 영구 정본이라는 보장은 없다.**
+- **파급**: 공용 `atomicWriteFile`(R7 이전)에는 심볼릭 링크 거부와 쓰기 직전 변경 감지(CAS)가 없었다.
+  R7은 이 둘을 `.claude.json` 토글 경로에만 따로 둔다. CLI 업데이트마다 첫 `scan`이나 실측으로 `storage` 이행 여부를 다시 본다.
+
+### 오라클 — AC-R7-5 (순서 그대로, 각 EXIT=0 — 예외는 표기)
+
+```text
+claude mcp add-json -s user synthetic-echo …        EXIT=0
+claude mcp add-json -s local synthetic-local …      EXIT=0
+ctk init → ctk scan → ctk mcp                       EXIT=0   (프로젝트 1건 나열)
+ctk mcp disable --asset synthetic-echo              EXIT=0
+claude mcp get synthetic-echo                       EXIT=0   "Status: ⊘ Disabled for this project (re-enable via /mcp)"
+ctk mcp enable --asset synthetic-echo               EXIT=0
+claude mcp get synthetic-echo                       EXIT=0   Disabled 상태 없음
+ctk rollback --last                                 EXIT=1   FAIL mcp_toggle_refused + 반대 명령 출력
+```
+
+- **파급**: `enable` 뒤에도 엔트리는 **`"disabledMcpServers": []`**로 남는다 — 지우지 않는 것이 의도다.
+  빈 목록은 아무것도 끄지 않는다.
+- **파급**: `ctk rollback`은 토글을 되돌리지 않는다. 거부하면서 반대 명령을 찍는다 — 되돌림은 한 방향 명령이다.
+
+### 위험과 한계 — 문서화하고 고치지 않음
+
+- **CAS → rename 창**: 프로세스 간 락이 없다. 재읽기와 rename 사이에 다른 쓰기가 끼면 그 쓰기는 사라진다.
+  CLI도 같은 창을 가진다.
+- 그 창에서 **심볼릭 링크로 바뀌면** 그 링크가 교체되고, 링크의 대상은 건드리지 않는다.
+- **무관한 프로젝트의 깨진 `.mcp.json`**이 독립 서버 토글을 막는다(`scan`과 같은 fail-closed).
+- **R7 이전 ctk**가 다른 머신에 있으면 동기화된 `toggle_mcp_project` journal 줄에서 throw한다. **모든 머신을 올릴 때까지** 그렇다.
+- 토글의 백업 실행도 `pruneBackupRuns`(keep=10)의 개수에 든다. 그래서 이전 `move`의 백업을 밀어낼 수 있고,
+  그 뒤 그 `move`의 `rollback --last`는 백업이 없어 fail-closed로 막힌다.
+- 토글이 journal의 **마지막 기록**이면 그보다 앞선 `move`의 `rollback --last`가 막힌다.
+
+### 미측정
+
+- 하네스가 **동기화(`synced`) 플러그인**에 대해 `disabledMcpServers`의 `plugin:<n>:<s>`를 따르는가.
+- 실행 중인 세션이 외부에서 바뀐 `disabledMcpServers`를 **덮어쓰는가**(lost update · L3). 대화형 세션이 필요해
+  이번 범위에서는 재지 못했다. 그래서 ctk는 실행 중 세션을 검사하지 않고 매번 재시작 안내만 출력한다(결정 D1).

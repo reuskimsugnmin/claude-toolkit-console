@@ -1,0 +1,29 @@
+{
+  "firstStartTime": "2026-01-01T00:00:00.000Z",
+  "firstStartVersion": "2.1.296",
+  "machineID": "abababababababababababababababababababababababababababababababab",
+  "opusProMigrationComplete": true,
+  "sonnet1m45MigrationComplete": true,
+  "seenNotifications": {},
+  "hasResetAutoModeOptInForDefaultOffer": true,
+  "migrationVersion": 14,
+  "userID": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+  "projects": {
+    "/synthetic/projects/alpha": {
+      "allowedTools": [],
+      "mcpContextUris": [],
+      "mcpServers": {
+        "synthetic-echo": {
+          "type": "stdio",
+          "command": "echo",
+          "args": []
+        }
+      },
+      "enabledMcpjsonServers": [],
+      "disabledMcpjsonServers": [],
+      "hasTrustDialogAccepted": false,
+      "hasClaudeMdExternalIncludesApproved": false,
+      "hasClaudeMdExternalIncludesWarningShown": false
+    }
+  }
+}

@@ -2,10 +2,12 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { RollbackFailedError, buildRollbackJournalEntry, describeClaudeJsonLeftover, manifestSha256Of, restoreFromBackup } from "@ctk/actuator";
 import { resolveHomeContext } from "@ctk/probe";
-import { FAILURE_CLASSES, parseJournalEntry, type FailureClass, type JournalEntry, type RunLogEntry } from "@ctk/core";
-import { acquireLock, commitAll, writeJournalEntry, writeRunLog } from "@ctk/sync";
+import { extractFailureClass, McpToggleJournalStateSchema, parseJournalEntry, type JournalEntry } from "@ctk/core";
+import { acquireLock, commitAll, writeJournalEntry } from "@ctk/sync";
+import { writeRunLogSafely } from "../run-log-safe.js";
 import { readLocalConfig, readOrCreateMachineIdentity } from "../local-config.js";
 import { CatalogNotInitializedError } from "./scan.js";
+import { inverseMcpToggleCommand } from "./mcp-toggle.js";
 
 /**
  * cli/src/commands/rollback.ts — `ctk rollback --last`. v1은 가장 최근 journal 레코드 하나만
@@ -30,6 +32,14 @@ export class NoRollbackTargetError extends Error {
     super(`되돌릴 대상이 없다 — ${reason}`);
     this.name = "NoRollbackTargetError";
   }
+}
+
+/**
+ * R7 — `toggle_mcp_project` 레코드는 `ctk rollback`이 되돌리지 않는다. `restoreFromBackup`은 `.claude.json`을 복원하지 않아(P0)
+ * 파일 0개를 복원하고 **"성공"을 journal에 남기는** 허구가 된다. 웹 롤백도 `NoRollbackTargetError`를 400으로 분류하므로 하위 클래스로 둔다.
+ */
+export class McpToggleRollbackRefusedError extends NoRollbackTargetError {
+  readonly failureClass = "mcp_toggle_refused" as const;
 }
 
 export interface RollbackOptions {
@@ -76,10 +86,20 @@ function findLastEntry(catalogPath: string, machineId: string): { entry: Journal
   const files = listJournalFilesSorted(catalogPath);
   for (let i = files.length - 1; i >= 0; i--) {
     const file = files[i]!;
-    const entry = readJournalEntry(catalogPath, file);
-    if (entry.machine_id === machineId) return { entry, file };
+    // R7 risk 2 — 다른 머신의 레코드는 이 ctk가 모르는 action일 수 있다(더 새 버전이 쓴 것). 엄격 파싱은 **이 머신의 레코드에만** 한다.
+    // 소유를 가리는 `machine_id`는 느슨하게 먼저 읽는다. 읽을 수 없거나 문자열이 아니면 누구 것인지 모르므로 건너뛰지 않고 던진다.
+    const owner = readMachineIdLoose(catalogPath, file);
+    if (owner !== machineId) continue;
+    return { entry: readJournalEntry(catalogPath, file), file };
   }
   throw new NoRollbackTargetError("이 머신이 만든 journal 레코드가 없다 — 아직 아무 것도 이동하지 않았다(다른 머신의 기록은 되돌리지 않는다)");
+}
+
+function readMachineIdLoose(catalogPath: string, file: string): string {
+  const raw = readFileSync(path.join(catalogPath, "journal", file), "utf8").trim();
+  const owner = (JSON.parse(raw) as { machine_id?: unknown } | null)?.machine_id;
+  if (typeof owner !== "string") throw new Error(`journal 레코드에서 machine_id를 읽지 못했다: ${file}`);
+  return owner;
 }
 
 /** journal의 `backup_ref`(home-relative)가 실제로 `~/...` 형식이 아니면 던진다(L8). */
@@ -112,27 +132,19 @@ function backupRefToAbs(homeDir: string, homeRelative: string): string {
   return abs;
 }
 
-const FAILURE_CLASS_SET = new Set<string>(FAILURE_CLASSES);
-
-function extractFailureClass(err: unknown): FailureClass {
-  if (
-    typeof err === "object" &&
-    err !== null &&
-    "failureClass" in err &&
-    typeof (err as { failureClass: unknown }).failureClass === "string" &&
-    FAILURE_CLASS_SET.has((err as { failureClass: string }).failureClass)
-  ) {
-    return (err as { failureClass: FailureClass }).failureClass;
-  }
-  return "unclassified";
-}
-
-function writeRunLogSafely(catalogPath: string, entry: RunLogEntry): void {
-  try {
-    writeRunLog(catalogPath, entry);
-  } catch {
-    // best-effort — 원본 성공/실패 결과에 영향을 주지 않는다.
-  }
+/**
+ * 거부 사유 + 되돌리는 명령. `journal`은 동기화된 — 신뢰할 수 없는 — 저장소에서 오므로, 스키마를 통과하고 성공 기록일 때만 명령을 만든다.
+ * 자산 id가 안전하게 찍을 수 있는 모양인지는 `inverseMcpToggleCommand`가 **단일 관문**으로 거른다(여기서 한 번 더 걸러 사본을 만들지 않는다) —
+ * 안전하지 않으면 `null`이고, 그러면 일반 안내(명령 없음)다.
+ */
+function describeToggleRefusal(entry: JournalEntry): string {
+  const head = "마지막 기록은 MCP 토글이다 — `ctk rollback`은 .claude.json을 복원하지 않는다(다른 세션의 변경을 덮어쓸 수 있다).";
+  const after = McpToggleJournalStateSchema.safeParse(entry.after);
+  const cmd =
+    after.success && entry.result === "success"
+      ? inverseMcpToggleCommand(after.data.disabled ? "disable" : "enable", entry.asset_id, after.data.project_path_hash)
+      : null;
+  return cmd !== null ? `${head} 되돌리려면: ${cmd}` : `${head} 되돌릴 명령을 안전하게 만들 수 없다 — 먼저 \`ctk scan\`을 실행해 현재 상태를 확인한 뒤 \`ctk mcp\`로 직접 되돌린다.`;
 }
 
 export async function runRollback(_options: RollbackOptions): Promise<RollbackSummary> {
@@ -156,6 +168,8 @@ export async function runRollback(_options: RollbackOptions): Promise<RollbackSu
     // 자동으로 거부한다(더 최근에 failure/rolled_back이 있으면 그보다 오래된 성공을 되돌리지
     // 않는다는 지시사항을 이 하나의 검사로 충족한다).
     const { entry } = findLastEntry(catalogPath, machine.machine_id);
+    // R7 — result 검사·복원보다 **먼저** 거부한다. 쓰기도 journal도 만들지 않는다.
+    if (entry.action === "toggle_mcp_project") throw new McpToggleRollbackRefusedError(describeToggleRefusal(entry));
     if (entry.action === "rollback") {
       throw new NoRollbackTargetError("마지막 journal 레코드가 이미 rollback이다 — 다시 되돌릴 이동이 없다");
     }

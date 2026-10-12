@@ -36,13 +36,17 @@ import { runVerifyAc1, NotYetScannedError } from "../src/commands/verify-ac1.js"
 import { runVerifyAc3, SkillSourceNotFoundError } from "../src/commands/verify-ac3.js";
 import { runMove, AssetNotFoundError, NoOpMoveError, ProjectIndexOutOfRangeError } from "../src/commands/move.js";
 import { runRollback, NoRollbackTargetError } from "../src/commands/rollback.js";
+import { runMcpToggle, formatMcpToggleSummary } from "../src/commands/mcp-toggle.js";
+import { listProjectLines, printable } from "../src/project-select.js";
+import { resolveHomeContext } from "@ctk/probe";
 import { measurementFailureHint, runMeasure } from "../src/commands/measure.js";
 import { runUsage, NoMeasurementError } from "../src/commands/usage.js";
 import { runWorkflowDoc } from "../src/commands/workflow-doc.js";
 import { browserOpenTokenNotice, runExportViewModel, runWebServe } from "../src/commands/web.js";
 import { openInBrowser } from "../src/open-browser.js";
 import { LockContendedError } from "@ctk/sync";
-import { DuplicateKeyDiffError } from "@ctk/core";
+import { DuplicateKeyDiffError, failureClassOf } from "@ctk/core";
+import { parseStrictFlags } from "../src/flags.js";
 import { McpMoveRejectedError, CliToolMoveUnsupportedError, RollbackFailedError } from "@ctk/actuator";
 
 function readFlagValue(args: string[], flag: string): string | undefined {
@@ -314,16 +318,18 @@ async function main(): Promise<void> {
         return;
       }
       case "move": {
-        const assetId = readFlagValue(rest, "--asset");
-        const to = readFlagValue(rest, "--to");
+        // 오타(`--form`)·`--x=y`·반복을 무시하면 `--from` 같은 선택 플래그가 기본값(user)으로 조용히 바뀐다 — 알려진 쌍만 받는다.
+        const moveFlags = parseStrictFlags(rest, ["--asset", "--to", "--project-index", "--from", "--from-project-index"]);
+        const assetId = moveFlags?.["--asset"];
+        const to = moveFlags?.["--to"];
         if (!assetId || (to !== "user" && to !== "project")) {
           console.error("사용법: ctk move --asset <id> --to <user|project> [--project-index N] [--from <user|project>] [--from-project-index N]");
           process.exitCode = 1;
           return;
         }
-        const toProjectIndexRaw = readFlagValue(rest, "--project-index");
-        const fromRaw = readFlagValue(rest, "--from");
-        const fromProjectIndexRaw = readFlagValue(rest, "--from-project-index");
+        const toProjectIndexRaw = moveFlags?.["--project-index"];
+        const fromRaw = moveFlags?.["--from"];
+        const fromProjectIndexRaw = moveFlags?.["--from-project-index"];
         const summary = await runMove({
           assetId,
           to,
@@ -345,6 +351,31 @@ async function main(): Promise<void> {
         console.log(`ctk rollback 완료 — ${summary.assetId}(${summary.action}) 되돌림`);
         console.log(`  journal: ${summary.journalPath}`);
         if (summary.claudeJsonNote !== null) console.log(`  ⚠️ ${summary.claudeJsonNote}`);
+        return;
+      }
+      case "mcp": {
+        // `ctk mcp` 단독 → 프로젝트 목록(인덱스 없이 `hash8  이름`). `disable|enable`은 --project-hash/--project 중 하나(생략 시 cwd의 git 루트).
+        const [verb] = rest;
+        if (verb === undefined) {
+          const lines = listProjectLines(resolveHomeContext());
+          // 빈 출력은 "목록 없음"과 "실패"를 구분하지 못한다 — 0건을 말로 적는다(안전 원칙 7).
+          // 하네스는 그 디렉터리에서 세션을 열거나 local 서버를 추가할 때 키를 만든다(user 스코프 추가로는 안 생긴다).
+          if (lines.length === 0) console.log("알려진 프로젝트가 없다 — 그 프로젝트에서 Claude Code를 한 번 연 뒤 다시 실행한다.");
+          for (const line of lines) console.log(line);
+          return;
+        }
+        // 알려진 `--flag <값>` 쌍만 받는다 — 오타·`--x=y`·반복·위치 인자를 무시하면 선택자가 "없음"으로 읽혀 cwd 프로젝트로 바뀐다(flags.ts).
+        // 플래그 목록은 여기(호출 지점)에 둔다 — README 계약 테스트가 bin의 리터럴로 플래그 존재를 확인한다(move와 같다).
+        const mf = parseStrictFlags(rest.slice(1), ["--asset", "--project-hash", "--project"]);
+        const assetId = mf?.["--asset"];
+        if ((verb !== "disable" && verb !== "enable") || mf === null || assetId === undefined) {
+          console.error("사용법: ctk mcp  |  ctk mcp <disable|enable> --asset <id> [--project-hash <hex> | --project <경로>]");
+          console.error("  `ctk mcp`는 프로젝트 목록(hash8  이름)을 보인다. 프로젝트를 생략하면 현재 디렉터리의 git 루트다.");
+          process.exitCode = 1;
+          return;
+        }
+        const summary = await runMcpToggle({ op: verb, assetId, projectHash: mf["--project-hash"], project: mf["--project"] });
+        for (const line of formatMcpToggleSummary(summary)) console.log(printable(line));
         return;
       }
       case "measure": {
@@ -532,7 +563,8 @@ async function main(): Promise<void> {
       }
       default: {
         console.error(`알 수 없는 명령: ${command ?? "(없음)"}`);
-        console.error("사용법: ctk <init|scan|measure|usage|doctor|verify|move|rollback> [...args]");
+        console.error("사용법: ctk <init|scan|measure|usage|doctor|verify|move|rollback|mcp> [...args]");
+        console.error("  mcp: 프로젝트별 MCP 서버 끄기/켜기 — `ctk mcp`(목록) · `ctk mcp <disable|enable> --asset <id> [--project-hash <hex> | --project <경로>]`");
         process.exitCode = 1;
         return;
       }
@@ -578,7 +610,9 @@ async function main(): Promise<void> {
       err instanceof NoMeasurementError ||
       err instanceof SkillSourceNotFoundError
     ) {
-      console.error(`FAIL: ${err.message}`);
+      // 클래스가 있으면 함께 찍는다(예: 토글 롤백 거부의 mcp_toggle_refused). 메시지의 신뢰할 수 없는 조각은 제어문자를 걷어 낸다.
+      const failureClass = failureClassOf(err);
+      console.error(`FAIL${failureClass !== null ? ` ${failureClass}` : ""}: ${printable(err.message)}`);
       process.exitCode = 1;
       return;
     }
@@ -607,11 +641,11 @@ async function main(): Promise<void> {
     // 커버된다) — AC-2.6 주입 테스트가 "stdout/stderr에 failure_class 문자열 출현"을 확인한다.
     if (typeof err === "object" && err !== null && "failureClass" in err && typeof (err as { failureClass: unknown }).failureClass === "string") {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`FAIL ${(err as { failureClass: string }).failureClass}: ${message}`);
+      console.error(`FAIL ${(err as { failureClass: string }).failureClass}: ${printable(message)}`);
       process.exitCode = 1;
       return;
     }
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(printable(err instanceof Error ? err.message : String(err)));
     process.exitCode = 1;
   }
 }

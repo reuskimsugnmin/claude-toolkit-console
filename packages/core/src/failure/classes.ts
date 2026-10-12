@@ -39,9 +39,8 @@ export const FAILURE_CLASSES = [
 
   // ── B1 보안 심사 L-D(2026-08-28) — **던져지고 있었는데 등재만 빠져 있던 6건.**
   // 심사가 지적한 것은 `asset_source_not_a_file` 하나였지만 세어 보니 여섯이었다(범위로 닫는다).
-  // 미등재의 대가는 "기록 안 됨"이 아니라 **오분류**다 — `extractFailureClass`(cli/scan.ts ·
-  // move.ts · rollback.ts)가 `FAILURE_CLASS_SET.has()`로 거르므로 미등재 클래스를 던지면
-  // run-log의 `failure_class`가 조용히 `null`이 된다. **"실패"가 "분류 없음"으로 삼켜졌다**
+  // 미등재의 대가는 "기록 안 됨"이 아니라 **오분류**다 — 아래 `failureClassOf`가 열거로
+  // 거르므로 미등재 클래스를 던지면 run-log의 `failure_class`가 조용히 분류를 잃는다. **"실패"가 "분류 없음"으로 삼켜졌다**
   // (안전 원칙 7). 등재가 곧 배선인 자리다.
   "asset_source_missing", // gen 위생: existsSync 확인과 읽기 사이에 원문이 사라졌다(경합·마운트 변경·깨진 링크)
   "asset_source_too_large", // gen 위생: 자산 원문이 DEFAULT_MAX_ASSET_SOURCE_BYTES(200KB) 초과
@@ -56,8 +55,8 @@ export const FAILURE_CLASSES = [
   "install_path_rejected",
 
   // ── B4-c(2026-08-31) — `ctk workflow-doc`. **등재가 곧 배선이다**(L-D의 교훈): 미등재
-  // 클래스를 던지면 `extractFailureClass`가 `FAILURE_CLASS_SET.has()`로 걸러 run-log의
-  // `failure_class`가 조용히 `null`이 된다 — "실패"가 "분류 없음"으로 삼켜진다.
+  // 클래스를 던지면 `failureClassOf`가 열거로 걸러 run-log의
+  // `failure_class`가 조용히 분류를 잃는다 — "실패"가 "분류 없음"으로 삼켜진다.
   "workflow_doc_parse_failed", // 생성 구간에서 표 행을 0개 찾았거나 행 구조가 전제 가드를 벗어났다 — "0건 일치"로 삼키지 않는다
   "workflow_doc_marker_absent", // :start 또는 :end 마커가 없다
   "workflow_doc_marker_duplicated", // 마커가 2회 이상 나온다 — 조용히 첫 것을 고르지 않는다
@@ -65,9 +64,32 @@ export const FAILURE_CLASSES = [
   "workflow_doc_whitelist_overflow", // 표에서 뽑은 자산 참조 수가 상한을 넘었다 — 동적 화이트리스트의 상한(D-9)
   "workflow_doc_leak_detected", // 자산 설명 원문 또는 산출물에 개인 환경 데이터가 있어 차단했다 — 표 파싱 오류로 오분류하지 않는다(보안 심사 M-3)
   "workflow_doc_path_rejected", // 문서 경로가 저장소 앵커 밖이거나 심볼릭 링크다 — **경로 통제**이지 파싱이 아니다(재심 경미 7)
+
+  // ── R7(MCP 프로젝트 토글) — `~/.claude.json` 쓰기 경로. 등재가 곧 배선이다(위 L-D 교훈).
+  "claude_json_format_unrecognized", // .claude.json이 ctk 직렬화기의 왕복 형식(들여쓰기·정수·개행)과 달라 쓰기를 거부했다 — 서식을 바꿔 쓰지 않는다
+  "mcp_toggle_refused", // 토글 대상이 자격 미달(커넥터·내장·미설치 플러그인·프로젝트 키 부재 등)이라 쓰기 전에 거부했다
+  "claude_json_post_write_unmeasured", // 쓰기 후 .claude.json을 읽을 수 없거나 파싱할 수 없어 결과를 판정하지 못했다 — 성공으로 읽지 않는다
+  "backup_failed", // 백업 생성 자체가 던졌다 — 수정 이전에 중단, 원본 불변
+  "journal_write_failed", // 조치는 적용됐으나 journal 기록/커밋이 실패했다 — 되돌림 안내를 직접 출력한다
+  "journal_commit_failed", // 조치와 journal 파일 쓰기는 됐으나 카탈로그 커밋이 실패했다 — journal은 디스크에 있다(미커밋)
+  "claude_json_write_failed", // 원자적 쓰기가 던졌고 파일은 여전히 S0과 같다 — 아무것도 바뀌지 않았다, 원인은 detail
   "unclassified",
 ] as const;
 
 export type FailureClass = (typeof FAILURE_CLASSES)[number];
 
 export const FailureClassSchema = z.enum(FAILURE_CLASSES);
+
+/**
+ * 던져진 값이 **등재된** `failure_class`를 싣고 있으면 그것을, 아니면 `null`을 돌려준다.
+ * 열거에 없는 이름은 기록하지 않는다 — 스키마가 거부하면 장부 전체가 안 써진다.
+ */
+export function failureClassOf(err: unknown): FailureClass | null {
+  const parsed = FailureClassSchema.safeParse((err as { failureClass?: unknown } | null)?.failureClass);
+  return parsed.success ? parsed.data : null;
+}
+
+/** 모르면 `"unclassified"`로 남긴다 — run-log 스키마는 null이 아닌 값을 요구하는 자리용. */
+export function extractFailureClass(err: unknown): FailureClass {
+  return failureClassOf(err) ?? "unclassified";
+}

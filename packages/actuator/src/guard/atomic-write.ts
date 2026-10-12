@@ -104,7 +104,9 @@ export function atomicWriteFile(absPath: string, content: string, options: Atomi
     }
   }
 
-  const fd = openSync(tmpPath, "w");
+  // 0o600 + O_EXCL — 쓰기 전에 모드를 좁힌다(기본 "w"는 umask 뒤 0644로 만들어 내용이 chmod 전까지 타인에게 읽힌다).
+  // 최종 모드는 아래 chmod가 기존 파일 모드로 맞춘다. "wx"는 미리 심어 둔 링크/파일도 거부한다.
+  const fd = openSync(tmpPath, "wx", 0o600);
   try {
     try {
       // L3 — writeSync()의 반환값(실제로 쓰인 바이트 수)을 확인하지 않았다. POSIX write()는

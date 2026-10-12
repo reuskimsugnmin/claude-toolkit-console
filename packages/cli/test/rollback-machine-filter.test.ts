@@ -98,4 +98,63 @@ describe("cli — ctk rollback --last는 이 머신이 만든 journal 레코드�
       void initResult;
     },
   );
+
+  /** 이 머신의 되돌릴 수 있는 이동 레코드 하나(진짜 백업 포함)를 심는다. */
+  async function seedOwnMove(): Promise<{ catalogPath: string; target: string; machineId: string }> {
+    await runInit({});
+    const home = resolveHomeContext();
+    const machine = readOrCreateMachineIdentity(home, "local-machine");
+    const catalogPath = readLocalConfig(home)!.catalog_path;
+    const target = path.join(home.ctkConfigDir, "settings.json");
+    writeFileSync(target, '{"enabledPlugins":{"a@b":true}}', "utf8");
+    const { backupRoot } = beginBackupRun(home.ctkHome, "2026-01-01T00-00-00-000Z");
+    const entry = backupFile(backupRoot, "config_settings", target);
+    const { manifestSha256 } = writeManifest(backupRoot, "2026-01-01T00-00-00-000Z", { config_settings: entry });
+    writeFileSync(target, '{"enabledPlugins":{"a@b":false}}', "utf8");
+    writeJournalFile(catalogPath, "2026-01-01T00-00-00.000Z.jsonl", {
+      schema_version: 1,
+      _scope: "machine_dependent",
+      action: "move_plugin_enablement",
+      asset_id: "our-asset@mp",
+      machine_id: machine.machine_id,
+      before: { install_scope: "user", enabled_at: "user" },
+      after: { install_scope: "user", enabled_at: "project" },
+      backup_ref: `~${backupRoot.slice(home.ctkHome.length)}`,
+      backup_manifest_sha256: manifestSha256,
+      result: "success",
+      timestamp: "2026-01-01T00:00:00.000Z",
+    });
+    return { catalogPath, target, machineId: machine.machine_id };
+  }
+
+  it("R7 risk 2 — 다른 머신의 더 새 레코드가 이 ctk가 모르는 action이어도(엄격 파싱 실패) 건너뛰고 이 머신의 레코드를 되돌린다", async () => {
+    const { catalogPath, target } = await seedOwnMove();
+    writeJournalFile(catalogPath, "2026-01-02T00-00-00.000Z.jsonl", {
+      schema_version: 9,
+      _scope: "machine_dependent",
+      action: "future_action_unknown_to_this_ctk",
+      asset_id: "foreign@mp",
+      machine_id: "11111111-1111-1111-1111-111111111111",
+      brand_new_field: true,
+    });
+
+    const summary = await runRollback({ last: true });
+
+    expect(summary.assetId).toBe("our-asset@mp");
+    expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ enabledPlugins: { "a@b": true } });
+  });
+
+  it("R7 risk 2 — 반대 축: 이 머신의 레코드가 깨졌으면 건너뛰지 않고 던진다(소유 판정이 느슨해도 파싱은 엄격하다)", async () => {
+    const { catalogPath, machineId } = await seedOwnMove();
+    writeJournalFile(catalogPath, "2026-01-02T00-00-00.000Z.jsonl", { machine_id: machineId, action: "future_action_unknown_to_this_ctk" });
+
+    await expect(runRollback({ last: true })).rejects.toThrow();
+  });
+
+  it("R7 risk 2 — 누구 것인지 알 수 없는 레코드(JSON 아님·machine_id 없음)는 건너뛰지 않고 던진다", async () => {
+    const { catalogPath } = await seedOwnMove();
+    writeJournalFile(catalogPath, "2026-01-02T00-00-00.000Z.jsonl", { action: "rollback" }); // machine_id 없음
+
+    await expect(runRollback({ last: true })).rejects.toThrow(/machine_id/);
+  });
 });

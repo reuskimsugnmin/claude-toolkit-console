@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
+  COMPUTER_USE,
+  classifyToggleName,
   normalizePath,
   parseMcpJsonFile,
   type Asset,
@@ -66,27 +68,10 @@ export interface CollectMcpOptions {
   installedPluginNames: ReadonlySet<string>;
 }
 
-/** 하네스가 `enabledMcpServers`를 상태 신호로 읽는 유일한 이름(내장, 기본 꺼짐). */
-const COMPUTER_USE = "computer-use";
-
 interface ServerDefinition {
   name: string;
   installScope: "user" | "project" | "local";
   projectPath: string | null;
-}
-
-function classifyToggleName(
-  name: string,
-  installedPluginNames: ReadonlySet<string>,
-): Toggle["classification_source"] {
-  if (name.startsWith("plugin:")) {
-    const pluginName = name.split(":")[1];
-    return pluginName !== undefined && installedPluginNames.has(pluginName) ? "definition_found" : "unclassified";
-  }
-  if (name.startsWith("claude.ai ")) {
-    return "name_pattern";
-  }
-  return "unclassified";
 }
 
 export function collectMcp(options: CollectMcpOptions): McpSourceResult {

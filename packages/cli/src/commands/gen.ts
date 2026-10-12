@@ -11,7 +11,7 @@ import {
   writeRunLog,
 } from "@ctk/sync";
 import {
-  FailureClassSchema,
+  failureClassOf,
   gradeManagedPolicy,
   projectGenTotalUsd,
   unresolvedReasonLabel,
@@ -158,17 +158,6 @@ export function countHygieneSkips(skipped: readonly { failureClass: FailureClass
   const counts: Record<string, number> = {};
   for (const s of skipped) counts[s.failureClass] = (counts[s.failureClass] ?? 0) + 1;
   return counts;
-}
-
-/**
- * 중단시킨 실패의 분류를 꺼낸다. **모르면 `null`이고 아무 이름이나 붙이지 않는다** —
- * `exit_code`가 1로 남으므로 "성공"으로 읽히지는 않는다(안전 원칙 7).
- */
-function failureClassOf(cause: unknown): FailureClass | null {
-  const fc = (cause as { failureClass?: unknown } | null)?.failureClass;
-  // 열거에 없는 이름은 기록하지 않는다 — 스키마가 거부하면 장부 전체가 안 써진다.
-  const parsed = FailureClassSchema.safeParse(fc);
-  return parsed.success ? parsed.data : null;
 }
 
 /** `--upgrade-rule-extract`는 규칙 추출 문서를 LLM으로 바꾸는 것이다 — `--no-llm`과 함께면 같은 문서를 다시 만들 뿐이다. */

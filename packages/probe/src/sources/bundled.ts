@@ -1,6 +1,6 @@
 import { type Dirent, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
-import { McpJsonShapeError, normalizePath, parseMcpJson, type Asset, type AssetKind } from "@ctk/core";
+import { bundledAssetId, McpJsonShapeError, normalizePath, parseMcpJson, type Asset, type AssetKind } from "@ctk/core";
 import type { HomeContext } from "../home.js";
 import { FRONTMATTER_SCAN_MAX_BYTES, scanFrontmatter } from "../frontmatter-scan.js";
 import { listPluginInstallPaths, validatePluginInstallPathEntry, type PluginInstallPathIndex } from "./plugins.js";
@@ -408,7 +408,7 @@ function buildBundledAsset(home: HomeContext, parentId: string, kind: AssetKind,
   return {
     schema_version: 1,
     _scope: "machine_independent",
-    id: `${parentId}:${kind}:${tool.suffix}`,
+    id: bundledAssetId(parentId, kind, tool.suffix),
     kind,
     name: tool.suffix,
     parent_asset_id: parentId,

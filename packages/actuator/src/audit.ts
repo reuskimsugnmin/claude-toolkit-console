@@ -8,6 +8,7 @@ import {
   type AllowlistRule,
   type ClaudeJsonSemanticVerdict,
   type FileEntry,
+  type McpToggleException,
   type TreeDiffVerdict,
 } from "@ctk/core";
 
@@ -232,8 +233,9 @@ export function judgeClaudeJson(
   afterValue: unknown,
   enabledPluginId: string | null,
   allowedChurnKeys: readonly string[] = LIVE_SESSION_CLAUDE_JSON_CHURN_KEYS,
+  mcpToggle: McpToggleException | null = null,
 ): ClaudeJsonSemanticVerdict {
-  return claudeJsonSemanticVerdict(beforeValue, afterValue, allowedChurnKeys, enabledPluginId, true);
+  return claudeJsonSemanticVerdict(beforeValue, afterValue, allowedChurnKeys, enabledPluginId, true, mcpToggle);
 }
 
 /**
