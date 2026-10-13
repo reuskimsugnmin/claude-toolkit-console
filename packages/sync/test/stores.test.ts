@@ -83,6 +83,28 @@ describe("sync stores — 카탈로그 저장소 쓰기 (Step 2)", () => {
     expect(JSON.parse(readFileSync(runLogAbsPath, "utf8").trim())).toMatchObject({ command: "scan", exit_code: 0 });
   });
 
+  it("run-log-store — 같은 밀리초에 시작한 실행 둘은 둘 다 남고, 역순 정렬에서 나중 실행이 먼저다", () => {
+    ensureGitRepo(catalogRoot);
+    const base: RunLogEntry = {
+      schema_version: 1,
+      _scope: "machine_dependent",
+      command: "mcp",
+      args: {},
+      machine_id: "m1",
+      started_at: "2026-08-20T05:00:00.000Z",
+      finished_at: "2026-08-20T05:00:00.500Z",
+      exit_code: 0,
+      failure_class: null,
+    };
+    const first = writeRunLog(catalogRoot, base).path;
+    const second = writeRunLog(catalogRoot, { ...base, exit_code: 1 }).path;
+    expect(second).not.toBe(first);
+    expect(JSON.parse(readFileSync(first, "utf8").trim())).toMatchObject({ exit_code: 0 }); // 덮어쓰지 않았다
+    expect(path.basename(second)).toBe("2026-08-20T05-00-00.000Z_01.jsonl");
+    const names = [path.basename(first), path.basename(second)].sort().reverse();
+    expect(names[0]).toBe(path.basename(second));
+  });
+
   it("asset-store — upsertAsset 후 rebuildCatalogIndex가 index.json을 재계산한다", () => {
     ensureGitRepo(catalogRoot);
     upsertAsset(catalogRoot, sampleAsset);

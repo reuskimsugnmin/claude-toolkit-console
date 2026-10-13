@@ -13,11 +13,21 @@ export function writeRunLog(catalogRoot: string, entry: RunLogEntry): { path: st
   assertNoRawPathLeaks(entry);
   // 파일명은 콜론이 없는 파일시스템 안전 변형을 쓴다(core/snapshot/id.ts의 snapshotIdFsSafe와
   // 동형) — 레코드 본문의 started_at 필드 자체는 정식 ISO8601(콜론 포함)로 그대로 둔다.
-  const relPath = runLogPath(entry.machine_id, entry.started_at.replace(/:/g, "-"));
-  const absPath = catalogAbsPath(catalogRoot, relPath);
-  mkdirSync(path.dirname(absPath), { recursive: true });
-  writeFileSync(absPath, `${toJsonlLine(entry)}\n`, "utf8");
-  return { path: absPath };
+  // 같은 밀리초에 시작한 실행이 둘이면 파일명이 같다 — 덮어쓰면 앞 실행의 기록이 조용히 사라진다.
+  // `wx`로 만들고 이미 있으면 `_01`.. 접미사를 붙인다(`_`는 `.`보다 뒤라 역순 정렬에서 나중 실행이 먼저 온다).
+  const base = entry.started_at.replace(/:/g, "-");
+  const line = `${toJsonlLine(entry)}\n`;
+  for (let n = 0; ; n++) {
+    const relPath = runLogPath(entry.machine_id, n === 0 ? base : `${base}_${String(n).padStart(2, "0")}`);
+    const absPath = catalogAbsPath(catalogRoot, relPath);
+    mkdirSync(path.dirname(absPath), { recursive: true });
+    try {
+      writeFileSync(absPath, line, { encoding: "utf8", flag: "wx" });
+      return { path: absPath };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST" || n >= 99) throw err;
+    }
+  }
 }
 
 /**
