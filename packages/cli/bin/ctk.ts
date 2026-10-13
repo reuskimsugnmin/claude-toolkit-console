@@ -587,15 +587,16 @@ async function main(): Promise<void> {
       }
     }
   } catch (err) {
+    // 모든 FAIL 출력은 printable()을 거친다 — 메시지에 동기화 저장소 유래 문자열(자산 id 등)이 섞이면 터미널 제어문자가 그대로 나간다(R7 심사 C I-3).
     if (err instanceof MissingRequiredFlagError) {
       // 예산·타임아웃 미지정은 기본값으로 때우지 않고 거부한다 — 무인 실행에서 상한 없는
       // 유료 세션이 도는 것이 이 프로젝트가 막으려는 실패 모드다(전역 CLAUDE.md 비용 규칙).
-      console.error(`FAIL missing_required_flag: ${err.message}`);
+      console.error(`FAIL missing_required_flag: ${printable(err.message)}`);
       process.exitCode = 1;
       return;
     }
     if (err instanceof LockContendedError) {
-      console.error(`FAIL lock_contended: ${err.message}`);
+      console.error(`FAIL lock_contended: ${printable(err.message)}`);
       process.exitCode = 1;
       return;
     }
@@ -617,17 +618,17 @@ async function main(): Promise<void> {
       return;
     }
     if (err instanceof McpMoveRejectedError || err instanceof CliToolMoveUnsupportedError) {
-      console.error(err.message);
+      console.error(printable(err.message));
       process.exitCode = 1;
       return;
     }
     if (err instanceof RollbackFailedError) {
-      console.error(`FAIL rollback_failed: ${err.message}`);
+      console.error(`FAIL rollback_failed: ${printable(err.message)}`);
       process.exitCode = 1;
       return;
     }
     if (err instanceof DuplicateKeyDiffError) {
-      console.error(`FAIL duplicate_snapshot_key: ${err.message}`);
+      console.error(`FAIL duplicate_snapshot_key: ${printable(err.message)}`);
       process.exitCode = 1;
       return;
     }

@@ -1727,6 +1727,17 @@ ctk rollback --last                                 EXIT=1   FAIL mcp_toggle_ref
   그 뒤 그 `move`의 `rollback --last`는 백업이 없어 fail-closed로 막힌다.
 - 토글이 journal의 **마지막 기록**이면 그보다 앞선 `move`의 `rollback --last`가 막힌다.
 
+### 실행 시점 확인 — 꺼진 서버는 세션이 띄우지 않는다 (2026-10-13, 과금 0)
+
+- **관측 방법**: 실제 `HOME` + `CLAUDE_CONFIG_DIR=$T/cfg`(ctk는 `CTK_CONFIG_DIR=$T/cfg`로 같은 `.claude.json`을 본다).
+  실행되면 마커 파일을 남기고 끝나는 stdio 서버 A·B를 user 스코프로 추가 → `ctk mcp disable --asset A` →
+  그 프로젝트에서 `claude -p … --model haiku --max-budget-usd 0.10` 1회.
+- **관측**: 모델 호출은 인증 만료로 실패했다(`total_cost_usd: 0`, 4.77초 — 모델이 돌지 않았다). 그러나 세션은
+  **모델 호출 전에 MCP 서버를 띄웠고, 마커는 B만 생겼다**(A 없음). 세션 뒤 `disabledMcpServers`는 `["A"]` 그대로였다.
+- **파급**: `mcp get`의 표시만이 아니라 **실행 시점에도** ctk가 쓴 `disabledMcpServers`가 지켜진다. 이 확인에는
+  모델 호출이 필요 없다 — 서버 기동은 인증 전에 일어난다(무료로 반복 가능). `HOME`까지 바꾼 격리 홈은
+  로그인되지 않은 상태였다(`auth status` → `loggedIn: false`).
+
 ### 미측정
 
 - 하네스가 **동기화(`synced`) 플러그인**에 대해 `disabledMcpServers`의 `plugin:<n>:<s>`를 따르는가.
