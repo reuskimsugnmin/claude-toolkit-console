@@ -12,7 +12,7 @@
 | **현재 버전** | v1 완료 (2026-08-23) · **B1 완료 (2026-08-27)** · **B4 완료 (2026-08-31)** · **B3 완료 (2026-09-01)** · **R7 완료 (2026-10-12)** |
 | **머지된 PR** | 55건 (`gh pr list --state merged --limit 200 --json number -q length`) |
 | **작업 단위** | 완료 **129** · 부분 0 · 미착수 **5** — 세는 법은 아래 각주 (2026-10-12 R7 완료 반영 — 직전 128 · 6) |
-| **테스트** | 1918 passed + 5 skipped(유료 게이트) (2026-10-12 로컬 전량 통과 — `move-rollback`은 세션 타이밍에 따라 갈린다) |
+| **테스트** | 1920 passed + 5 skipped(유료 게이트) (2026-10-12 로컬 전량 통과 — `move-rollback`은 세션 타이밍에 따라 갈린다) |
 | **알려진 로컬 실패** | `move-rollback.test.ts` 1건 — 살아 있는 Claude Code 세션이 `.claude.json`의 `pluginUsage`를 갱신해 actuator 의미 diff에 걸린다. CI(세션 없음)는 통과 |
 | **표준 검증** | `pnpm verify` — 7개 게이트(B1이 `gate:asset-kind` 추가). ⚠️ `&&` 체인이라 **알려진 로컬 실패가 뒤 게이트를 막는다** — 로컬에서는 개별로 돌린다 |
 
@@ -820,6 +820,7 @@
   - **완료**: `ctk mcp`(목록) · `ctk mcp <disable|enable> --asset <id> [--project-hash <hex> | --project <경로>]`.
     프로젝트의 `disabledMcpServers`에서 **이름 하나만** 넣거나 뺀다. 쓰기 전에 계획과 판정을 만들고 백업한 뒤
     CAS로 확인하고 쓴다. 쓴 뒤에는 자동 되돌림이 없고 출력되는 반대 명령이 되돌림이다. `ctk rollback`은 토글을 거부한다.
+  - **실행 시점 확인(L2, 2026-10-13, 과금 0)**: 꺼진 서버는 세션이 띄우지 않았다(마커 대조) — `docs/harness-facts.md` R7 절.
   - **보안 게이트 A/B/C**(`security-reviewer` 대상). 주요 결함은 고쳤다:
     의미 판정이 빈 프로젝트 엔트리를 보지 못함(닫음) · 공용 `atomicWriteFile`의 임시 파일이 0644로 만들어진 뒤 chmod됨(0600 `O_EXCL`로 바꿈) ·
     동기화된 인덱스의 하네스 이름을 그대로 신뢰함(probe 불변식에 묶음) · `move`의 오타 플래그가 조용히 기본값으로 떨어짐(엄격 플래그).
@@ -830,10 +831,7 @@
     - 웹 콘솔 노출
     - `*McpjsonServers` probe
     - `rollback.ts`의 심볼릭 링크 검사를 rename 앞(~:254)으로 옮기기
-    - 나머지 `ctk.ts` FAIL 분기가 `printable()`을 거치지 않음(게이트 C I-3)
-    - run-log 파일명의 ms 충돌
     - 실행 중 세션의 덮어쓰기 확인(L3) — 대화형 세션이 필요해 미측정
-    - L2 유료 확인 — 승인됨, PR 이후 한 번 실행
   - **별도 추적**: gen 봉인 감사도 같은 결함이 있다 — 프로덕션에서 `.claude.json` 축은 지금 `unmeasured`로 드러낼 뿐 측정하지 않는다.
     고치려면 실제 파일의 봉인 churn 실측과 봉인 재심이 필요하다.
 
