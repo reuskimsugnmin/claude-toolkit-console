@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -10,8 +10,10 @@ import {
   BackupManifestTamperedError,
   ConfigClobberedError,
   ForbiddenRestoreTargetError,
+  RestoreTargetSymlinkError,
   RollbackFailedError,
   restoreFromBackup,
+  restoreFromBackupWithSeam,
 } from "../src/rollback.js";
 
 describe("actuator/rollback — 백업에서 직접 파일 복원(AC-2.5: 롤백 후 조치 이전과 완전히 동일)", () => {
@@ -264,5 +266,126 @@ describe("actuator/rollback — 백업에서 직접 파일 복원(AC-2.5: 롤백
     writeManifest(backupRoot, "run4b", { config_settings: entry });
 
     expect(() => restoreFromBackup(backupRoot, homeCtx)).toThrow(RollbackFailedError);
+  });
+
+  describe("복원 대상이 심볼릭 링크일 때 — 판정(링크가 가리키는 파일)과 쓰기(링크 자체 교체)가 어긋나지 않게 거부한다", () => {
+    const evictedExists = (backupRoot: string, key: string) => existsSync(path.join(backupRoot, ".restore-evicted", key));
+    const linkTo = (pointee: string, linkAbs: string) => {
+      rmSync(linkAbs, { force: true });
+      symlinkSync(pointee, linkAbs);
+    };
+
+    it("existed:true — 사전 패스가 쓰기 0건으로 거부한다(링크 유지·가리키는 파일 불변·evicted 없음)", () => {
+      const target = path.join(home, "settings.json");
+      const pointee = path.join(home, "pointee.json");
+      writeFileSync(target, "orig", "utf8");
+      writeFileSync(pointee, "pointee", "utf8");
+      const { backupRoot } = beginBackupRun(home, "run-sl1");
+      writeManifest(backupRoot, "run-sl1", { config_settings: backupFile(backupRoot, "config_settings", target) });
+      linkTo(pointee, target);
+
+      expect(() => restoreFromBackup(backupRoot, homeCtx)).toThrow(RestoreTargetSymlinkError);
+      expect(lstatSync(target).isSymbolicLink()).toBe(true);
+      expect(readFileSync(pointee, "utf8")).toBe("pointee");
+      expect(evictedExists(backupRoot, "config_settings")).toBe(false);
+    });
+
+    it("existed:false — 백업 때 없던 대상이 링크로 생겨도 같다", () => {
+      const target = path.join(home, "settings.json"); // 백업 시점엔 없음
+      const pointee = path.join(home, "pointee.json");
+      writeFileSync(pointee, "pointee", "utf8");
+      const { backupRoot } = beginBackupRun(home, "run-sl2");
+      const entry = backupFile(backupRoot, "to_settings", target);
+      expect(entry.existed).toBe(false);
+      writeManifest(backupRoot, "run-sl2", { to_settings: entry });
+      linkTo(pointee, target);
+
+      expect(() => restoreFromBackup(backupRoot, homeCtx)).toThrow(RestoreTargetSymlinkError);
+      expect(lstatSync(target).isSymbolicLink()).toBe(true);
+      expect(readFileSync(pointee, "utf8")).toBe("pointee");
+      expect(evictedExists(backupRoot, "to_settings")).toBe(false);
+    });
+
+    it("사전 패스만 보장하는 것 — 링크 항목이 두 번째여도 첫 번째 일반 파일은 복원되지 않는다(쓰기 0건)", () => {
+      const first = path.join(home, "a.json");
+      const second = path.join(home, "b.json");
+      const pointee = path.join(home, "pointee.json");
+      writeFileSync(first, "a-orig", "utf8");
+      writeFileSync(second, "b-orig", "utf8");
+      writeFileSync(pointee, "pointee", "utf8");
+      const { backupRoot } = beginBackupRun(home, "run-sl3");
+      writeManifest(backupRoot, "run-sl3", {
+        k1: backupFile(backupRoot, "k1", first),
+        k2: backupFile(backupRoot, "k2", second),
+      });
+      writeFileSync(first, "a-changed", "utf8");
+      linkTo(pointee, second);
+
+      expect(() => restoreFromBackup(backupRoot, homeCtx)).toThrow(RestoreTargetSymlinkError);
+      expect(readFileSync(first, "utf8")).toBe("a-changed"); // 사전 패스가 막지 않았다면 a-orig로 복원됐을 것
+      expect(lstatSync(second).isSymbolicLink()).toBe(true);
+    });
+
+    it("경쟁 창 — 사전 패스 뒤 항목 복원 직전에 링크로 바뀌면 항목 안 검사가 막는다(0건 복원 → 감싸지 않고 그대로)", () => {
+      const target = path.join(home, "settings.json");
+      const pointee = path.join(home, "pointee.json");
+      writeFileSync(target, "orig", "utf8");
+      writeFileSync(pointee, "pointee", "utf8");
+      const { backupRoot } = beginBackupRun(home, "run-sl4");
+      writeManifest(backupRoot, "run-sl4", { config_settings: backupFile(backupRoot, "config_settings", target) });
+      writeFileSync(target, "changed", "utf8");
+
+      expect(() =>
+        restoreFromBackupWithSeam(backupRoot, homeCtx, undefined, undefined, {}, { onBeforeRestoreEntry: () => linkTo(pointee, target) }),
+      ).toThrow(RestoreTargetSymlinkError);
+      expect(lstatSync(target).isSymbolicLink()).toBe(true);
+      expect(readFileSync(pointee, "utf8")).toBe("pointee");
+      expect(evictedExists(backupRoot, "config_settings")).toBe(false);
+    });
+
+    it("경쟁 창 — 앞 항목이 이미 복원된 뒤 링크로 바뀌면 부분 롤백(RollbackFailedError)으로 감싸고 원문 경로를 싣지 않는다", () => {
+      const first = path.join(home, "a.json");
+      const second = path.join(home, "b.json");
+      const pointee = path.join(home, "pointee.json");
+      writeFileSync(first, '{"a":"orig"}', "utf8");
+      writeFileSync(second, '{"b":"orig"}', "utf8");
+      writeFileSync(pointee, "pointee", "utf8");
+      const { backupRoot } = beginBackupRun(home, "run-sl6");
+      writeManifest(backupRoot, "run-sl6", {
+        k1: backupFile(backupRoot, "k1", first),
+        k2: backupFile(backupRoot, "k2", second),
+      });
+      writeFileSync(first, '{"a":"changed"}', "utf8");
+
+      let err: unknown;
+      try {
+        restoreFromBackupWithSeam(backupRoot, homeCtx, undefined, undefined, {}, {
+          onBeforeRestoreEntry: (key) => {
+            if (key === "k2") linkTo(pointee, second);
+          },
+        });
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(RollbackFailedError);
+      expect((err as RollbackFailedError).restoredKeys).toEqual(["k1"]);
+      expect((err as RollbackFailedError).unrestoredKeys).toEqual(["k2"]);
+      expect((err as Error).message).toContain("심볼릭 링크");
+      expect((err as Error).message).not.toContain(home);
+      expect(lstatSync(second).isSymbolicLink()).toBe(true);
+      expect(readFileSync(pointee, "utf8")).toBe("pointee");
+    });
+
+    it("반대 축 — 링크가 아니면(같은 설정, 이음매 포함) 정상 복원된다", () => {
+      const target = path.join(home, "settings.json");
+      writeFileSync(target, '{"v":"orig"}', "utf8");
+      const { backupRoot } = beginBackupRun(home, "run-sl5");
+      writeManifest(backupRoot, "run-sl5", { config_settings: backupFile(backupRoot, "config_settings", target) });
+      writeFileSync(target, '{"v":"changed"}', "utf8");
+
+      restoreFromBackupWithSeam(backupRoot, homeCtx, undefined, undefined, {}, { onBeforeRestoreEntry: () => {} });
+      expect(lstatSync(target).isSymbolicLink()).toBe(false);
+      expect(readFileSync(target, "utf8")).toBe('{"v":"orig"}');
+    });
   });
 });
