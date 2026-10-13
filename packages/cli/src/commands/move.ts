@@ -18,6 +18,7 @@ import {
   readClaudeJsonRawOrNull,
   CLAUDE_JSON_BACKUP_KEY,
   ConfigClobberedError,
+  RestoreTargetSymlinkError,
   RollbackFailedError,
   describeClaudeJsonLeftover,
   restoreFromBackup,
@@ -282,6 +283,12 @@ function rollbackAndRecord(options: {
       `\`ctk scan\`으로 현재 상태를 확인하고, 다른 Claude Code 세션을 닫은 뒤 반대 방향으로 \`ctk move\`를 실행해 되돌리세요 ` +
       `(마지막 기록이 failure라 \`ctk rollback --last\`는 거부됩니다). 백업: ${backupRef}` +
       concurrentHint;
+  } else if (rollbackCause instanceof RestoreTargetSymlinkError) {
+    // 사전 패스가 쓰기 전에 거부했다(복원 0건) — 원인은 다른 세션이 아니라 대상이 링크라는 것이므로 처방이 다르다.
+    rollbackCause.message +=
+      `\n[롤백 미실행] 복원은 한 파일도 하지 않았습니다 — 이동은 적용된 상태로 남아 있습니다. ` +
+      `복원 대상이 심볼릭 링크라 ctk가 그 링크를 일반 파일로 바꾸지 않았습니다. 링크를 의도한 것인지 확인한 뒤, ` +
+      `${backupRef} 의 백업 사본으로 링크 대상 파일을 직접 되돌리거나 반대 방향으로 \`ctk move\`를 실행하세요.`;
   } else if (rollbackCause instanceof RollbackFailedError && rollbackCause.restoredKeys.length > 0) {
     rollbackCause.message +=
       `\n[롤백 부분 실행] 복원됨: ${rollbackCause.restoredKeys.join(", ")} / 미복원: ${rollbackCause.unrestoredKeys.join(", ")} — ` +

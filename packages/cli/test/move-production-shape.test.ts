@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -84,7 +84,7 @@ describe("cli — ctk move 프로덕션 형태(CTK_CONFIG_DIR 미설정, 실제 
   const lastRunLog = (command: string) => {
     const machinesDir = path.join(catalogPath, "machines");
     const runsDir = path.join(machinesDir, readdirSync(machinesDir)[0]!, "runs");
-    const logs = readdirSync(runsDir).sort().map((f) => JSON.parse(read(path.join(runsDir, f))) as { command: string; args: Record<string, unknown> });
+    const logs = readdirSync(runsDir).sort().map((f) => JSON.parse(read(path.join(runsDir, f))) as { command: string; args: Record<string, unknown>; failure_class: string | null });
     return logs.filter((l) => l.command === command).at(-1)!;
   };
 
@@ -173,6 +173,27 @@ describe("cli — ctk move 프로덕션 형태(CTK_CONFIG_DIR 미설정, 실제 
     expect(JSON.parse(read(settingsAbs))).toEqual({ enabledPlugins: { [PLUGIN]: false } }); // 복원되지 않았다
   });
 
+  it("(ii-a2) 롤백 대상이 심볼릭 링크로 바뀌어 있으면 사전 패스가 거부한다: '[롤백 미실행]' + 링크 보존", async () => {
+    await setupPluginMove();
+    hooks.verifyFails = true;
+    const pointee = path.join(ctkHome, "linked-settings.json");
+    hooks.afterCapture = () => {
+      writeFileSync(pointee, JSON.stringify({ enabledPlugins: { linked: true } }), "utf8");
+      rmSync(toSettingsAbs);
+      symlinkSync(pointee, toSettingsAbs);
+    };
+
+    const err = await runMove({ assetId: PLUGIN, to: "project", toProjectIndex: 0 }).catch((e: unknown) => e as Error);
+
+    expect((err as Error).name).toBe("RestoreTargetSymlinkError");
+    expect((err as Error).message).toContain("[롤백 미실행]");
+    expect((err as Error).message).toContain("심볼릭 링크");
+    expect((err as Error).message).not.toContain(ctkHome);
+    expect(lstatSync(toSettingsAbs).isSymbolicLink()).toBe(true); // 링크를 일반 파일로 바꾸지 않았다
+    expect(JSON.parse(read(pointee))).toEqual({ enabledPlugins: { linked: true } });
+    expect(JSON.parse(read(settingsAbs))).toEqual({ enabledPlugins: { [PLUGIN]: false } }); // 복원 0건
+  });
+
   it("(ii-b) N1 — 사전 검사 통과 뒤 복원 도중 경쟁이 나면 '[롤백 부분 실행]'으로 복원된/안 된 키를 사실대로 말한다", async () => {
     await setupPluginMove();
     hooks.verifyFails = true;
@@ -239,6 +260,41 @@ describe("cli — ctk move 프로덕션 형태(CTK_CONFIG_DIR 미설정, 실제 
     expect(summary.claudeJsonNote).toContain("~/.ctk-backups/");
     expect(summary.claudeJsonStatus).toBe("violation");
     expect(lastRunLog("rollback").args).toMatchObject({ claude_json: "violation", claude_json_mcp_forbidden: false });
+  });
+
+  it("(v-b) `ctk rollback --last` — 복원 대상이 링크로 바뀌어 있으면 거부하고 백업 위치·처방을 붙인다(run-log는 전용 클래스)", async () => {
+    await setupPluginMove();
+    hooks.verifyPasses = true;
+    await runMove({ assetId: PLUGIN, to: "project", toProjectIndex: 0 });
+    const pointee = path.join(ctkHome, "linked-settings.json");
+    writeFileSync(pointee, JSON.stringify({ enabledPlugins: { linked: true } }), "utf8");
+    rmSync(settingsAbs);
+    symlinkSync(pointee, settingsAbs);
+
+    const err = await runRollback({ last: true }).catch((e: unknown) => e as Error);
+
+    expect((err as Error).name).toBe("RestoreTargetSymlinkError");
+    expect((err as Error).message).toContain("[롤백 미실행]");
+    expect((err as Error).message).toContain("~/.ctk-backups/");
+    expect((err as Error).message).not.toContain(ctkHome);
+    expect(lstatSync(settingsAbs).isSymbolicLink()).toBe(true);
+    expect(lastRunLog("rollback").failure_class).toBe("restore_target_symlink");
+  });
+
+  it("(v-c) 웹 롤백 액션 — 같은 링크 거부는 서버 결함(500)이 아니라 bad_request다", async () => {
+    await setupPluginMove();
+    hooks.verifyPasses = true;
+    await runMove({ assetId: PLUGIN, to: "project", toProjectIndex: 0 });
+    const pointee = path.join(ctkHome, "linked-settings.json");
+    writeFileSync(pointee, JSON.stringify({ enabledPlugins: { linked: true } }), "utf8");
+    rmSync(settingsAbs);
+    symlinkSync(pointee, settingsAbs);
+    const { createActionHandlers } = await import("../src/commands/web-actions.js");
+
+    const err = (await createActionHandlers().rollback().catch((e: unknown) => e)) as { code?: string; message: string };
+
+    expect(err.code).toBe("bad_request");
+    expect(err.message).toContain("[롤백 미실행]");
   });
 
   // unjudgeable은 여기서 만들 수 없다 — 실제 파일이 깨지면 알려진 프로젝트 목록(= 복원 허용 루트)도 함께 사라져 복원 자체가

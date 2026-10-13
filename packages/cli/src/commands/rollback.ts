@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { RollbackFailedError, buildRollbackJournalEntry, describeClaudeJsonLeftover, manifestSha256Of, restoreFromBackup } from "@ctk/actuator";
+import { RestoreTargetSymlinkError, RollbackFailedError, buildRollbackJournalEntry, describeClaudeJsonLeftover, manifestSha256Of, restoreFromBackup, type RestoreReport } from "@ctk/actuator";
 import { resolveHomeContext } from "@ctk/probe";
 import { extractFailureClass, McpToggleJournalStateSchema, parseJournalEntry, type JournalEntry } from "@ctk/core";
 import { acquireLock, commitAll, writeJournalEntry } from "@ctk/sync";
@@ -178,7 +178,18 @@ export async function runRollback(_options: RollbackOptions): Promise<RollbackSu
     }
 
     const backupRootAbs = backupRefToAbs(home.ctkHome, entry.backup_ref);
-    const restoreReport = restoreFromBackup(backupRootAbs, home, entry.backup_manifest_sha256, undefined, { enabledPluginId: entry.asset_id });
+    let restoreReport: RestoreReport;
+    try {
+      restoreReport = restoreFromBackup(backupRootAbs, home, entry.backup_manifest_sha256, undefined, { enabledPluginId: entry.asset_id });
+    } catch (err) {
+      // 거부만으로는 다음 행동을 모른다 — 백업 위치와 처방을 붙인다(move.ts 자기 롤백과 같은 처방).
+      if (err instanceof RestoreTargetSymlinkError) {
+        err.message +=
+          `\n[롤백 미실행] 백업: ${entry.backup_ref} — 링크가 의도한 것인지 확인한 뒤, 링크 대상 파일을 백업 사본으로 직접 ` +
+          `되돌리거나 반대 방향으로 \`ctk move\`를 실행하세요.`;
+      }
+      throw err;
+    }
 
     const rollbackEntry = buildRollbackJournalEntry({
       originalAction: entry.action,
