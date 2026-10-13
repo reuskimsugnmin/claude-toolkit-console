@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
 import { claudeJsonPath, collectTree, listKnownProjectPaths, type HomeContext } from "@ctk/probe";
 import { BackupManifestSchema, FORBIDDEN_RULES, matchesForbidden, verdict as treeDiffVerdict, type ClaudeJsonPathVerdict } from "@ctk/core";
@@ -82,6 +82,21 @@ export class ConfigClobberedError extends Error {
         `세션이 이 파일을 바꿨을 수 있다. 그 변경을 조용히 덮어쓰지 않기 위해 복원을 중단한다.`,
     );
     this.name = "ConfigClobberedError";
+  }
+}
+
+/**
+ * 파일 복원 대상이 심볼릭 링크일 때. sha256 판정(`readFileSync`)은 링크가 가리키는 파일을 보지만 복원(rename+쓰기)은
+ * 링크 자체를 일반 파일로 바꾼다 — X를 판정하고 Y를 쓰는 어긋남이므로 한 바이트도 쓰기 전에 중단한다.
+ */
+export class RestoreTargetSymlinkError extends Error {
+  readonly failureClass = "restore_target_symlink" as const;
+  constructor(targetAbs: string) {
+    super(
+      `복원 대상 ${describePath(targetAbs)}이(가) 심볼릭 링크다 — 링크를 일반 파일로 바꿔치기하지 않기 위해 ` +
+        `ctk는 복원을 거부한다. 이 대상에는 아무것도 쓰지 않았다.`,
+    );
+    this.name = "RestoreTargetSymlinkError";
   }
 }
 
@@ -223,6 +238,10 @@ function verifyRestoredDirectory(absPath: string, entry: Extract<BackupEntry, { 
   }
 }
 
+function isSymlink(abs: string): boolean {
+  return lstatSync(abs, { throwIfNoEntry: false })?.isSymbolicLink() === true;
+}
+
 /**
  * H1 — 파일 복원. `existed:false`(생성물 제거) 케이스도 `rmSync`가 아니라 **퇴피(rename)**로
  * 처리한다 — "살아있는 대상을 무조건 삭제"하는 코드 경로를 이 파일 전체에서 없앤다.
@@ -238,6 +257,9 @@ function restoreFileEntry(
   expectedCurrentSha256: string | undefined,
 ): void {
   const targetAbs = entry.targetAbs;
+
+  // 어떤 rename보다 앞서 — 한 번 퇴피하면 링크는 이미 옮겨져 이 검사가 "없음"을 본다. 사전 패스 이후 끼어든 교체(경쟁 창)용.
+  if (isSymlink(targetAbs)) throw new RestoreTargetSymlinkError(targetAbs);
 
   if (expectedCurrentSha256 !== undefined && existsSync(targetAbs)) {
     if (sha256File(targetAbs) !== expectedCurrentSha256) {
@@ -488,6 +510,7 @@ function restoreInternal(
 
   for (const [key, entry] of toRestore) {
     if (entry.kind !== "file") continue;
+    if (isSymlink(entry.targetAbs)) throw new RestoreTargetSymlinkError(entry.targetAbs); // 쓰기 0건 보장(사전 패스)
     const expected = expectedCurrentShas?.[key];
     if (expected !== undefined && existsSync(entry.targetAbs) && sha256File(entry.targetAbs) !== expected) {
       throw new ConfigClobberedError(entry.targetAbs);
@@ -505,7 +528,7 @@ function restoreInternal(
       }
       restoredKeys.push(key);
     } catch (cause) {
-      if (restoredKeys.length === 0 && cause instanceof ConfigClobberedError) throw cause;
+      if (restoredKeys.length === 0 && (cause instanceof ConfigClobberedError || cause instanceof RestoreTargetSymlinkError)) throw cause;
       throw new RollbackFailedError(backupRoot, new Error(`키 '${key}' 복원 실패: ${describeCause(cause)}`), {
         restoredKeys,
         unrestoredKeys: toRestore.slice(index).map(([k]) => k),

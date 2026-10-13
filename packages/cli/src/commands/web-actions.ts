@@ -5,6 +5,7 @@ import { readLatestGenCost } from "@ctk/sync";
 import { readLocalConfig, readMachineIdentityOrNull } from "../local-config.js";
 import { ActionError, type ActionHandlers } from "@ctk/web";
 import { LockContendedError } from "@ctk/sync";
+import { RestoreTargetSymlinkError } from "@ctk/actuator";
 import { runScan } from "./scan.js";
 import {
   runMove,
@@ -185,7 +186,8 @@ function toActionError(err: unknown): unknown {
     err instanceof SkillLocationAmbiguousError ||
     err instanceof UnregisteredPluginMoveError ||
     err instanceof NoRollbackTargetError ||
-    err instanceof InvalidBackupRefError
+    err instanceof InvalidBackupRefError ||
+    err instanceof RestoreTargetSymlinkError
   ) {
     return new ActionError("bad_request", err.message);
   }

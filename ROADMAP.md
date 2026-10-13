@@ -820,6 +820,7 @@
   - **완료**: `ctk mcp`(목록) · `ctk mcp <disable|enable> --asset <id> [--project-hash <hex> | --project <경로>]`.
     프로젝트의 `disabledMcpServers`에서 **이름 하나만** 넣거나 뺀다. 쓰기 전에 계획과 판정을 만들고 백업한 뒤
     CAS로 확인하고 쓴다. 쓴 뒤에는 자동 되돌림이 없고 출력되는 반대 명령이 되돌림이다. `ctk rollback`은 토글을 거부한다.
+  - **롤백 링크 거부(2026-10-13)**: 파일 복원 대상이 심볼릭 링크면 쓰기 전에 거부한다(`restore_target_symlink`). 전에는 링크가 가리키는 파일로 sha를 판정하고 링크 자체를 일반 파일로 바꿨다. 이 검사는 옮길 것이 아니라 없던 것이었다(정본 정정).
   - **실행 시점 확인(L2, 2026-10-13, 과금 0)**: 꺼진 서버는 세션이 띄우지 않았다(마커 대조) — `docs/harness-facts.md` R7 절.
   - **보안 게이트 A/B/C**(`security-reviewer` 대상). 주요 결함은 고쳤다:
     의미 판정이 빈 프로젝트 엔트리를 보지 못함(닫음) · 공용 `atomicWriteFile`의 임시 파일이 0644로 만들어진 뒤 chmod됨(0600 `O_EXCL`로 바꿈) ·
@@ -830,7 +831,7 @@
     - 승인 축(`*McpjsonServers`) 토글 — 계획 D5
     - 웹 콘솔 노출
     - `*McpjsonServers` probe
-    - `rollback.ts`의 심볼릭 링크 검사를 rename 앞(~:254)으로 옮기기
+    - 이동 **백업 시점**에 설정 파일이 심볼릭 링크면 거부하기 — 지금은 이동이 적용된 뒤 롤백만 거부된다(dotfiles 링크 사용자). 먼저 `claude plugin enable`이 링크를 따라 쓰는지 교체하는지 실측한다
     - 실행 중 세션의 덮어쓰기 확인(L3) — 대화형 세션이 필요해 미측정
   - **별도 추적**: gen 봉인 감사도 같은 결함이 있다 — 프로덕션에서 `.claude.json` 축은 지금 `unmeasured`로 드러낼 뿐 측정하지 않는다.
     고치려면 실제 파일의 봉인 churn 실측과 봉인 재심이 필요하다.
