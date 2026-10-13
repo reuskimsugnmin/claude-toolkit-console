@@ -400,10 +400,73 @@ describe("cli — ctk mcp 프로덕션 형태(CTK_CONFIG_DIR 미설정)", () => 
       expectNoWrite(0);
     });
 
-    it(".mcp.json 서버는 허용하되 Pending 경고를 낸다", async () => {
-      const run = await ctk("mcp", "disable", "--asset", "pend-srv", "--project-hash", hashPath(dirA).slice(0, 8));
-      expect(run.exitCode).toBe(0);
-      expect(run.out).toContain("Pending");
+    it(".mcp.json 서버는 허용하되 op별 승인 경고를 낸다(disable은 Pending 문구, enable은 거부 문구)", async () => {
+      const hash8 = hashPath(dirA).slice(0, 8);
+      const off = await ctk("mcp", "disable", "--asset", "pend-srv", "--project-hash", hash8);
+      expect(off.exitCode).toBe(0);
+      expect(off.out).toContain("끈 서버는 세션이 띄우지 않는다");
+      expect(off.out).toContain("Pending");
+      expect(off.out).not.toContain("Rejected");
+      const on = await ctk("mcp", "enable", "--asset", "pend-srv", "--project-hash", hash8);
+      expect(on.exitCode).toBe(0);
+      expect(on.out).toContain("Rejected");
+      expect(on.out).not.toContain("Pending");
+    });
+
+    it(".mcp.json 정의가 아닌(user) 서버는 두 승인 경고를 모두 내지 않는다(반대 축)", async () => {
+      const hash8 = hashPath(dirA).slice(0, 8);
+      const off = await ctk("mcp", "disable", "--asset", "user-srv", "--project-hash", hash8);
+      expect(off.exitCode).toBe(0);
+      const on = await ctk("mcp", "enable", "--asset", "user-srv", "--project-hash", hash8);
+      expect(on.exitCode).toBe(0);
+      for (const out of [off.out, on.out]) {
+        expect(out).not.toContain("Pending");
+        expect(out).not.toContain("Rejected");
+      }
+    });
+
+    describe("깨진 .mcp.json은 '파일 없음'이 아니다", () => {
+      const mcpJsonOfA = () => path.join(dirA, ".mcp.json");
+
+      it("읽을 수 없으면(깨진 JSON) mcp_json_unreadable로 거부한다 — not_defined_for_project가 아니다", async () => {
+        writeFileSync(mcpJsonOfA(), "{not json", "utf8");
+        const err = await refusal(toggle("disable", "pend-srv"));
+        expect(err.guard).toBe("mcp_json_unreadable");
+        expect(err.message).toContain(".mcp.json");
+        expectNoWrite(0);
+      });
+
+      it("디렉터리가 .mcp.json 자리에 있어도(EISDIR) 같은 사유로 거부한다", async () => {
+        rmSync(mcpJsonOfA());
+        mkdirSync(mcpJsonOfA());
+        const err = await refusal(toggle("enable", "pend-srv"));
+        expect(err.guard).toBe("mcp_json_unreadable");
+        expectNoWrite(0);
+      });
+
+      it("반대 축 — 읽을 수 있는 파일에 그 이름이 없으면 그대로 not_defined_for_project", async () => {
+        writeFileSync(mcpJsonOfA(), JSON.stringify({ mcpServers: { other: { command: "echo" } } }), "utf8");
+        const err = await refusal(toggle("disable", "pend-srv"));
+        expect(err.guard).toBe("not_defined_for_project");
+      });
+
+      it("반대 축 — 깨진 파일은 그 프로젝트에만 걸린다(다른 프로젝트는 not_defined_for_project 그대로)", async () => {
+        writeFileSync(mcpJsonOfA(), "{not json", "utf8");
+        const err = await refusal(toggle("disable", "pend-srv", dirB));
+        expect(err.guard).toBe("not_defined_for_project");
+      });
+
+      it("ctk scan은 죽지 않고 해시 접두만 경고한다(경로 없음) — 파일 없음(ENOENT)은 경고 없음", async () => {
+        const clean = await runScan({ spawnFn: fakeSpawn("[]") });
+        expect(clean.warnings.join(" ")).not.toContain(".mcp.json");
+        writeFileSync(mcpJsonOfA(), "{not json", "utf8");
+        const broken = await runScan({ spawnFn: fakeSpawn("[]") });
+        const text = broken.warnings.join(" ");
+        expect(text).toContain(".mcp.json");
+        expect(text).toContain(`#${hashPath(dirA).slice(0, 8)}`);
+        expect(text).not.toContain(dirA);
+        expect(text).not.toContain(root);
+      });
     });
 
     it("플러그인 서버: 부모가 다른 프로젝트의 local 스코프에만 설치돼 있으면 거부, user 스코프면 `plugin:<이름>:<서버>`로 적용", async () => {
@@ -569,7 +632,12 @@ describe("cli — ctk mcp 프로덕션 형태(CTK_CONFIG_DIR 미설정)", () => 
     const lines = formatMcpToggleSummary({ outcome: "applied", op: "disable", assetId: "x", projectHash8: "abcd1234", backupRef: "~/.ctk-backups/r", pendingApproval: true, concurrentWriteObserved: true, inverseCommand: "ctk mcp enable --asset x --project-hash h", warnings: [] }).join("\n");
     expect(lines).toContain("다른 세션이 .claude.json의 다른 부분도 바꿨다");
     expect(lines).toContain("Pending");
+    expect(lines).toContain("끈 서버는 세션이 띄우지 않는다");
+    expect(lines).not.toContain("Rejected");
     expect(lines).toContain("재시작");
+    const enableLines = formatMcpToggleSummary({ outcome: "applied", op: "enable", assetId: "x", projectHash8: "abcd1234", backupRef: "~/.ctk-backups/r", pendingApproval: true, concurrentWriteObserved: false, inverseCommand: "ctk mcp disable --asset x --project-hash h", warnings: [] }).join("\n");
+    expect(enableLines).toContain("Rejected");
+    expect(enableLines).not.toContain("Pending");
   });
 
   it("마지막 — 카탈로그 파일·git 이력·화면 출력 어디에도 임시 HOME 경로(및 mkdtemp 접미사)가 없다", async () => {

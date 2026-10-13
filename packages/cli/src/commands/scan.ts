@@ -230,6 +230,14 @@ export async function runScan(options: RunScanOptions = {}): Promise<ScanSummary
       );
     }
 
+    // `.mcp.json`이 있는데 못 읽은 프로젝트 — "파일 없음"과 같은 화면이면 서버가 조용히 사라진다. 경로는 싣지 않고 해시 접두만 싣는다.
+    if (collected.mcp.unreadableMcpJsonProjectHashes.length > 0) {
+      warnings.push(
+        `프로젝트 .mcp.json ${collected.mcp.unreadableMcpJsonProjectHashes.length}건을 읽거나 파싱하지 못했다(프로젝트 #${collected.mcp.unreadableMcpJsonProjectHashes.map((h) => h.slice(0, 8)).join(", #")}) — ` +
+          `그 파일의 서버는 이번 스냅샷에 없다. 파일이 유효한 JSON인지·읽을 수 있는 일반 파일인지 확인한다.`,
+      );
+    }
+
     // 보안 재심 L-3 — **막는 것과 보이는 것은 다른 축이다.** M-1 방어가 FIFO를 막고 있었지만
     // 그 사실은 어디에도 드러나지 않아 "SKILL.md 없음"(정상)과 같은 화면이었다.
     if (collected.skills.notRegularFileSkipped > 0) {
