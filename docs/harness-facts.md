@@ -1767,8 +1767,24 @@ ctk rollback --last                                 EXIT=1   FAIL mcp_toggle_ref
 - **미측정**: 대화형 세션(Pending 서버에 승인 프롬프트를 띄우는지·띄우기 전 기동 여부) · trust의 상위 디렉터리 상속 ·
   거부만 있는 경우·저장소 간 교차 조합 · `enableAllProjectMcpServers`.
 
+### 실행 중 세션은 외부 변경을 덮어쓰지 않는다 — L3 (2026-10-13, 과금 0)
+
+- **관측 방법**: `CLAUDE_CONFIG_DIR=$T/cfg`(실제 `~/.claude.json` 불사용)로 tmux 안에서 **대화형** 세션을 띄웠다. 프롬프트는 보내지 않고 슬래시 명령(`/mcp`·`/exit`)만 썼다(세션 기록 확인, `lastCost` 0·토큰 0). user 스코프 합성 stdio 서버 `srv-a`(실행되면 마커), local 스코프 `keymaker`(프로젝트 키 생성용). 세션이 떠 있는 동안 빌드된 `ctk mcp disable|enable`로 같은 파일을 바꿨다. CLI 2.1.296.
+
+| 경로 | 세션이 본 상태 | ctk가 쓴 뒤 파일 | 세션 동작 뒤 파일 |
+|---|---|---|---|
+| 종료(`/exit`) — 같은 프로젝트 항목에 키 19개(`last*` 통계·`lastSessionId` 등)와 최상위 `tips*`를 씀 | `srv-a` 켜짐 | `["srv-a"]` | `["srv-a"]` (보존) |
+| 세션 `/mcp`로 `keymaker` 끄기 — 세션 화면은 `srv-a` 꺼짐(낡음) | `["srv-a"]` | `[]` (ctk enable) | `["keymaker"]` (낡은 `srv-a` 되살리지 않음) |
+| 세션 `/mcp`로 `keymaker` 켜기 — 세션 화면은 `srv-a` 켜짐(낡음) | `["keymaker"]` | `["keymaker","srv-a"]` (ctk disable) | `["srv-a"]` (ctk 변경 보존) |
+
+- 30초 유휴 동안 세션은 파일을 쓰지 않았다.
+- **파급**:
+  - ① 하네스는 `.claude.json`을 **현재 파일을 다시 읽어 합쳐 쓴다**(메모리 사본으로 통째 덮어쓰지 않는다) — 관측한 세 경로에서 lost update는 없었다.
+  - ② 단 세션의 **화면은 낡은 채로 남는다**(`/mcp`가 외부 변경을 반영하지 않았다). 이미 뜬 서버가 그 자리에서 내려가는지는 재지 않았다 — 그래서 재시작 안내(결정 D1)는 여전히 필요하다. 근거가 "덮어쓸 수 있어서"에서 "실행 중 세션은 변경을 모른다"로 바뀐다.
+  - ③ 이 실측은 파일 쓰기 축이다. 같은 순간에 두 프로세스가 쓰는 경쟁(ctk의 CAS 창)은 재지 않았다.
+- **인증 격리 주의(관측)**: 빈 `CLAUDE_CONFIG_DIR`에서도 `auth status`가 `loggedIn: true`(`oauth_token`)였고 세션 배너는 **API Usage Billing**이었다 — 자격 증명은 config dir 밖에서 온다. 그래서 격리 dir 세션에 프롬프트를 보내면 과금된다. 이 자격 증명은 claude.ai 구독이 아니라서 동기화(`synced`) 플러그인이 내려오지 않았다(`plugins/` 아래 `synced` 없음) → synced 미측정은 그대로다.
+
 ### 미측정
 
-- 하네스가 **동기화(`synced`) 플러그인**에 대해 `disabledMcpServers`의 `plugin:<n>:<s>`를 따르는가.
-- 실행 중인 세션이 외부에서 바뀐 `disabledMcpServers`를 **덮어쓰는가**(lost update · L3). 대화형 세션이 필요해
-  이번 범위에서는 재지 못했다. 그래서 ctk는 실행 중 세션을 검사하지 않고 매번 재시작 안내만 출력한다(결정 D1).
+- 하네스가 **동기화(`synced`) 플러그인**에 대해 `disabledMcpServers`의 `plugin:<n>:<s>`를 따르는가. (격리 dir의 자격 증명이 구독이 아니라 동기화 플러그인이 내려오지 않았다 — 구독 로그인이 필요하다)
+- 두 프로세스가 같은 순간에 `.claude.json`을 쓰는 경쟁(ctk CAS 창과 세션 쓰기의 겹침) — 위 L3는 순차 실측이다.
