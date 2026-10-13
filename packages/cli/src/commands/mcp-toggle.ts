@@ -141,12 +141,12 @@ export async function runMcpToggle(options: McpToggleOptions): Promise<McpToggle
     const asset: Asset | undefined = entry === undefined ? undefined : assetFromIndexRow(entry);
 
     // 독립 서버의 정의 행. **이 머신의 행만** 넘긴다 — 판정 입력의 `Pick`에는 machine_id가 없어, 다른 머신의 행이 섞이면 조용히 통과한다.
-    const installations =
-      asset?.kind === "mcp" && asset.parent_asset_id === undefined
-        ? collectMcp({ home, machineId: machine.machine_id, installedPluginNames: new Set() }).installations.filter(
-            (i) => i.machine_id === machine.machine_id,
-          )
-        : [];
+    // 자산이 카탈로그에 없을 때도 읽는다 — 깨진 `.mcp.json`이 서버를 지워 자산이 없어졌을 수 있다(아래 mcp_json_unreadable).
+    const collected =
+      asset === undefined || (asset.kind === "mcp" && asset.parent_asset_id === undefined)
+        ? collectMcp({ home, machineId: machine.machine_id, installedPluginNames: new Set() })
+        : null;
+    const installations = asset === undefined ? [] : (collected?.installations.filter((i) => i.machine_id === machine.machine_id) ?? []);
 
     // 플러그인 서버: 부모의 설치 스코프(D7)와 번들 서버 목록. claude 서브프로세스는 띄우지 않는다.
     let installedPlugins: InstalledPluginRef[] = [];
@@ -171,7 +171,17 @@ export async function runMcpToggle(options: McpToggleOptions): Promise<McpToggle
     }
 
     const target = resolveMcpToggleTarget({ assetId, asset, projectPathHash: projectHash, installations, installedPlugins, bundledMcpAssetIds });
-    if (!target.ok) throw new McpToggleRefusedError(target.reason, target.hint);
+    if (!target.ok) {
+      // 이 프로젝트의 .mcp.json을 못 읽었다면 "정의돼 있지 않다"는 거짓 사유다 — 못 읽은 사실을 먼저 말한다.
+      const undefinedHere = target.reason === "not_defined_for_project" || (target.reason === "not_mcp" && asset === undefined);
+      if (undefinedHere && collected?.unreadableMcpJsonProjectHashes.includes(projectHash) === true) {
+        throw new McpToggleRefusedError(
+          "mcp_json_unreadable",
+          "이 프로젝트의 .mcp.json을 읽거나 파싱하지 못했다 — 그 파일에 정의된 서버는 판정할 수 없어 쓰지 않았다. 파일을 고친 뒤 `ctk scan`을 다시 실행한다.",
+        );
+      }
+      throw new McpToggleRefusedError(target.reason, target.hint);
+    }
 
     const result: ApplyMcpToggleOutcome = applyMcpToggle({ home, projectKey: key, name: target.harnessName, op });
     rec.outcome = result.outcome;
@@ -339,7 +349,12 @@ export function formatMcpToggleSummary(s: McpToggleSummary): string[] {
       : [`ctk mcp ${s.op} 완료 — ${s.assetId}를 프로젝트 #${s.projectHash8}에서 ${verb}했다.`, `  백업: ${s.backupRef}`];
   lines.push(`  ${RESTART_NOTICE}`);
   if (s.pendingApproval) {
-    lines.push("  ⚠️ 이 서버는 프로젝트 .mcp.json 정의라 승인 전이면 'Pending' 상태일 수 있다 — 토글은 승인과 별개 축이다.");
+    // 헤드리스 실측(CLI 2.1.296): 승인 전 서버는 표시가 Pending이어도 뜨고, 끈 서버는 안 뜬다. 거부(disabledMcpjsonServers)된 서버는 켜도 안 뜬다.
+    lines.push(
+      s.op === "disable"
+        ? "  ⚠️ 이 서버는 프로젝트 .mcp.json 정의다 — 승인 전이면 표시는 'Pending'으로 남지만, 끈 서버는 세션이 띄우지 않는다(헤드리스 실행 실측)."
+        : "  ⚠️ 이 서버는 프로젝트 .mcp.json 정의다 — `claude mcp get`이 'Rejected'로 보이면 켜도 뜨지 않는다. ctk는 승인 설정을 읽거나 바꾸지 않는다.",
+    );
   }
   if (s.concurrentWriteObserved) {
     lines.push("  ⚠️ 쓰는 동안 다른 세션이 .claude.json의 다른 부분도 바꿨다(우리 변경은 보존됐다).");

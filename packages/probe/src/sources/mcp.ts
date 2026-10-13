@@ -58,6 +58,11 @@ export interface McpSourceResult {
    * 이제 그 서버 하나만 건너뛰고 건수를 올린다(안전 원칙 6 — 빠져나갈 길을 남긴다).
    */
   unsafeNamesSkipped: number;
+  /**
+   * `.mcp.json`이 **있는데 읽거나 파싱하지 못한** 프로젝트의 path_hash(원경로 아님). 파일 없음(ENOENT)은 여기 안 든다.
+   * ⚠️ 깨진 파일을 "파일 없음"으로 삼키면 그 서버들이 조용히 사라지고, `ctk mcp`가 엉뚱한 사유로 거부한다(안전 원칙 7).
+   */
+  unreadableMcpJsonProjectHashes: string[];
 }
 
 export interface CollectMcpOptions {
@@ -84,6 +89,7 @@ export function collectMcp(options: CollectMcpOptions): McpSourceResult {
     definitions.push({ name, installScope: "user", projectPath: null });
   }
 
+  const unreadableMcpJsonProjectHashes: string[] = [];
   const knownProjects = listKnownProjectPaths(home);
   for (const projectPath of knownProjects) {
     const projectEntry = claudeJson?.projects?.[projectPath];
@@ -91,16 +97,16 @@ export function collectMcp(options: CollectMcpOptions): McpSourceResult {
       definitions.push({ name, installScope: "local", projectPath });
     }
     const mcpJsonAbs = path.join(projectPath, ".mcp.json");
-    let mcpJsonRaw: unknown = null;
     try {
-      mcpJsonRaw = JSON.parse(readFileSync(mcpJsonAbs, "utf8")) as unknown;
-    } catch {
-      // 파일 없음 — 정상(프로젝트에 .mcp.json이 없을 수 있다).
-    }
-    if (mcpJsonRaw !== null) {
-      const mcpJson = parseMcpJsonFile(mcpJsonRaw);
+      const mcpJson = parseMcpJsonFile(JSON.parse(readFileSync(mcpJsonAbs, "utf8")) as unknown);
       for (const name of Object.keys(mcpJson.mcpServers ?? {})) {
         definitions.push({ name, installScope: "project", projectPath });
+      }
+    } catch (err) {
+      // 파일 없음만 정상(프로젝트에 .mcp.json이 없을 수 있다). 그 외(권한·디렉터리·깨진 JSON·잘못된 모양)는
+      // "없음"이 아니라 "못 읽음"이다 — 던지지 않고(프로젝트 하나가 scan 전체를 죽이면 안 된다) 해시만 남긴다.
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        unreadableMcpJsonProjectHashes.push(normalizePath(projectPath, home.ctkHome).path_hash);
       }
     }
   }
@@ -229,5 +235,5 @@ export function collectMcp(options: CollectMcpOptions): McpSourceResult {
     mcp_state_source: draft.mcp_state_source,
   }));
 
-  return { assets: [...assetByName.values()], installations, toggles, unsafeNamesSkipped };
+  return { assets: [...assetByName.values()], installations, toggles, unsafeNamesSkipped, unreadableMcpJsonProjectHashes };
 }

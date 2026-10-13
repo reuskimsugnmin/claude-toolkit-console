@@ -1652,7 +1652,7 @@ skill 양쪽에 있으나 **문서가 `Skill(...)`로 적어 둔 덕에 kind가 
   `hasTrustDialogAccepted`를 `false`에서 `true`로 바꾸자 승인이 적용됐다. user 설정의 승인은 trust와 무관했다.
 - **플러그인 서버**: `disabledMcpServers`에서 **`plugin:<plugin>:<server>`** 형태만 매칭된다. 베어 서버명은 무효다
   (합성 로컬 마켓플레이스 플러그인으로 관측).
-- **파급**: 승인 축 쓰기는 "썼다 ≠ 적용됐다"다 — 쓴 뒤 검증이 필요하다. 이번 R7 범위는 승인 축을 쓰지 않는다
+- **파급**: 승인 축 쓰기는 "썼다 ≠ 적용됐다"다 — 쓴 뒤 검증이 필요하다. `Pending`은 표시일 뿐 미기동이 아니다 — 아래 「실행 시점 확인 — 승인 대기(Pending)」 절. 이번 R7 범위는 승인 축을 쓰지 않는다
   (`disabledMcpServers` 한 키만 쓴다).
 
 ### 프로젝트 키 — 틀리면 조용한 no-op
@@ -1737,6 +1737,35 @@ ctk rollback --last                                 EXIT=1   FAIL mcp_toggle_ref
 - **파급**: `mcp get`의 표시만이 아니라 **실행 시점에도** ctk가 쓴 `disabledMcpServers`가 지켜진다. 이 확인에는
   모델 호출이 필요 없다 — 서버 기동은 인증 전에 일어난다(무료로 반복 가능). `HOME`까지 바꾼 격리 홈은
   로그인되지 않은 상태였다(`auth status` → `loggedIn: false`).
+
+### 실행 시점 확인 — 승인 대기(Pending)는 "안 뜬다"가 아니다 (2026-10-13, 과금 0)
+
+- **관측 방법**: `env -i HOME=$T/home`으로 격리 홈을 만들고 로그아웃을 확인한다(`auth status` → `loggedIn: false`,
+  로그인 상태면 중단하는 가드). git으로 초기화한 합성 프로젝트의 `.mcp.json`에 합성 stdio 서버를 둔다. 실행되면
+  마커 파일을 만든다. 매 행에 user 스코프 대조군 서버를 함께 두었고, 대조군은 모든 행에서 떴다.
+  `claude mcp get` 뒤에 마커를 지우고 `claude -p`(헤드리스) 실행으로 서버 기동 여부만 마커로 판정했다.
+  CLI 2.1.296, `total_cost_usd` 0, 행당 1–5초. 실험 뒤 임시 디렉터리를 삭제했다.
+
+| 설정 | `mcp get` 표시 | `get`이 띄움 | `-p`에서 뜸 |
+|---|---|---|---|
+| 미승인 | Pending | 아니요 | **예** |
+| 미승인 + `disabledMcpServers` | Pending | 아니요 | 아니요 |
+| 승인(trust true, local `enabledMcpjsonServers`) | 연결 시도(Failed to connect — 합성 서버가 즉시 종료) | 예 | 예 |
+| 승인 + `disabledMcpServers` | Disabled for this project | 아니요 | 아니요 |
+| trust false + local 승인 | Pending | 아니요 | **예** |
+| 같은 저장소에 승인+거부 | Rejected | 아니요 | 아니요 |
+| git 루트 local 승인, 하위 디렉터리에서 실행 | 승인 표시 | 예 | 예 |
+
+- **도구 함정**: `claude mcp get`은 승인된 서버를 헬스체크로 **직접 띄운다.** 첫 실행에서 마커를 `get` 전에 지웠더니
+  `get`이 남긴 마커를 런타임 기동으로 오판해 모든 행이 "떴다"로 나왔다. 마커는 `get` **뒤에** 지운다.
+- **파급**:
+  - ① Pending은 표시 상태일 뿐이다. 헤드리스 실행에서는 뜬다 — "승인 전이라 안 뜬다"고 쓰면 틀린다.
+  - ② `disabledMcpServers`는 승인 상태와 무관하게 기동을 막는다. 그래서 `ctk mcp disable`은 `.mcp.json` 서버에도
+    실제로 효과가 있다(표시는 Pending으로 남을 수 있다).
+  - ③ 켜기(`enable`)에서 기동을 막는 것은 확인된 범위에서 **거부(Rejected)**뿐이다.
+  - ④ 하위 디렉터리에서 실행해도 git 루트의 local 설정이 표시에 적용됐다.
+- **미측정**: 대화형 세션(Pending 서버에 승인 프롬프트를 띄우는지·띄우기 전 기동 여부) · trust의 상위 디렉터리 상속 ·
+  거부만 있는 경우·저장소 간 교차 조합 · `enableAllProjectMcpServers`.
 
 ### 미측정
 

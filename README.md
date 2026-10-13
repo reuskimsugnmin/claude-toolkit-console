@@ -427,8 +427,8 @@ pnpm ctk mcp enable  --asset <자산id> [--project-hash <hex> | --project <경�
 - **되돌리기**: 쓰기 뒤에는 자동 되돌림이 없습니다. 출력되는 반대 명령(`enable` ↔ `disable`)을 씁니다.
   `pnpm ctk rollback --last`는 토글을 되돌리지 않고 거부하며 그 반대 명령을 안내합니다.
 - **범위**: `claude.ai` 커넥터와 `computer-use`는 거부합니다. 플러그인 MCP 서버는 그 프로젝트에 부모
-  플러그인이 설치돼 있을 때만 끌 수 있습니다. `.mcp.json`의 서버는 끌 수 있지만, 아직 승인되지 않았으면
-  `Pending`으로 표시되고 승인 설정은 바꾸지 않습니다.
+  플러그인이 설치돼 있을 때만 끌 수 있습니다. `.mcp.json`의 서버도 끌 수 있고, 끈 서버는 승인 전이라도 뜨지 않습니다
+  (표시는 `Pending`으로 남을 수 있습니다). `claude mcp get`에서 `Rejected`로 보이는 서버는 켜도 뜨지 않습니다. ctk는 승인 설정을 읽거나 바꾸지 않습니다.
 
 > ⚠️ **토글이 journal의 마지막 기록이면 `rollback --last`는 그보다 앞선 `move`를 되돌리지 못합니다.**
 > 이 경우 `rollback --last`는 토글 때문에 거부됩니다.
