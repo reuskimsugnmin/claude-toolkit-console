@@ -42,16 +42,21 @@ description: Find installed Claude Code tools (plugins, skills, MCP, CLI) for th
 
 ## 경로 규약
 
-카탈로그 루트 기준 상대 경로다. `<kind>`는 `plugin` · `skill` · `mcp` · `cli` 중 하나이고,
-`<name>`은 자산 이름이다.
+카탈로그 루트 기준 상대 경로다. `<kind>`는 `plugin` · `skill` · `mcp` · `cli` · `agent` · `command`
+중 하나다. 자산 디렉터리 이름은 `<name>__<hash8>`이다 — `<hash8>`은 자산 id에서 파생되므로
+**직접 만들지 않는다.** `catalog/assets/<kind>/<name>__*/asset.json`으로 Glob한 뒤 `asset.json`의
+`id`로 맞는 것을 고른다(같은 이름이 둘 이상일 수 있다 — 예: 독립 설치와 플러그인 번들).
 
 ```
-catalog/index.json                          전체 자산 인덱스
-catalog/assets/<kind>/<name>/asset.json     자산 정체 (id · kind · name · 출처 참조)
-catalog/assets/<kind>/<name>/annotation.md  언제 쓰는가 (role · purpose · when to use)
-catalog/assets/<kind>/<name>/usage.md       사용법 · 스폰 메타데이터
-catalog/assets/<kind>/<name>/occupancy.json 상시 점유 토큰 (3상태)
+catalog/index.json                                    전체 자산 인덱스
+catalog/assets/<kind>/<name>__<hash8>/asset.json      자산 정체 (id · kind · name · description · 부모 · 출처 참조)
+catalog/assets/<kind>/<name>__<hash8>/annotation.md   언제 쓰는가 (role · purpose · when to use)
+catalog/assets/<kind>/<name>__<hash8>/usage.md        사용법 · 스폰 메타데이터
+catalog/assets/<kind>/<name>__<hash8>/occupancy.json  상시 점유 토큰 (3상태)
 ```
+
+`agent` · `command`와 `parent_asset_id`가 있는 `skill` · `mcp`는 **플러그인이 번들한 하위 툴**이다.
+부르는 이름은 보통 `<플러그인 이름>:<이름>` 형태다(`usage.md`가 있으면 그 값을 따른다).
 
 ## `index.json` 스키마
 
@@ -61,9 +66,10 @@ catalog/assets/<kind>/<name>/occupancy.json 상시 점유 토큰 (3상태)
   "assets": [
     {
       "id": "<자산 id>",
-      "kind": "plugin|skill|mcp|cli",
+      "kind": "plugin|skill|mcp|cli|agent|command",
       "name": "<자산 이름>",
-      "gen_state": "fresh|stale|failed",
+      "parent_asset_id": "<번들한 플러그인 id — 하위 툴에만>",
+      "gen_state": "fresh|pending|stale|policy_blocked",
       "gen_content_sha256": "<생성 시점 원본 해시>"
     }
   ]
@@ -75,16 +81,20 @@ catalog/assets/<kind>/<name>/occupancy.json 상시 점유 토큰 (3상태)
 정보만 쓴다. 필드가 없는 것을 실패로 읽지 않는다.
 
 `gen_state`가 `stale`이면 원본이 바뀐 뒤 문서를 다시 만들지 않은 상태다. 그 문서를 쓰되
-오래됐을 수 있음을 함께 알린다.
+오래됐을 수 있음을 함께 알린다. `policy_blocked`는 원문이 파괴적 명령 등을 담아 **문서 생성을
+의도적으로 막은** 자산이다 — 문서가 없으므로 `asset.json`의 `description`(원문 그대로)을 쓴다.
+번들 하위 툴은 대부분 문서가 없다(생성은 플러그인 단위로 명시할 때만 한다) — 역시 `description`을 쓴다.
 
 ## 검색 절차
 
 1. **후보 좁히기** — `catalog/index.json`을 읽어 자산 목록을 얻는다. 인덱스에는 이름과 종류만
    있고 설명은 없다. 설명은 문서에 있다.
 2. **본문 검색** — `annotation.md` 전체를 대상으로 상황 키워드를 Grep한다. `annotation.md`의
-   `## When to use` 절이 "어떤 상황에 쓰는가"의 답이다.
+   `## When to use` 절이 "어떤 상황에 쓰는가"의 답이다. 문서가 없는 자산이 많으므로
+   **`asset.json`의 `description`도 같은 키워드로 함께 검색한다.**
    ```
    Grep(pattern="<상황 키워드>", path="<카탈로그 루트>/catalog/assets", glob="**/annotation.md", output_mode="files_with_matches")
+   Grep(pattern="<상황 키워드>", path="<카탈로그 루트>/catalog/assets", glob="**/asset.json", output_mode="files_with_matches")
    ```
    한 번에 맞지 않으면 동의어와 상위 개념으로 다시 검색한다. 인덱스의 `name`만 보고 판단하지
    않는다 — 이름은 무엇을 하는지 알려주지 않는다.
@@ -108,7 +118,12 @@ machines/<machine_id>/snapshots/<iso8601>.jsonl    가장 최근 파일이 현�
 없으면 이 로컬은 아직 스냅샷을 push하지 않은 것이고, 그때는 **"설치 여부 미확인"이지
 "미설치"가 아니다.**
 
-JSONL 각 행이 레코드 하나다. `Installation` 레코드가 자산별 스코프와 활성 여부를 담는다.
+JSONL 각 행이 레코드 하나다. `Installation` 레코드(`asset_id`·`install_scope`·`enabled_at`)가
+자산별 스코프와 활성 여부를 담는다.
+
+**번들 하위 툴(`parent_asset_id`가 있는 자산)은 `Installation` 레코드가 없다 — 부모 플러그인의
+레코드를 따른다.** 부모가 이 로컬에 설치돼 있으면 하위 툴도 설치돼 있고, 활성 여부도 부모와 같다.
+하위 툴의 레코드가 없다는 이유로 "미설치"라고 답하지 않는다. 부모 레코드도 없을 때만 미설치다.
 다른 머신의 디렉터리도 같은 자리에 있지만, 그 값은 **그 머신이 마지막으로 기록한 시점**의
 것이며 현재 상태가 아니다. 이 로컬의 답과 섞지 않는다.
 
@@ -116,7 +131,8 @@ JSONL 각 행이 레코드 하나다. `Installation` 레코드가 자산별 스�
 
 카탈로그에 맞는 툴이 없으면 **없다고 말한다.** 비슷해 보이는 것을 대신 제안하기 전에, 그것이
 질의와 어떻게 다른지 먼저 밝힌다. 문서가 생성되지 않은 자산(`gen_state` 부재)이 답일 수도
-있으므로, 검색 결과가 비면 `asset.json`의 `description`까지 훑은 뒤에 없다고 판단한다.
+있으므로, 검색 결과가 비면 `asset.json`의 `description`까지 훑은 뒤에 없다고 판단한다(검색 절차 2가
+이미 둘 다 본다).
 
 **카탈로그 밖으로 나가지 않는다.** 이 스킬이 답하는 질문은 "**이 로컬에 무엇이 있나**"이지
 "이 일에 일반적으로 무엇이 좋은가"가 아니다. 카탈로그에 없으면 **없다는 것이 답이다.**
