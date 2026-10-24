@@ -238,7 +238,10 @@ function verifyRestoredDirectory(absPath: string, entry: Extract<BackupEntry, { 
   }
 }
 
-function isSymlink(abs: string): boolean {
+/**
+ * 복원기가 거부할 대상인가 — `move`가 쓰기 전에 같은 판정으로 거부한다(판정이 둘이면 이동은 되고 복원만 막힌다).
+ */
+export function isSymlink(abs: string): boolean {
   return lstatSync(abs, { throwIfNoEntry: false })?.isSymbolicLink() === true;
 }
 

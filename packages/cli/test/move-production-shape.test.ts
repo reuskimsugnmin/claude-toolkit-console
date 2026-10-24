@@ -262,6 +262,52 @@ describe("cli — ctk move 프로덕션 형태(CTK_CONFIG_DIR 미설정, 실제 
     expect(lastRunLog("rollback").args).toMatchObject({ claude_json: "violation", claude_json_mcp_forbidden: false });
   });
 
+  // 실측(CLI 2.1.310): user 링크는 claude가 따라 쓰고 project 링크는 거부한다 — 어느 쪽이든 복원기는 링크를 거부하므로
+  // 진행하면 반쯤 적용된 이동이 남는다. 그래서 쓰기 전에 막는다(백업 런·조치·run-log 외 쓰기 0건).
+  it.each([
+    ["from(user)", () => settingsAbs],
+    ["to(project)", () => toSettingsAbs],
+  ] as const)("(ii-a3) %s settings가 처음부터 링크면 백업 전에 거부한다 — 조치 0건 · 링크 보존", async (_label, target) => {
+    await setupPluginMove();
+    let applied = false;
+    hooks.pluginApply = () => {
+      applied = true;
+    };
+    const linkAbs = target();
+    const pointee = path.join(ctkHome, "dotfiles-settings.json");
+    writeFileSync(pointee, JSON.stringify({ enabledPlugins: { [PLUGIN]: true } }), "utf8");
+    rmSync(linkAbs, { force: true });
+    mkdirSync(path.dirname(linkAbs), { recursive: true });
+    symlinkSync(pointee, linkAbs);
+    const pointeeBefore = read(pointee);
+
+    const err = await runMove({ assetId: PLUGIN, to: "project", toProjectIndex: 0 }).catch((e: unknown) => e as Error);
+
+    expect((err as Error).name).toBe("SettingsSymlinkMoveError");
+    expect((err as Error).message).not.toContain(ctkHome);
+    expect(applied).toBe(false);
+    expect(existsSync(path.join(ctkHome, ".ctk-backups"))).toBe(false);
+    expect(lstatSync(linkAbs).isSymbolicLink()).toBe(true);
+    expect(read(pointee)).toBe(pointeeBefore);
+    expect(lastRunLog("move").failure_class).toBe("settings_symlink");
+  });
+
+  it("(ii-a4) 웹 이동 액션 — settings 링크 거부는 bad_request다", async () => {
+    await setupPluginMove();
+    const pointee = path.join(ctkHome, "dotfiles-settings.json");
+    writeFileSync(pointee, "{}", "utf8");
+    rmSync(settingsAbs);
+    symlinkSync(pointee, settingsAbs);
+    const { createActionHandlers } = await import("../src/commands/web-actions.js");
+
+    const err = (await createActionHandlers()
+      .move({ asset_id: PLUGIN, action: "move", to: "project", to_project_index: 0 })
+      .catch((e: unknown) => e)) as { code?: string; message: string };
+
+    expect(err.code).toBe("bad_request");
+    expect(err.message).toContain("심볼릭 링크");
+  });
+
   it("(v-b) `ctk rollback --last` — 복원 대상이 링크로 바뀌어 있으면 거부하고 백업 위치·처방을 붙인다(run-log는 전용 클래스)", async () => {
     await setupPluginMove();
     hooks.verifyPasses = true;
