@@ -64,8 +64,54 @@ function readFlagValues(args: string[], flag: string): string[] {
   return values;
 }
 
+/**
+ * 명령별로 받는 `--플래그`. 쓰기 명령 밖의 명령은 모르는 인자를 무시했다 — `ctk scan --help`가 도움말 대신 실제 scan을 돌아
+ * 카탈로그에 스냅샷을 남겼다. 여기 없는 `--` 토큰은 실행 전에 거부한다. 새 플래그를 읽으면 여기에도 넣는다(빠지면 그 플래그가 거부된다).
+ * ponytail: `--`로 시작하는 플래그 값(예: 대시로 시작하는 `--query` 문자열)도 거부된다 — 필요해지면 값 플래그를 구분한다.
+ */
+const KNOWN_FLAGS: Readonly<Record<string, readonly string[]>> = {
+  init: ["--catalog", "--machine-alias"],
+  scan: [],
+  doctor: ["--drift", "--force", "--managed-policy", "--unlock"],
+  web: ["--actions", "--export-view-model", "--no-projects", "--open", "--port"],
+  verify: ["--installed-plugin-command", "--max-budget-usd", "--skill", "--timeout-sec"],
+  move: ["--asset", "--from-project-index", "--from", "--project-index", "--to"],
+  rollback: ["--last"],
+  mcp: ["--asset", "--project-hash", "--project"],
+  measure: ["--no-credentials-ok", "--transcripts"],
+  gen: [
+    "--allow-concurrent-sessions", "--allow-managed-policy", "--dry-run", "--max-assets", "--max-budget-usd", "--no-llm",
+    "--plugin", "--resume", "--retry-blocked", "--timeout-sec", "--upgrade-rule-extract", "--yes",
+  ],
+  "agent-probe": ["--catalog", "--machine-id", "--max-budget-usd", "--model", "--query", "--skill", "--timeout-sec"],
+  usage: ["--json", "--unused-expensive"],
+  "workflow-doc": ["--check", "--write"],
+};
+
+/** 실행 전 관문 — 도움말이면 0, 모르는 플래그면 1, 통과면 `null`. */
+function preflightArgs(command: string | undefined, rest: readonly string[]): number | null {
+  if (command === undefined || !Object.hasOwn(KNOWN_FLAGS, command)) return null;
+  const known = KNOWN_FLAGS[command]!;
+  const usage = `사용법: ctk ${command}${known.length > 0 ? ` [${known.join(" | ")}]` : " (플래그 없음)"}`;
+  if (rest.includes("--help") || rest.includes("-h")) {
+    console.log(usage);
+    return 0;
+  }
+  const unknown = rest.filter((t) => t.startsWith("-") && !known.includes(t));
+  if (unknown.length === 0) return null;
+  console.error(`FAIL unknown_flag: ${printable(unknown.join(" "))} — 아무것도 실행하지 않았다`);
+  console.error(usage);
+  return 1;
+}
+
 async function main(): Promise<void> {
   const [command, ...rest] = process.argv.slice(2);
+
+  const preflight = preflightArgs(command, rest);
+  if (preflight !== null) {
+    process.exitCode = preflight;
+    return;
+  }
 
   try {
     switch (command) {
