@@ -49,6 +49,16 @@ export interface RunAgentProbeCliOptions {
  * **못 읽은 것을 "0원"으로 말하지 않는다**(안전 원칙 7). 그리고 **요청한 모델과 실제 태운
  * 모델이 다르면 그것을 드러낸다** — 다르면 이 진단 결과는 의도한 모집단의 것이 아니다.
  */
+/**
+ * 요청한 모델을 실제로 태웠는가. 요청은 보통 별칭(`sonnet`)이고 봉투는 전체 id(`claude-sonnet-5-5`)를 실어 와서,
+ * 문자열 일치로 보면 같은 모델을 늘 "다르다"고 냈다(실측 2026-10-25). 별칭은 `claude-<별칭>-` 접두로만 맞춘다 —
+ * `sonnet`이 `claude-opus-…`에 맞으면 안 된다.
+ */
+export function modelMatchesRequest(requested: string, observed: string): boolean {
+  if (observed === requested) return true;
+  return !requested.startsWith("claude-") && observed.startsWith(`claude-${requested}-`);
+}
+
 export function describeProbeCost(result: {
   reportedCostUsd: number | null;
   provenance: { model: string | null; inputTokens: number | null; outputTokens: number | null };
@@ -62,8 +72,8 @@ export function describeProbeCost(result: {
   const model =
     observed === null
       ? `모델: 요청 ${result.requestedModel} · 실측 판정불가`
-      : observed === result.requestedModel
-        ? `모델: ${observed}`
+      : modelMatchesRequest(result.requestedModel, observed)
+        ? `모델: ${observed}${observed === result.requestedModel ? "" : `(요청 ${result.requestedModel})`}`
         : `모델: 요청 ${result.requestedModel} · **실제 ${observed}** ⚠️ 다르다`;
   const tokens =
     result.provenance.inputTokens === null && result.provenance.outputTokens === null

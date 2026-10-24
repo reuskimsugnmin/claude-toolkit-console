@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeProbeCost } from "../src/commands/agent-probe.js";
+import { describeProbeCost, modelMatchesRequest } from "../src/commands/agent-probe.js";
 
 /**
  * cli/test/probe-cost-display.test.ts — **진단 1회의 지출과 모집단을 화면이 말하는가.**
@@ -12,7 +12,8 @@ import { describeProbeCost } from "../src/commands/agent-probe.js";
 
 const base = {
   reportedCostUsd: 0.0523,
-  provenance: { model: "sonnet", inputTokens: 100, outputTokens: 200 },
+  // 실측 봉투 형태 — 요청은 별칭, 봉투는 전체 id다. 둘을 같은 문자열로 둔 스텁이 오탐을 가렸다.
+  provenance: { model: "claude-sonnet-5-5", inputTokens: 100, outputTokens: 200 },
   requestedModel: "sonnet",
 };
 
@@ -22,6 +23,7 @@ describe("describeProbeCost", () => {
     expect(line).toContain("$0.0523");
     expect(line).toContain("sonnet");
     expect(line).toContain("입력 100");
+    expect(line, "별칭으로 요청한 같은 모델을 다르다고 하면 오탐이다").not.toContain("다르다");
   });
 
   // **"못 읽었다"와 "0원"은 다르다**(안전 원칙 7). 0으로 말하면 지출이 없었던 것으로 읽힌다.
@@ -36,12 +38,22 @@ describe("describeProbeCost", () => {
   it("요청한 모델과 실제 태운 모델이 다르면 드러낸다", () => {
     const line = describeProbeCost({
       ...base,
-      provenance: { ...base.provenance, model: "opus" },
+      provenance: { ...base.provenance, model: "claude-opus-5-5" },
       requestedModel: "sonnet",
     });
     expect(line).toContain("요청 sonnet");
     expect(line).toContain("opus");
     expect(line, "다르다는 사실 자체를 표시해야 한다").toContain("다르다");
+  });
+
+  it.each([
+    ["sonnet", "claude-sonnet-5-5", true],
+    ["claude-sonnet-5-5", "claude-sonnet-5-5", true],
+    ["sonnet", "claude-opus-5-5", false],
+    ["claude-sonnet-5-5", "claude-sonnet-5-1", false],
+    ["son", "claude-sonnet-5-5", false],
+  ] as const)("modelMatchesRequest(%s, %s) = %s", (requested, observed, expected) => {
+    expect(modelMatchesRequest(requested, observed)).toBe(expected);
   });
 
   it("모델을 못 읽으면 판정불가라고 말한다 — 요청값으로 추측하지 않는다", () => {
