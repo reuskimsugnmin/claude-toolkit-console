@@ -172,6 +172,7 @@ function renderUiHtml(nonce: string): string {
   .b-unknown { color: var(--warn-ink); background: var(--warn-bg); border-color: var(--warn-line); }
   .b-unset { color: var(--muted); border-style: dashed; }
   .muted { color: var(--muted); }
+  .desc { display: block; font-size: 12px; color: var(--muted); max-width: 60ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   a { color: var(--accent); }
   .toolbar { display: flex; gap: var(--space-3); align-items: center; margin-bottom: var(--space-2);
     flex-wrap: wrap; }
@@ -754,6 +755,15 @@ function assetRow(a, depth) {
     n.textContent = "(" + kids.length + ")";
     nameTd.appendChild(n);
   }
+  // 원문 frontmatter의 설명 한 줄. 생성 문서가 없는 자산(정책 차단·미생성·번들 자식)도 무엇을 하는지 보이게 한다.
+  // 서드파티 원문이므로 textContent로만 넣는다.
+  if (a.description) {
+    const d = document.createElement("span");
+    d.className = "desc";
+    d.textContent = a.description;
+    d.title = a.description;
+    nameTd.appendChild(d);
+  }
   tr.appendChild(nameTd);
 
   const kindTd = document.createElement("td");
@@ -935,6 +945,8 @@ function renderDetailMeta(asset) {
   add("종류").textContent = asset.kind;
   add("id").textContent = asset.id;
   if (asset.marketplace) add("마켓플레이스").textContent = asset.marketplace;
+  // 생성 문서(「언제 쓰는가」)와 출처가 다르다 — 라벨로 원문임을 밝힌다.
+  if (asset.description) add("설명 (원문 frontmatter)").textContent = asset.description;
 
   const list = installationsOf(asset);
   if (list === null) {
