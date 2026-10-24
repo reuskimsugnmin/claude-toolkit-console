@@ -51,7 +51,7 @@ export interface ApplyMcpToggleRequest {
   op: McpToggleOp;
 }
 
-export type McpToggleRefuseGuard = "lstat_absent" | "lstat_type" | "lstat_error" | "owner" | "read_failed" | "round_trip" | "plan" | "verdict";
+export type McpToggleRefuseGuard = "lstat_absent" | "lstat_type" | "hardlink" | "lstat_error" | "owner" | "read_failed" | "round_trip" | "plan" | "verdict";
 export type McpToggleAbortGuard = "backup_threw" | "backup_sha" | "cas_lstat" | "cas_sha" | "write_not_applied";
 
 export type ApplyMcpToggleOutcome =
@@ -106,7 +106,7 @@ export function isOwnedByCurrentUser(st: { uid: number }, currentUid: number | n
 
 type OpenedRegular =
   | { ok: true; bytes: Buffer; uid: number }
-  | { ok: false; guard: "lstat_absent" | "lstat_type" | "lstat_error" | "read_failed" };
+  | { ok: false; guard: "lstat_absent" | "lstat_type" | "hardlink" | "lstat_error" | "read_failed" };
 
 /**
  * 링크를 따르지 않고(O_NOFOLLOW) **연 fd 하나**로 종류 확인·읽기를 한다 — lstat 뒤 경로로 다시 읽으면 그 사이 바꿔치기된
@@ -123,6 +123,8 @@ function readRegularNoFollow(abs: string): OpenedRegular {
   try {
     const st = fstatSync(fd);
     if (!st.isFile()) return { ok: false, guard: "lstat_type" };
+    // 하드링크면 rename 쓰기가 링크를 끊어 다른 사본(dotfiles)이 조용히 낡는다 — move의 config_hardlink와 같은 이유.
+    if (st.nlink > 1) return { ok: false, guard: "hardlink" };
     return { ok: true, bytes: readFileSync(fd), uid: st.uid };
   } catch {
     return { ok: false, guard: "read_failed" };

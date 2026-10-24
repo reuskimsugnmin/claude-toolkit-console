@@ -1,6 +1,7 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { collectTree } from "@ctk/probe";
+import { describePath } from "../guard/atomic-write.js";
 
 /**
  * actuator/src/apply/skill-dir.ts — 스킬 디렉터리 이동 (결정 6C: 6B, CLI 없음).
@@ -53,12 +54,12 @@ function verifyDirectoryContentsMatch(sourceAbs: string, destAbs: string): void 
   const destByPath = new Map(destFiles.map((f) => [f.path, f.sha256]));
   if (destFiles.length !== sourceFiles.length) {
     throw new SkillDirMoveError(
-      `이동 후 검증 실패 — 파일 개수 불일치(source=${sourceFiles.length}, dest=${destFiles.length}): ${destAbs}`,
+      `이동 후 검증 실패 — 파일 개수 불일치(source=${sourceFiles.length}, dest=${destFiles.length}): ${describePath(destAbs)}`,
     );
   }
   for (const f of sourceFiles) {
     if (destByPath.get(f.path) !== f.sha256) {
-      throw new SkillDirMoveError(`이동 후 검증 실패 — ${f.path}의 sha256 불일치: ${destAbs}`);
+      throw new SkillDirMoveError(`이동 후 검증 실패 — ${f.path}의 sha256 불일치: ${describePath(destAbs)}`);
     }
   }
 }
@@ -74,10 +75,10 @@ function verifyDirectoryContentsMatch(sourceAbs: string, destAbs: string): void 
  */
 export function moveSkillDir(sourceAbs: string, destAbs: string, renameFn: typeof renameSync = renameSync): SkillDirMoveResult {
   if (!existsSync(sourceAbs) || !statSync(sourceAbs).isDirectory()) {
-    throw new SkillDirMoveError(`이동할 스킬 디렉터리가 없다: ${sourceAbs}`);
+    throw new SkillDirMoveError(`이동할 스킬 디렉터리가 없다: ${describePath(sourceAbs)}`);
   }
   if (existsSync(destAbs)) {
-    throw new SkillDirMoveError(`대상 스킬 디렉터리가 이미 존재한다(조용한 덮어쓰기 금지): ${destAbs}`);
+    throw new SkillDirMoveError(`대상 스킬 디렉터리가 이미 존재한다(조용한 덮어쓰기 금지): ${describePath(destAbs)}`);
   }
   mkdirSync(path.dirname(destAbs), { recursive: true });
 
@@ -94,7 +95,7 @@ export function moveSkillDir(sourceAbs: string, destAbs: string, renameFn: typeo
   if (containsSymlink(sourceAbs)) {
     throw new SkillDirMoveError(
       `이동 대상 디렉터리에 심볼릭 링크가 있어 파일시스템 간 이동(EXDEV) 경로에서 안전하게 ` +
-        `검증할 수 없다(sha256 검증이 심볼릭 링크를 건너뛰므로 삭제 전 무결성을 보장 못 한다): ${sourceAbs}`,
+        `검증할 수 없다(sha256 검증이 심볼릭 링크를 건너뛰므로 삭제 전 무결성을 보장 못 한다): ${describePath(sourceAbs)}`,
     );
   }
   cpSync(sourceAbs, destAbs, { recursive: true });

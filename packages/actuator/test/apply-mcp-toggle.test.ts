@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -149,6 +149,14 @@ describe("actuator/apply/mcp-toggle — 프로덕션 형태(CTK_CONFIG_DIR 미�
       expect(applyMcpToggle(req())).toMatchObject({ outcome: "refused", failureClass: "mcp_toggle_refused", guard: "lstat_absent" });
       expect(existsSync(realAbs)).toBe(false);
       expect(readFileSync(decoyAbs, "utf8")).toBe(DECOY);
+      expect(runDirs()).toEqual([]);
+    });
+    it("시작 시 하드링크 → refused hardlink — rename 쓰기가 링크를 끊지 않게 쓰기 0건", () => {
+      const twin = path.join(root, "dotfiles-claude.json");
+      linkSync(realAbs, twin);
+      expect(applyMcpToggle(req())).toMatchObject({ outcome: "refused", failureClass: "mcp_toggle_refused", guard: "hardlink" });
+      expect(lstatSync(realAbs).nlink).toBe(2);
+      expect(read()).toBe(S0);
       expect(runDirs()).toEqual([]);
     });
     it("시작 시 심볼릭 링크 → refused lstat_type, 링크·대상 불변", () => {

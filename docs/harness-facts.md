@@ -1811,6 +1811,9 @@ ctk rollback --last                                 EXIT=1   FAIL mcp_toggle_ref
     user 설정이 링크면 이동은 성공하지만 나중의 `ctk rollback`이 거부된다.
   - ③ 그래서 `move`는 백업 전에 from/to settings에 복원기와 **같은 판정**(`isSymlink`, 말단 lstat)을 돌려 `settings_symlink`로
     거부한다(쓰기 0). `.claude.json`은 복원 대상이 아니라서 링크여도 막지 않는다.
+  - ⑤ **하드링크(같은 날 실측)**: `disable -s user`는 user `settings.json`을, `enable -s user`는 `.claude.json`(`pluginUsage`)을
+    임시 파일 → rename으로 써서 **링크를 끊는다**(nlink 2→1, inode 변경, 다른 사본은 옛 값). `disable`은 `.claude.json`을 쓰지 않았다.
+    그래서 `move`는 settings와 `.claude.json` 중 하나라도 하드링크면 `config_hardlink`로 거부한다. `ctk mcp`도 같은 이유로 거부한다(`hardlink` guard).
   - ④ 상위 `.claude`가 링크인 경우는 막지 않는다. enable은 실패하지만 말단 파일이 일반 파일이라 자체 롤백이 복원한다(판정이
     이동·복원 양쪽에서 같다). 남는 한계는 검사와 `claude` 실행 사이에 말단이 링크로 바뀌는 경우(TOCTOU, 같은 사용자의 동시 쓰기)다.
 
