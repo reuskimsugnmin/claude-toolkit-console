@@ -160,8 +160,13 @@ export async function runScan(options: RunScanOptions = {}): Promise<ScanSummary
       rmSync(tmpCwd, { recursive: true, force: true });
     }
 
+    // 플러그인 매니페스트의 원문 description을 플러그인 자산에 싣는다 — 경로 검증을 지난 번들 수집기가 읽은 값만 쓴다.
+    const pluginAssets = collected.plugins.assets.map((a) => {
+      const description = collected.bundled.parentDescriptions.get(a.id);
+      return description === undefined ? a : { ...a, description };
+    });
     const assets = mergeAssets(
-      collected.plugins.assets,
+      pluginAssets,
       collected.skills.assets,
       collected.mcp.assets,
       collected.cliTools.assets,
