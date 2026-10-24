@@ -15,6 +15,7 @@ import {
   ProjectListChangedError,
   SkillLocationAmbiguousError,
   UnregisteredPluginMoveError,
+  SettingsSymlinkMoveError,
 } from "./move.js";
 import { runRollback, InvalidBackupRefError, NoRollbackTargetError } from "./rollback.js";
 import { runGenCli, runGenDryRun } from "./gen.js";
@@ -185,6 +186,7 @@ function toActionError(err: unknown): unknown {
     err instanceof NoOpMoveError ||
     err instanceof SkillLocationAmbiguousError ||
     err instanceof UnregisteredPluginMoveError ||
+    err instanceof SettingsSymlinkMoveError ||
     err instanceof NoRollbackTargetError ||
     err instanceof InvalidBackupRefError ||
     err instanceof RestoreTargetSymlinkError

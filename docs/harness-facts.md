@@ -1694,6 +1694,7 @@ skill 양쪽에 있으나 **문서가 `Skill(...)`로 적어 둔 덕에 kind가 
 ### CLI의 쓰기 방식 — 흉내 낼 수 있는 것과 없는 것
 
 - **관측 (번들 판독)**: 임시파일 `.tmp.<pid>.<12 hex>` → rename, **심볼릭 링크 경유 쓰기를 거부**, 기존 권한을 보존한다.
+  ⚠️ 링크 거부는 실행으로 재 보니 **project·local 설정에만** 해당했다 — 아래 「`claude plugin`의 심볼릭 링크 설정 쓰기」.
   백업은 `<name>.backup.<epoch ms>`이고 일정 간격 이상일 때만 만들며 **최대 5개**를 유지한다.
   `storage_v5_backend` 문자열이 있어 설정 저장 백엔드가 바뀔 수 있다 — **`.claude.json`이 영구 정본이라는 보장은 없다.**
 - **파급**: 공용 `atomicWriteFile`(R7 이전)에는 심볼릭 링크 거부와 쓰기 직전 변경 감지(CAS)가 없었다.
@@ -1783,6 +1784,32 @@ ctk rollback --last                                 EXIT=1   FAIL mcp_toggle_ref
   - ② 단 세션의 **화면은 낡은 채로 남는다**(`/mcp`가 외부 변경을 반영하지 않았다). 이미 뜬 서버가 그 자리에서 내려가는지는 재지 않았다 — 그래서 재시작 안내(결정 D1)는 여전히 필요하다. 근거가 "덮어쓸 수 있어서"에서 "실행 중 세션은 변경을 모른다"로 바뀐다.
   - ③ 이 실측은 파일 쓰기 축이다. 같은 순간에 두 프로세스가 쓰는 경쟁(ctk의 CAS 창)은 재지 않았다.
 - **인증 격리 주의(관측)**: 빈 `CLAUDE_CONFIG_DIR`에서도 `auth status`가 `loggedIn: true`(`oauth_token`)였고 세션 배너는 **API Usage Billing**이었다 — 자격 증명은 config dir 밖에서 온다. 그래서 격리 dir 세션에 프롬프트를 보내면 과금된다. 이 자격 증명은 claude.ai 구독이 아니라서 동기화(`synced`) 플러그인이 내려오지 않았다(`plugins/` 아래 `synced` 없음) → synced 미측정은 그대로다.
+
+### `claude plugin`의 심볼릭 링크 설정 쓰기 — 스코프마다 다르다 (2026-10-25, CLI 2.1.310, 과금 0)
+
+- **관측 방법**: 격리 `HOME`·`CLAUDE_CONFIG_DIR`에 합성 마켓플레이스(`spikes/fixtures/.../synth-mp`)를 설치하고, 설정 파일을
+  격리 dir 밖 파일로 가는 링크로 바꾼 뒤 `claude --safe-mode plugin disable|enable -s <scope>`(ctk와 같은 프로파일)를 실행했다.
+  모델 호출은 없다.
+
+| 링크로 바꾼 파일 | 명령 | 결과 |
+|---|---|---|
+| user `settings.json` | `disable -s user` | EXIT=0 · 링크 유지 · **대상 파일이 바뀜**(따라 쓴다) |
+| `.claude.json` | `enable -s user` | EXIT=0 · 링크 유지 · 대상 파일이 바뀜 |
+| project `.claude/settings.json`(대상이 프로젝트 밖) | `enable -s project` | **EXIT=1** `SymlinkWriteRefusedError: Refusing to write through symlink` |
+| project `.claude/settings.json`(대상이 같은 디렉터리, 상대 링크) | `enable -s project` | **EXIT=1** 같은 거부 |
+| project `.claude/settings.local.json` | `enable -s local` | **EXIT=1** 같은 거부 |
+| project **`.claude` 디렉터리 자체**(설정 파일은 일반 파일) | `enable -s project` | **EXIT=1** `Refusing to write into symlinked directory` |
+
+- **파급**:
+  - ① 위 「CLI의 쓰기 방식」의 번들 판독("링크 경유 쓰기를 거부")은 **project·local 설정에만** 맞다. user 설정과 `.claude.json`은
+    링크를 따라 쓴다.
+  - ② 이 가드가 없을 때 `move`의 실패 경로: user→project 이동에서 project 설정이 링크면 user disable은 성공하고 project enable은
+    거부된다. 그다음 자체 롤백의 사전 패스가 링크를 보고 `restore_target_symlink`로 멈춘다. 결과는 **어디서도 켜지지 않은 반쯤 적용된 이동**이다.
+    user 설정이 링크면 이동은 성공하지만 나중의 `ctk rollback`이 거부된다.
+  - ③ 그래서 `move`는 백업 전에 from/to settings에 복원기와 **같은 판정**(`isSymlink`, 말단 lstat)을 돌려 `settings_symlink`로
+    거부한다(쓰기 0). `.claude.json`은 복원 대상이 아니라서 링크여도 막지 않는다.
+  - ④ 상위 `.claude`가 링크인 경우는 막지 않는다. enable은 실패하지만 말단 파일이 일반 파일이라 자체 롤백이 복원한다(판정이
+    이동·복원 양쪽에서 같다). 남는 한계는 검사와 `claude` 실행 사이에 말단이 링크로 바뀌는 경우(TOCTOU, 같은 사용자의 동시 쓰기)다.
 
 ### 미측정
 

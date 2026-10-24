@@ -18,6 +18,8 @@ import {
   readClaudeJsonRawOrNull,
   CLAUDE_JSON_BACKUP_KEY,
   ConfigClobberedError,
+  isSymlink,
+  describePath,
   RestoreTargetSymlinkError,
   RollbackFailedError,
   describeClaudeJsonLeftover,
@@ -203,6 +205,22 @@ export class UnregisteredPluginMoveError extends Error {
 }
 
 /**
+ * 백업할 설정 파일이 심볼릭 링크다. 실측(CLI 2.1.310): `claude plugin`은 user 설정 링크는 따라 쓰고 project·local 설정 링크는
+ * `SymlinkWriteRefusedError`로 거부한다. 어느 쪽이든 복원기는 링크를 거부하므로, 진행하면 이동이 반만 적용된 채 되돌릴 수 없다.
+ * 한계: 검사와 `claude` 실행 사이에 링크로 바뀌면(같은 사용자의 동시 쓰기) 막지 못한다 — 그때는 롤백의 `RestoreTargetSymlinkError` 처방이 받는다.
+ */
+export class SettingsSymlinkMoveError extends Error {
+  readonly failureClass = "settings_symlink" as const;
+  constructor(targetAbs: string) {
+    super(
+      `${describePath(targetAbs)}이(가) 심볼릭 링크라 이관하지 않습니다 — ctk는 링크를 복원할 수 없어 실패 시 되돌리지 못합니다. ` +
+        `아무것도 쓰지 않았습니다. 켜고 끄기는 /plugin으로 하세요.`,
+    );
+    this.name = "SettingsSymlinkMoveError";
+  }
+}
+
+/**
  * H3 — apply 이후 단계에서 실패하면 self-rollback을 시도하고, **그 결과와 무관하게** journal
  * 레코드를 남긴다(`rolled_back`이면 복원 성공, `failure`면 복원 자체도 실패 — `RollbackFailedError`
  * 원문이 그대로 cause 체인에 남는다. H3: "원래 실패 원인이 소실"되지 않게 한다).
@@ -365,12 +383,16 @@ async function movePluginAsset(
     if (registryScope === null) throw new UnregisteredPluginMoveError(options.assetId);
 
     // ---- 2. 백업(H4 — .claude.json도 함께 백업하고, before 스냅샷을 함께 저장한다) ----
-    const runId = snapshotIdFsSafe();
-    const { backupRoot } = beginBackupRun(home.ctkHome, runId);
     const fromSettingsAbs =
       fromScope === "user" ? path.join(configRoot, "settings.json") : path.join(fromProjectPath!, ".claude", "settings.json");
     const toSettingsAbs =
       toScope === "user" ? path.join(configRoot, "settings.json") : path.join(toProjectPath!, ".claude", "settings.json");
+    // 복원기와 같은 판정으로 쓰기 전에 거부한다. .claude.json은 복원 대상이 아니라(rollback이 제외) 링크여도 막지 않는다.
+    for (const abs of [fromSettingsAbs, toSettingsAbs]) {
+      if (isSymlink(abs)) throw new SettingsSymlinkMoveError(abs);
+    }
+    const runId = snapshotIdFsSafe();
+    const { backupRoot } = beginBackupRun(home.ctkHome, runId);
     const backupEntries: Record<string, ReturnType<typeof backupFile>> = {
       from_settings: backupFile(backupRoot, "from_settings", fromSettingsAbs),
       // H4 — `claude plugin disable/enable`이 실제로 건드리는 config_claude_json도 백업 대상에
