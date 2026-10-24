@@ -335,6 +335,10 @@ async function main(): Promise<void> {
             console.log(
               `  AC-3.1 상시 비용: 미측정(reason: ${report.budgetValue.reason}) — 상한 ${report.budgetTokens}과 비교하지 못했다`,
             );
+            // 원인 분류가 있으면 처방까지 낸다 — 분류만 보여 주면 사용자는 무엇을 고칠지 모른다(안전 원칙 6).
+            if (report.budgetValue.failure_kind !== undefined) {
+              console.log(`    ⚠️  ${report.budgetValue.failure_kind}: ${measurementFailureHint(report.budgetValue.failure_kind)}`);
+            }
           } else {
             console.log(`  AC-3.1 상시 비용: approx_bytes=${report.budgetValue.approx_bytes} (토큰 아님)`);
           }
