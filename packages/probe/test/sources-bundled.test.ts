@@ -163,7 +163,8 @@ describe("probe/sources/bundled — 플러그인 번들 스킬·커맨드·에�
     writeSkill(pluginDir, "alpha-skill", null);
 
     const result = collectBundled({ home: fixture.home, pluginIds: ["demo-plugin@synth-marketplace"] });
-    expect(Object.keys(result)).toEqual(["assets", "perParent"]);
+    // parentDescriptions는 부모 플러그인의 원문 설명(표시용)이다 — 자식 설치 축과 무관하다.
+    expect(Object.keys(result)).toEqual(["assets", "perParent", "parentDescriptions"]);
     expect("installations" in result).toBe(false);
   });
 

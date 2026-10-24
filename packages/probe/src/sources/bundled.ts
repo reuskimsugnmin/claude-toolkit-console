@@ -101,6 +101,8 @@ export interface BundledSourceResult {
   // ⚠️ installations 필드가 아예 없다 — D6/AC-4를 반환 타입으로 고정한다. 자식은
   // `Installation`을 만들지 않는다(부모의 Installation이 이미 "이 로컬에 깔려 있나"를 말한다).
   perParent: BundledParentReport[];
+  /** 부모 플러그인 id → `.claude-plugin/plugin.json`의 원문 `description`. 읽지 못했거나 없으면 항목이 없다. */
+  parentDescriptions: Map<string, string>;
 }
 
 export interface CollectBundledOptions {
@@ -503,6 +505,34 @@ function mcpJsonPathOf(pluginDirAbs: string): string {
   return path.join(pluginDirAbs, ".mcp.json");
 }
 
+const PLUGIN_MANIFEST_MAX_BYTES = 64_000;
+const PLUGIN_DESCRIPTION_MAX_CHARS = 500;
+
+/**
+ * 플러그인 매니페스트의 원문 `description` 한 줄 — 생성 문서가 없는 플러그인(정책 차단·미생성)도 무엇을 하는지 보이게 한다.
+ * `.mcp.json`과 같은 리프 방어(링크·비정규 파일·크기 상한)를 지난다. 표시용 부가 정보라 읽지 못하면 `null`(scan을 멈추지 않는다).
+ */
+function readPluginManifestDescription(pluginDirAbs: string): string | null {
+  const abs = path.join(pluginDirAbs, ".claude-plugin", "plugin.json");
+  let stat;
+  try {
+    stat = lstatSync(abs);
+  } catch {
+    return null;
+  }
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.size > PLUGIN_MANIFEST_MAX_BYTES) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(abs, "utf8")) as unknown;
+  } catch {
+    return null;
+  }
+  const description = typeof raw === "object" && raw !== null ? (raw as { description?: unknown }).description : undefined;
+  if (typeof description !== "string") return null;
+  const oneLine = description.replace(/\s+/g, " ").trim();
+  return oneLine.length === 0 ? null : oneLine.slice(0, PLUGIN_DESCRIPTION_MAX_CHARS);
+}
+
 function countBundledHooks(pluginDirAbs: string): number | null {
   const abs = path.join(pluginDirAbs, "hooks");
   let stat;
@@ -687,6 +717,7 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
   const installPaths = listPluginInstallPaths(home);
   const assets: Asset[] = [];
   const perParent: BundledParentReport[] = [];
+  const parentDescriptions = new Map<string, string>();
 
   for (const parentId of pluginIds) {
     const validated = validatePluginInstallPathEntry(home, parentId, installPaths.get(parentId));
@@ -710,6 +741,9 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
       });
       continue;
     }
+
+    const parentDescription = readPluginManifestDescription(validated.absPath);
+    if (parentDescription !== null) parentDescriptions.set(parentId, parentDescription);
 
     // 보안 심사 M-1 — 리프를 열기 전에 kind 디렉터리 자체의 경계를 먼저 확인한다. 거부되면
     // 그 kind는 아예 readdirSync하지 않는다(빈 결과로 대체) — 경계 밖 트리를 열거·등재하지 않는다.
@@ -845,5 +879,5 @@ export function collectBundled(options: CollectBundledOptions): BundledSourceRes
     });
   }
 
-  return { assets, perParent };
+  return { assets, perParent, parentDescriptions };
 }
