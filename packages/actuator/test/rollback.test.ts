@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -64,6 +64,21 @@ describe("actuator/rollback — 백업에서 직접 파일 복원(AC-2.5: 롤백
 
     restoreFromBackup(backupRoot, homeCtx);
     expect(readFileSync(path.join(sourceDir, "SKILL.md"), "utf8")).toBe("---\nname: demo-skill\n---\n");
+  });
+
+  it("디렉터리 안의 상대 링크는 복원 뒤에도 상대 링크다", () => {
+    const sourceDir = path.join(home, "skills", "linked-skill");
+    mkdirSync(path.join(sourceDir, "sub"), { recursive: true });
+    writeFileSync(path.join(sourceDir, "SKILL.md"), "---\nname: linked-skill\n---\n", "utf8");
+    writeFileSync(path.join(sourceDir, "sub", "f.md"), "x", "utf8");
+    symlinkSync("sub/f.md", path.join(sourceDir, "rel"));
+    const { backupRoot } = beginBackupRun(home, "run3l");
+    writeManifest(backupRoot, "run3l", { skill_dir: backupDirectory(backupRoot, "skill_dir", sourceDir) });
+
+    rmSync(sourceDir, { recursive: true, force: true });
+
+    restoreFromBackup(backupRoot, homeCtx);
+    expect(readlinkSync(path.join(sourceDir, "rel"))).toBe("sub/f.md");
   });
 
   it("manifest 자체가 없으면 RollbackFailedError를 던진다(부분 성공을 성공으로 보고하지 않는다)", () => {

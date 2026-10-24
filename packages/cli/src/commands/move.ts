@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -221,6 +221,22 @@ export class SettingsSymlinkMoveError extends Error {
 }
 
 /**
+ * 이동이 쓰게 될 설정 파일(settings·`.claude.json`)이 하드링크(nlink > 1)다. 실측(CLI 2.1.310): `claude plugin disable|enable`은
+ * settings를, `enable`은 `.claude.json`(`pluginUsage`)을 임시 파일 → rename으로 써서 링크를 끊는다 — 이동은 성공하지만 dotfiles
+ * 쪽 사본은 옛 값에 남아 조용히 갈라진다. 롤백도 rename으로 쓰므로 되돌려도 다시 묶이지 않는다.
+ */
+export class ConfigHardlinkMoveError extends Error {
+  readonly failureClass = "config_hardlink" as const;
+  constructor(targetAbs: string) {
+    super(
+      `${describePath(targetAbs)}이(가) 하드링크라 이관하지 않습니다 — claude가 이 파일을 다시 쓰면 링크가 끊겨 다른 쪽 사본이 ` +
+        `옛 값에 남습니다. 아무것도 쓰지 않았습니다. 켜고 끄기는 /plugin으로 하세요.`,
+    );
+    this.name = "ConfigHardlinkMoveError";
+  }
+}
+
+/**
  * H3 — apply 이후 단계에서 실패하면 self-rollback을 시도하고, **그 결과와 무관하게** journal
  * 레코드를 남긴다(`rolled_back`이면 복원 성공, `failure`면 복원 자체도 실패 — `RollbackFailedError`
  * 원문이 그대로 cause 체인에 남는다. H3: "원래 실패 원인이 소실"되지 않게 한다).
@@ -390,6 +406,12 @@ async function movePluginAsset(
     // 복원기와 같은 판정으로 쓰기 전에 거부한다. .claude.json은 복원 대상이 아니라(rollback이 제외) 링크여도 막지 않는다.
     for (const abs of [fromSettingsAbs, toSettingsAbs]) {
       if (isSymlink(abs)) throw new SettingsSymlinkMoveError(abs);
+    }
+    // 하드링크는 `.claude.json`도 본다 — 링크(심볼릭)와 달리 복원 여부가 아니라 claude의 rename 쓰기가 문제다. 디렉터리는 nlink가
+    // 원래 2 이상이라 파일만 본다(파일이 아닌 대상은 backupFile이 따로 거부한다).
+    for (const abs of [fromSettingsAbs, toSettingsAbs, claudeJsonPath(home)]) {
+      const st = statSync(abs, { throwIfNoEntry: false });
+      if (st?.isFile() === true && st.nlink > 1) throw new ConfigHardlinkMoveError(abs);
     }
     const runId = snapshotIdFsSafe();
     const { backupRoot } = beginBackupRun(home.ctkHome, runId);

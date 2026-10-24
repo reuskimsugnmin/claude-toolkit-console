@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -25,6 +25,30 @@ describe("actuator/backup — 백업(AC-2.3: 쓰기 직전 백업 존재 + 원�
     expect(entry.sha256).toBe(sha256('{"a":1}'));
     expect(entry.targetAbs).toBe(target);
     expect(existsSync(path.join(backupRoot, entry.storedRelPath!))).toBe(true);
+  });
+
+  it("링크 파일은 내용으로 백업한다 — 원본이 바뀌어도 백업은 이동 전 스냅샷이다", () => {
+    const real = path.join(home, "real.json");
+    writeFileSync(real, '{"v":1}', "utf8");
+    const target = path.join(home, ".claude.json");
+    symlinkSync(real, target);
+    const { backupRoot } = beginBackupRun(home, "run-link");
+    const entry = backupFile(backupRoot, "config_claude_json", target);
+    const stored = path.join(backupRoot, entry.storedRelPath!);
+    writeFileSync(real, '{"v":2}', "utf8");
+    expect(lstatSync(stored).isSymbolicLink()).toBe(false);
+    expect(readFileSync(stored, "utf8")).toBe('{"v":1}');
+    expect(entry.sha256).toBe(sha256('{"v":1}'));
+  });
+
+  it("디렉터리 안의 상대 링크는 상대 링크 그대로 백업한다", () => {
+    const dir = path.join(home, "skill");
+    mkdirSync(path.join(dir, "sub"), { recursive: true });
+    writeFileSync(path.join(dir, "sub", "f.md"), "x", "utf8");
+    symlinkSync("sub/f.md", path.join(dir, "rel"));
+    const { backupRoot } = beginBackupRun(home, "run-rel");
+    const entry = backupDirectory(backupRoot, "skill_dir", dir);
+    expect(readlinkSync(path.join(backupRoot, entry.storedRelPath!, "rel"))).toBe("sub/f.md");
   });
 
   it("존재하지 않는 파일은 existed=false로만 기록한다(없음과 실패를 구분 — 안전 원칙 5)", () => {

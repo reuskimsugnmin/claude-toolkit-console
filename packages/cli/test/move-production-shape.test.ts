@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -290,6 +290,50 @@ describe("cli — ctk move 프로덕션 형태(CTK_CONFIG_DIR 미설정, 실제 
     expect(lstatSync(linkAbs).isSymbolicLink()).toBe(true);
     expect(read(pointee)).toBe(pointeeBefore);
     expect(lastRunLog("move").failure_class).toBe("settings_symlink");
+  });
+
+  it("(ii-a5) settings가 하드링크면 백업 전에 거부한다 — claude의 rename 쓰기가 링크를 끊어 다른 사본이 낡는다", async () => {
+    await setupPluginMove();
+    let applied = false;
+    hooks.pluginApply = () => {
+      applied = true;
+    };
+    linkSync(settingsAbs, path.join(ctkHome, "dotfiles-settings.json"));
+
+    const err = await runMove({ assetId: PLUGIN, to: "project", toProjectIndex: 0 }).catch((e: unknown) => e as Error);
+
+    expect((err as Error).name).toBe("ConfigHardlinkMoveError");
+    expect((err as Error).message).not.toContain(ctkHome);
+    expect(applied).toBe(false);
+    expect(existsSync(path.join(ctkHome, ".ctk-backups"))).toBe(false);
+    expect(lstatSync(settingsAbs).nlink).toBe(2);
+    expect(lastRunLog("move").failure_class).toBe("config_hardlink");
+  });
+
+  it("(ii-a6) 실제 .claude.json이 하드링크여도 거부한다 — enable이 pluginUsage를 rename으로 써 링크를 끊는다(실측)", async () => {
+    await setupPluginMove();
+    let applied = false;
+    hooks.pluginApply = () => {
+      applied = true;
+    };
+    linkSync(realJson, path.join(ctkHome, "dotfiles-claude.json"));
+
+    const err = await runMove({ assetId: PLUGIN, to: "project", toProjectIndex: 0 }).catch((e: unknown) => e as Error);
+
+    expect((err as Error).name).toBe("ConfigHardlinkMoveError");
+    expect(applied).toBe(false);
+    expect(existsSync(path.join(ctkHome, ".ctk-backups"))).toBe(false);
+  });
+
+  it("(ii-a7) 반대 축 — settings 자리가 디렉터리면(nlink ≥ 2) 하드링크로 오진단하지 않는다", async () => {
+    await setupPluginMove();
+    rmSync(settingsAbs);
+    mkdirSync(settingsAbs);
+
+    const err = await runMove({ assetId: PLUGIN, to: "project", toProjectIndex: 0 }).catch((e: unknown) => e as Error);
+
+    expect((err as Error).name).not.toBe("ConfigHardlinkMoveError");
+    expect((err as Error).message).toContain("파일이 아니다");
   });
 
   it("(ii-a4) 웹 이동 액션 — settings 링크 거부는 bad_request다", async () => {

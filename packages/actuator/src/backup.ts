@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, constants, copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { collectTree } from "@ctk/probe";
 import {
@@ -69,7 +69,9 @@ export function backupFile(backupRoot: string, key: string, sourceAbs: string): 
   const storedRelPath = path.join(key, path.basename(sourceAbs));
   const destAbs = path.join(backupRoot, storedRelPath);
   mkdirSync(path.dirname(destAbs), { recursive: true });
-  cpSync(sourceAbs, destAbs);
+  // 링크를 따라 **내용**을 복사한다 — `cpSync`는 링크를 링크로 복사해 백업이 살아 있는 원본을 가리켰다(링크 `.claude.json`의
+  // 이동 전 스냅샷이 사라졌다). `cpSync`의 `dereference`는 파일 링크를 디렉터리로 오인해 쓸 수 없다(실측).
+  copyFileSync(sourceAbs, destAbs, constants.COPYFILE_EXCL); // 새 런의 dest는 늘 없다 — 있으면 덮지도 따라 쓰지도 않는다
   const sha256 = sha256File(sourceAbs);
   const backedUpSha256 = sha256File(destAbs);
   if (sha256 !== backedUpSha256) {
@@ -90,7 +92,8 @@ export function backupDirectory(backupRoot: string, key: string, sourceAbs: stri
   const storedRelPath = key;
   const destAbs = path.join(backupRoot, storedRelPath);
   mkdirSync(path.dirname(destAbs), { recursive: true });
-  cpSync(sourceAbs, destAbs, { recursive: true });
+  // verbatimSymlinks — 기본값은 상대 링크를 절대 링크로 바꿔, 복원 뒤 스킬 안 링크의 형태가 달라진다.
+  cpSync(sourceAbs, destAbs, { recursive: true, verbatimSymlinks: true });
 
   const sourceFiles = collectTree(sourceAbs).entries;
   const backedUpFiles = collectTree(destAbs).entries;

@@ -326,7 +326,7 @@ function restoreDirectoryEntry(key: string, entry: Extract<BackupEntry, { kind: 
 
   const storedAbs = path.join(backupRoot, entry.storedRelPath!);
   mkdirSync(path.dirname(stagingAbs), { recursive: true });
-  cpSync(storedAbs, stagingAbs, { recursive: true });
+  cpSync(storedAbs, stagingAbs, { recursive: true, verbatimSymlinks: true }); // 백업과 같은 이유(backup.ts)
   verifyRestoredDirectory(stagingAbs, entry); // staging 사본 자체를 먼저 검증(대상은 아직 안 건드림).
 
   const hadTarget = existsSync(targetAbs);
