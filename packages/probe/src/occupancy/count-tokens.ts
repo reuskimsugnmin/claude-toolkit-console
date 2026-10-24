@@ -145,6 +145,7 @@ function collectErrorCodes(err: unknown): string[] {
  * 반환값은 분류 열거값뿐이다 — 오류 원문은 URL·헤더 조각을 품을 수 있어 카탈로그에 넣지 않는다.
  */
 export function classifyMeasurementFailure(err: unknown): OccupancyFailureKind {
+  if (isCredentialExpired(err)) return "credential_expired";
   if (err instanceof Anthropic.RateLimitError) return "rate_limited";
   const codes = collectErrorCodes(err);
   if (codes.some((c) => TLS_CHAIN_ERROR_CODES.has(c))) return "tls_chain_untrusted";
@@ -168,6 +169,17 @@ export function classifyMeasurementFailure(err: unknown): OccupancyFailureKind {
 function isCredentialAbsence(err: unknown): boolean {
   if (err instanceof Anthropic.AuthenticationError) return true;
   return err instanceof Error && /could not resolve authentication/i.test(err.message);
+}
+
+/**
+ * 크레덴셜이 해석은 됐지만 만료돼 갱신할 수 없다. 실측(2026-10-25): `ant auth login` 프로파일의 액세스 토큰이 만료되고
+ * refresh 토큰이 없으면 SDK가 `WorkloadIdentityError`("… has expired and no refresh is available")를 던졌고, ctk는 이를
+ * `unclassified`로 내 재로그인하면 된다는 사실을 알려주지 못했다. 타입이 SDK 공개 표면에 없어 이름과 문구로 본다 —
+ * 깨지면 `unclassified`로 열화할 뿐이다.
+ */
+function isCredentialExpired(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.constructor.name === "WorkloadIdentityError" && /has expired/i.test(err.message);
 }
 
 /** 측정 대상 텍스트가 없는 경우(예: cli 자산의 idle/loaded) — 호출 자체를 생략하는 지름길. */

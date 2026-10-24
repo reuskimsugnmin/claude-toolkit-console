@@ -99,6 +99,17 @@ describe("probe/occupancy/count-tokens — 3상태 실측(ADR-005, AC-4.5)", () 
     });
   });
 
+  // 실측 형태(2026-10-25) — `ant` 프로파일의 토큰이 만료되고 refresh가 없을 때 SDK가 던진 오류. 클래스 이름과 문구를 그대로 재현한다.
+  class WorkloadIdentityError extends Error {}
+  it("만료된 크레덴셜은 credential_expired다 — 재로그인이 처방이다", () => {
+    const err = new WorkloadIdentityError("Access token at <path> has expired and no refresh is available (client_id set, refresh_token empty)");
+    expect(classifyMeasurementFailure(err)).toBe("credential_expired");
+  });
+  it("반대 축 — 같은 클래스라도 만료 문구가 없으면 지어내지 않는다(unclassified)", () => {
+    expect(classifyMeasurementFailure(new WorkloadIdentityError("token exchange failed"))).toBe("unclassified");
+    expect(classifyMeasurementFailure(new Error("token has expired"))).toBe("unclassified");
+  });
+
   it("notApplicableOccupancyValue — 측정 대상이 없는 경우의 지름길", () => {
     expect(notApplicableOccupancyValue()).toEqual({ state: "unmeasured", value_tokens: null, reason: "not_applicable" });
   });

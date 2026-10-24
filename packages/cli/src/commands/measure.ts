@@ -118,6 +118,8 @@ export function measurementFailureHint(kind: OccupancyFailureKind): string {
       );
     case "network_unreachable":
       return "네트워크 도달 실패 — 오프라인·DNS·방화벽·프록시 설정을 확인한다.";
+    case "credential_expired":
+      return "크레덴셜이 만료됐고 갱신할 수 없다 — `ant auth login`으로 다시 로그인한다(API 키를 쓰면 ANTHROPIC_API_KEY를 확인한다).";
     case "rate_limited":
       return "레이트리밋(429) — 잠시 후 재실행한다. 토큰 캐시가 있어 재실행은 이미 측정된 자산을 다시 호출하지 않는다.";
     case "api_error":

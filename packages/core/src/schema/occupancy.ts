@@ -32,6 +32,7 @@ export type OccupancyReason = z.infer<typeof OccupancyReasonSchema>;
 export const OccupancyFailureKindSchema = z.enum([
   "tls_chain_untrusted", // 체인 검증 실패 — 가로채기 프록시의 루트 CA가 Node 신뢰 저장소에 없음
   "network_unreachable", // DNS/연결 실패 — 오프라인·방화벽·프록시 미도달
+  "credential_expired", // 크레덴셜은 해석됐지만 만료됐고 갱신할 수 없음 — `ant auth login` 재로그인이 처방(2026-10-25 실측)
   "rate_limited", // 429
   "api_error", // 그 밖의 API 상태 코드 응답(4xx/5xx)
   "unclassified", // 위 어디에도 해당한다고 판정할 수 없음
